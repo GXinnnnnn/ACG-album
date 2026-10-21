@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' acg-image: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' acg-image:; media-src 'self' acg-image:; object-src 'none'; base-uri 'none'"
+    />
+    <title>ACG-album</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="floating.css" />
+    <link rel="stylesheet" href="crop.css" />
+    <link rel="stylesheet" href="display.css" />
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="media.css" />
+    <link rel="stylesheet" href="editor.css" />
+    <link rel="stylesheet" href="about.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <link rel="stylesheet" href="local-search.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <header class="titlebar">
+      <div class="window-controls">
+        <button aria-label="最小化" data-window="minimize">─</button
+        ><button aria-label="最大化或还原" data-window="maximize">□</button
+        ><button aria-label="关闭" class="window-close" data-window="close">×</button>
+      </div>
+    </header>
+    <header class="topbar">
+      <button class="brand glass" id="brand-home" aria-label="ACG-album，回到资料库">
+        <img src="../assets/app.png" alt="" /><span class="brand-text"
+          ><b>ACG-album</b><small>本地相册</small></span
+        >
+      </button>
+      <div class="navigation glass">
+        <button
+          id="back-button"
+          class="icon-button"
+          aria-label="返回上一层"
+          title="返回 · Alt+←"
+          data-icon="arrow-left"
+        ></button
+        ><button
+          id="home-button"
+          class="icon-button"
+          aria-label="回到资料库"
+          data-icon="home"
+        ></button>
+        <div id="breadcrumbs" class="breadcrumbs">资料库</div>
+      </div>
+      <div class="search-wrap glass">
+        <span data-icon="search"></span
+        ><input
+          id="search"
+          type="search"
+          placeholder="搜索相册与图片"
+          aria-label="搜索资料库"
+        /><kbd>Ctrl K</kbd>
+      </div>
+      <div class="header-actions glass">
+        <button
+          id="theme-button"
+          class="icon-button"
+          aria-label="切换深浅主题"
+          title="切换深浅主题"
+          data-icon="moon"
+        ></button
+        ><span class="toolbar-divider"></span
+        ><button id="profile-button" class="profile-button" title="个人资料与设置">
+          <img class="user-avatar" src="../assets/default-avatar.jpg" alt="" /><span
+            class="user-name"
+            >新朋友</span
+          ><span data-icon="chevron-down"></span>
+        </button>
+      </div>
+    </header>
+    <div class="app-shell" data-sidebar="auto">
+      <aside class="sidebar-shell glass" id="sidebar-shell" aria-label="相册导航">
+        <div class="sidebar" id="sidebar-panel">
+          <button
+            class="primary import-button"
+            id="import-sidebar"
+            title="导入文件夹"
+            aria-label="导入文件夹"
+          >
+            <span data-icon="plus"></span><span class="sidebar-label">导入文件夹</span>
+          </button>
+          <nav class="main-nav" aria-label="资料库导航">
+            <button
+              data-view="library"
+              class="nav-item active"
+              title="我的相册"
+              aria-label="我的相册"
+            >
+              <span data-icon="grid"></span><span class="sidebar-label">我的相册</span
+              ><span class="sidebar-label nav-count" id="root-count">0</span></button
+            ><button data-view="favorites" class="nav-item" title="特别收藏" aria-label="特别收藏">
+              <span data-icon="heart"></span><span class="sidebar-label">特别收藏</span></button
+            ><button data-view="timeline" class="nav-item" title="时光轴" aria-label="时光轴">
+              <span data-icon="clock"></span><span class="sidebar-label">时光轴</span></button
+            ><button
+              data-view="pending"
+              class="nav-item"
+              title="待确认项目"
+              aria-label="待确认项目"
+            >
+              <span data-icon="check-circle"></span><span class="sidebar-label">待确认项目</span
+              ><span class="pending-dot"></span>
+            </button>
+          </nav>
+          <button
+            id="local-search-button"
+            class="nav-item"
+            title="本地资料检索"
+            aria-label="本地资料检索"
+          >
+            <span data-icon="search"></span><span class="sidebar-label">本地资料检索</span>
+          </button>
+          <button
+            id="rail-tree"
+            class="nav-item folder-button"
+            title="展开文件夹树"
+            aria-label="展开文件夹树"
+            aria-expanded="false"
+            aria-controls="sidebar-details"
+          >
+            <span data-icon="folder"></span><span class="sidebar-label">文件夹</span
+            ><span class="sidebar-label" data-icon="chevron-down"></span>
+          </button>
+          <div id="sidebar-details" class="sidebar-details" inert>
+            <div class="nav-caption category-caption">
+              <span>已导入目录</span
+              ><button
+                id="collapse-all"
+                class="small-icon"
+                title="收起全部分支"
+                aria-label="收起全部分支"
+                data-icon="collapse"
+              ></button>
+            </div>
+            <div id="category-nav" class="category-nav" role="tree" aria-label="资料库文件夹">
+              <p class="sidebar-empty">导入文件夹后<br />分类会出现在这里</p>
+            </div>
+            <div class="index-status">
+              <span class="status-light"></span>
+              <div>
+                <strong id="index-count">本地资料库</strong
+                ><small id="index-status">原图留在原处，热爱随时可见</small>
+              </div>
+            </div>
+          </div>
+          <div class="sidebar-bottom">
+            <button class="nav-item" id="settings-button" title="偏好设置" aria-label="偏好设置">
+              <span data-icon="settings"></span><span class="sidebar-label">偏好设置</span></button
+            ><button
+              id="sidebar-pin"
+              class="small-icon"
+              title="固定侧栏"
+              aria-label="固定侧栏"
+              aria-pressed="false"
+              data-icon="sliders"
+              inert
+            ></button>
+            <div id="sidebar-copyright" class="sidebar-copyright sidebar-label" inert>
+              <span>© 2026 友利奈绪的胖次</span
+              ><button id="sidebar-about" title="关于与开源许可">GXinnnnnn · MIT License</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+      <main>
+        <div id="viewport" tabindex="-1">
+          <div class="toolbar" id="toolbar">
+            <div class="toolbar-left glass">
+              <div class="filter-tabs">
+                <button data-filter="all" class="active">全部</button
+                ><button data-filter="folders">相册</button
+                ><button data-filter="images">媒体</button>
+              </div>
+              <span class="toolbar-divider"></span
+              ><span id="result-count" class="result-count">0 个分类</span>
+            </div>
+            <div class="toolbar-right glass">
+              <label class="sort-label"
+                ><span data-icon="sort"></span
+                ><select id="sort" aria-label="排序方式">
+                  <option value="name">名称</option>
+                  <option value="date">创建日期</option>
+                  <option value="modified">修改日期</option>
+                  <option value="size">大小</option>
+                </select></label
+              ><button
+                id="sort-direction"
+                class="small-icon"
+                title="切换升降序"
+                aria-label="切换升降序"
+                data-icon="arrow-down"
+              ></button
+              ><span class="toolbar-divider"></span
+              ><span class="card-size-label" aria-hidden="true">卡片</span>
+              <div
+                id="card-size-controls"
+                class="card-size-controls"
+                role="group"
+                aria-label="卡片尺寸"
+              >
+                <button
+                  data-density="158"
+                  aria-label="小卡片"
+                  aria-pressed="false"
+                  title="小卡片 · 更多内容"
+                >
+                  小</button
+                ><button
+                  data-density="186"
+                  aria-label="中卡片"
+                  aria-pressed="false"
+                  title="中卡片 · 标准大小"
+                >
+                  中</button
+                ><button
+                  data-density="222"
+                  aria-label="大卡片"
+                  aria-pressed="false"
+                  title="大卡片 · 更清楚的封面"
+                >
+                  大
+                </button>
+              </div>
+              <button
+                id="details-toggle"
+                class="detail-toggle"
+                aria-label="显示媒体详情"
+                aria-pressed="true"
+                title="切换文件名、大小与日期"
+              >
+                详情</button
+              ><button
+                id="density-button"
+                class="small-icon"
+                title="查看设置：卡片尺寸与封面比例"
+                aria-label="查看设置：卡片尺寸与封面比例"
+                data-icon="sliders"
+              ></button>
+            </div>
+          </div>
+          <div id="page-heading" class="page-heading">
+            <div>
+              <div class="eyebrow" id="eyebrow">我的本地收藏</div>
+              <h1 id="page-title">我的相册<span class="heading-dot">.</span></h1>
+              <p id="page-description">把散落的画面，整理成喜欢的世界。</p>
+            </div>
+            <button class="subtle-button glass" id="refresh-button">
+              <span data-icon="refresh"></span>增量更新
+            </button>
+          </div>
+          <div id="intro-area"></div>
+          <section id="timeline-controls" class="timeline-controls" hidden>
+            <div>
+              <span class="timeline-emblem" data-icon="clock"></span
+              ><strong>沿着时间，再看一次</strong>
+              <p>按拍摄时间排列；没有拍摄时间时使用文件修改日期。地点来自 GPS 或手动填写。</p>
+            </div>
+            <label>月份<input id="timeline-month" type="month" aria-label="筛选拍摄月份" /></label
+            ><label
+              >地点<input
+                id="timeline-place"
+                type="search"
+                placeholder="手动地点名称"
+                aria-label="筛选地点名称" /></label
+            ><button id="timeline-clear" class="subtle-button">全部时间</button
+            ><button id="timeline-refresh" class="text-button" hidden>拍摄信息已更新，刷新</button>
+          </section>
+          <div id="empty-state"></div>
+          <div id="category-overview"></div>
+          <div id="virtual-grid" class="virtual-grid"></div>
+          <div class="page-footnote" id="page-footnote">
+            <span data-icon="shield"></span>热爱留在本地，原图留在原处
+          </div>
+        </div>
+        <footer class="statusbar">
+          <span id="footer-location">ACG-album · 本地相册</span
+          ><span id="footer-status">就绪 <span class="status-light"></span></span>
+        </footer>
+      </main>
+    </div>
+    <div id="progress-panel" class="progress-panel" hidden>
+      <div class="progress-top">
+        <span class="progress-spinner"></span
+        ><strong id="progress-title" aria-live="polite" aria-atomic="true">正在索引</strong
+        ><button id="cancel-import" class="text-button">取消</button>
+      </div>
+      <div class="progress-track"><div id="progress-bar"></div></div>
+      <div class="progress-details">
+        <span id="progress-detail"></span><span id="progress-percent"></span>
+      </div>
+      <p id="progress-path"></p>
+    </div>
+    <div
+      id="toast-region"
+      class="toast-region"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
+    <div id="context-menu" class="context-menu" role="menu" hidden></div>
+    <dialog id="modal" class="modal">
+      <div class="modal-top">
+        <div>
+          <span class="eyebrow" id="modal-eyebrow">ACG-album</span>
+          <h2 id="modal-title"></h2>
+        </div>
+        <button id="modal-close" class="icon-button" aria-label="关闭对话框" data-icon="x"></button>
+      </div>
+      <div id="modal-content"></div>
+    </dialog>
+    <dialog id="viewer" class="viewer">
+      <div class="viewer-top">
+        <div><strong id="viewer-name"></strong><span id="viewer-position"></span></div>
+        <div>
+          <button id="viewer-edit" class="viewer-button">编辑副本</button
+          ><button id="viewer-info" class="viewer-button">拍摄与地点</button
+          ><button id="viewer-external" class="viewer-button">系统打开</button
+          ><button id="viewer-copy" class="viewer-button">
+            <span data-icon="copy"></span>复制图片</button
+          ><button id="viewer-fit" class="viewer-button" title="原始大小 / 适应窗口">
+            <span data-icon="maximize"></span><span id="viewer-zoom">适应</span></button
+          ><button
+            id="viewer-close"
+            class="icon-button"
+            aria-label="关闭查看器"
+            data-icon="x"
+          ></button>
+        </div>
+      </div>
+      <div class="viewer-stage" id="viewer-stage">
+        <img id="viewer-image" alt="" /><video
+          id="viewer-video"
+          controls
+          playsinline
+          preload="metadata"
+          hidden
+        ></video>
+        <div id="viewer-loading">正在打开原图…</div>
+      </div>
+      <button
+        id="viewer-prev"
+        class="viewer-arrow prev"
+        aria-label="上一张"
+        data-icon="chevron-left"
+      ></button
+      ><button
+        id="viewer-next"
+        class="viewer-arrow next"
+        aria-label="下一张"
+        data-icon="chevron-right"
+      ></button>
+      <div class="viewer-bottom">
+        <span id="viewer-path"></span><span>← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭</span>
+      </div>
+    </dialog>
+    <button
+      id="back-to-top"
+      class="back-to-top glass"
+      aria-label="回到顶部"
+      title="回到顶部"
+      hidden
+    >
+      <span data-icon="arrow-down"></span><span>回到顶部</span>
+    </button>
+    <script src="crop.js"></script>
+    <script src="theme.js"></script>
+    <script src="display.js"></script>
+    <script src="masonry.js"></script>
+    <script src="app.js"></script>
+    <script src="local-search.js"></script>
+    <script src="media-ui.js"></script>
+    <script src="editor.js"></script>
+    <script src="navigation.js"></script>
+    <script src="about.js"></script>
+    <script src="menus.js"></script>
+    <script src="controls.js"></script>
+  </body>
+</html>

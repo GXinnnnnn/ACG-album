@@ -1,0 +1,500 @@
+@charset "UTF-8";
+
+/* The source remains available to scripts and form APIs, with one accessible UI. */
+select.album-select-source {
+  display: none !important;
+}
+.album-select {
+  display: inline-flex;
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.album-select[hidden] {
+  display: none;
+}
+.album-select-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.album-select-button:hover:enabled,
+.album-select-button[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: var(--accent-soft);
+}
+.album-select-button:focus-visible,
+.settings-tabs button:focus-visible,
+.density-choice:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.album-select-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.album-select-button[aria-invalid='true'] {
+  border-color: var(--red, #b93855);
+}
+.album-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.album-select-button > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--soft);
+}
+.album-select-list {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 6px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border: 1px solid var(--line);
+  border-radius: 19px;
+  background: var(--surface-solid);
+  color: var(--text);
+  box-shadow: 0 14px 44px rgba(30, 23, 48, 0.2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+.album-select-list::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+.album-select-option {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-height: 36px;
+  padding: 8px 34px 8px 12px;
+  border-radius: 13px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.album-select-option[hidden] {
+  display: none;
+}
+.album-select-option.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.album-select-option[aria-selected='true'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.album-select-option[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  right: 14px;
+  width: 5px;
+  height: 9px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+.album-select-option[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+}
+.sort-label .album-select-button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border-color: transparent;
+  background: transparent;
+}
+.setting-row > .album-select {
+  max-width: min(240px, 48%);
+}
+.album-select-field {
+  display: flex;
+  width: 100%;
+  margin-block: 8px 16px;
+}
+.album-select-field .album-select-button {
+  min-height: 43px;
+  border-radius: 16px;
+  font-size: 13px;
+}
+/* Editor controls use the same UI while retaining the editor's field geometry. */
+#media-editor .album-select,
+.me-two-fields .album-select {
+  width: 100%;
+}
+#media-editor .album-select-button {
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 8px 12px;
+  gap: 12px;
+  border-radius: 18px;
+}
+#media-editor .album-select-button[aria-expanded='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+#media-editor .me-export-controls .album-select {
+  width: auto;
+  min-width: 96px;
+}
+.me-two-fields .album-select-button {
+  min-height: 38px;
+}
+.settings-tabs {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  isolation: isolate;
+}
+.settings-tabs button,
+.settings-tabs button.active {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  line-height: 20px;
+  color: var(--soft);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+.settings-tabs button:hover {
+  background: var(--surface-hover, var(--surface));
+  color: var(--text);
+}
+.settings-tabs button.active {
+  color: var(--accent);
+  background: transparent;
+}
+.settings-tab-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.modal.settings-dialog {
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  animation: none;
+}
+.settings-dialog .modal-top {
+  margin-bottom: 18px;
+}
+#settings-shell {
+  min-width: 0;
+}
+#settings-shell .settings-tabs {
+  margin-bottom: 16px;
+}
+.settings-viewport {
+  position: relative;
+  height: min(510px, calc(100dvh - 240px));
+  min-height: 80px;
+  overflow: hidden;
+  isolation: isolate;
+}
+.settings-panel {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+  padding: 0 8px 16px 2px;
+  overflow-wrap: anywhere;
+}
+.settings-panel[hidden] {
+  display: none;
+}
+.settings-panel[inert] {
+  pointer-events: none;
+}
+.settings-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 10px;
+}
+.settings-panel > :first-child {
+  margin-top: 0;
+}
+.settings-panel .setting-row > div:first-child {
+  min-width: 0;
+}
+.settings-panel .modal-actions,
+.settings-panel .identity-actions {
+  flex-wrap: wrap;
+}
+.settings-status {
+  height: 20px;
+  margin: 6px 0 0 !important;
+  font-size: 11px !important;
+  line-height: 20px !important;
+  color: var(--soft);
+}
+.settings-initial,
+.settings-error {
+  padding: 18px 2px;
+}
+@media (max-width: 540px) {
+  .modal.settings-dialog {
+    padding: 18px;
+  }
+  .settings-tabs button,
+  .settings-tabs button.active {
+    padding: 8px 4px;
+    font-size: 11px;
+    line-height: 17px;
+  }
+  .settings-panel .setting-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .settings-panel .setting-row > .album-select {
+    max-width: 100%;
+  }
+  .settings-panel .cache-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .settings-panel .cache-card {
+    min-width: 0;
+    padding: 10px 6px;
+  }
+  .settings-viewport {
+    height: min(510px, calc(100dvh - 260px));
+  }
+}
+@media (max-height: 460px) {
+  .modal.settings-dialog {
+    padding-block: 14px;
+  }
+  .settings-dialog .modal-top {
+    margin-bottom: 10px;
+  }
+  .settings-viewport {
+    height: calc(100dvh - 200px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog *,
+  .settings-dialog *::before,
+  .settings-dialog *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+.density-popup {
+  display: flex;
+  gap: 10px;
+}
+.density-popup .density-choice {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 110px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  color: var(--soft);
+  background: var(--surface);
+  line-height: 1.5;
+}
+.density-popup .density-icon {
+  margin: 0;
+}
+.density-popup .density-choice[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.application-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-block: 8px 20px;
+}
+.application-summary img {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 16px;
+}
+.application-summary h3 {
+  margin: 0 0 5px;
+  font-size: 18px;
+}
+.application-summary p {
+  margin: 0;
+  color: var(--soft);
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .album-select-button {
+    transition: none;
+  }
+}
+
+/* Import options share the existing modal, switch and pill controls. */
+.import-options .import-options-intro {
+  margin: 0 0 18px;
+}
+.modal .import-match-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 64px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.import-match-row strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.import-match-row #import-match-help {
+  display: block;
+  margin-top: 4px;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.import-match-row .switch {
+  margin: 0;
+}
+.import-subject-types {
+  min-width: 0;
+  margin: 20px 0 0;
+  padding: 0;
+  border: 0;
+}
+.import-subject-types[hidden] {
+  display: none;
+}
+.import-subject-types legend {
+  margin-bottom: 12px;
+  padding: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.import-category-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.import-category-chip {
+  display: inline-flex;
+  flex: 1 0 92px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.import-category-chip:hover:enabled {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.import-category-chip[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.import-category-check {
+  display: inline-flex;
+  visibility: hidden;
+}
+.import-category-chip[aria-pressed='true'] .import-category-check {
+  visibility: visible;
+}
+.import-category-check svg {
+  width: 16px;
+  height: 16px;
+}
+.import-options .switch:focus-visible,
+.import-category-chip:focus-visible,
+.import-options .modal-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.import-options #import-category-help {
+  margin: 10px 0 0;
+}
+.import-options .import-options-note {
+  margin: 18px 0 0;
+}
+.import-options #import-options-error {
+  margin: 12px 0 0;
+}
+.import-options .modal-actions button {
+  min-height: 44px;
+}

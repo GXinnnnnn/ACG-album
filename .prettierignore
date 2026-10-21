@@ -1,0 +1,6 @@
+src/assets/**
+src/demo/**
+node_modules/**
+release/**
+artifacts/**
+.review-data/**

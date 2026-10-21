@@ -1,0 +1,33 @@
+/* Keep the old theme still while the new, fully rendered theme expands from the button. */
+html.theme-revealing::view-transition,
+html.theme-revealing::view-transition-group(root),
+html.theme-revealing::view-transition-image-pair(root) {
+  pointer-events: none;
+}
+html.theme-revealing::view-transition-group(root) {
+  animation: none;
+}
+html.theme-revealing::view-transition-old(root),
+html.theme-revealing::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+html.theme-revealing::view-transition-old(root) {
+  z-index: 1;
+}
+html.theme-revealing::view-transition-new(root) {
+  z-index: 2;
+}
+/* The snapshot must already contain the final colors, including glass buttons. */
+html.theme-revealing *,
+html.theme-revealing *::before,
+html.theme-revealing *::after {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html.theme-revealing::view-transition-group(root),
+  html.theme-revealing::view-transition-old(root),
+  html.theme-revealing::view-transition-new(root) {
+    animation: none !important;
+  }
+}

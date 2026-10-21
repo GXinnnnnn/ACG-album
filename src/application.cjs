@@ -1,0 +1,172 @@
+'use strict';
+
+const { app, ipcMain, Menu, net, shell } = require('electron');
+const { validRepository } = require('./repository.cjs');
+
+const EXTERNAL_HOSTS = new Set([
+  'bgm.tv',
+  'bangumi.tv',
+  'chii.in',
+  'next.bgm.tv',
+  'github.com',
+  'space.bilibili.com',
+  'www.electronjs.org',
+  'www.chromium.org',
+  'nodejs.org',
+  'www.sqlite.org',
+  'sqlite.org',
+  'sharp.pixelplumbing.com',
+  'www.libvips.org',
+  'libvips.github.io',
+  'developers.google.com'
+]);
+function openExternal(value) {
+  const url = new URL(String(value || ''));
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.port ||
+    !EXTERNAL_HOSTS.has(url.hostname)
+  )
+    throw new Error('不支持的外部网址。');
+  return shell.openExternal(url.href);
+}
+
+function releaseVersion(tag) {
+  const match = /^(?:v|release[-/]?)?(\d+)\.(\d+)\.(\d+)(?:\+[\da-z.-]+)?$/i.exec(
+    String(tag || '').trim()
+  );
+  return match && match.slice(1, 4).map(Number).every(Number.isSafeInteger)
+    ? match.slice(1, 4).map(Number)
+    : null;
+}
+
+function registerApplicationHandlers({ call, getWindow }) {
+  Menu.setApplicationMenu(null);
+  let popup = null;
+  const emit = (action) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed())
+      win.webContents.send('library:event', { type: 'application', data: { action } });
+  };
+  const repository = async () => String((await call('init')).settings.githubRepository || '');
+  ipcMain.handle('library:quit', () => app.quit());
+  ipcMain.handle('library:appInfo', async () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    author: '友利奈绪的胖次 (GXinnnnnn)',
+    repository: await repository(),
+    credits: require('./assets/credits.json')
+  }));
+  ipcMain.handle('library:checkUpdate', async () => {
+    const repo = await repository(),
+      currentVersion = app.getVersion();
+    const base = { repository: repo, currentVersion };
+    if (!repo) return { ...base, status: 'unconfigured' };
+    if (!validRepository(repo)) throw new Error('GitHub 仓库配置无效。');
+    const releasesUrl = `https://github.com/${repo}/releases`;
+    let response;
+    try {
+      response = await net.fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': `ACG-album/${currentVersion}`
+        },
+        signal: AbortSignal.timeout(10000)
+      });
+    } catch (error) {
+      throw new Error(
+        ['TimeoutError', 'AbortError'].includes(error.name)
+          ? '连接 GitHub 超时，请稍后再试。'
+          : '无法连接 GitHub，请检查网络后重试。'
+      );
+    }
+    if (response.status === 404) return { ...base, status: 'unknown', url: releasesUrl };
+    if ([403, 429].includes(response.status)) throw new Error('GitHub 请求频率受限，请稍后再试。');
+    if (!response.ok) throw new Error(`GitHub 更新检查失败（${response.status}）。`);
+    let release;
+    try {
+      release = await response.json();
+      if (!release || typeof release !== 'object' || Array.isArray(release)) throw new Error();
+    } catch {
+      throw new Error('更新服务返回了无法识别的数据，请稍后再试。');
+    }
+    const latest = releaseVersion(release.tag_name),
+      current = releaseVersion(currentVersion);
+    let url = releasesUrl;
+    try {
+      const candidate = new URL(release.html_url);
+      if (
+        candidate.protocol === 'https:' &&
+        !candidate.username &&
+        !candidate.password &&
+        !candidate.port &&
+        candidate.hostname === 'github.com' &&
+        candidate.pathname.toLowerCase().startsWith('/' + repo.toLowerCase() + '/releases/')
+      )
+        url = candidate.href;
+    } catch {}
+    if (!latest || !current || release.draft || release.prerelease)
+      return { ...base, status: 'unknown', latestVersion: String(release.tag_name || ''), url };
+    let comparison = 0;
+    for (let i = 0; i < 3; i++)
+      if (latest[i] !== current[i]) {
+        comparison = latest[i] > current[i] ? 1 : -1;
+        break;
+      }
+    return {
+      ...base,
+      status: comparison > 0 ? 'available' : 'current',
+      latestVersion: latest.join('.'),
+      url
+    };
+  });
+  ipcMain.handle('application:menu', (_, args = {}) => {
+    const win = getWindow();
+    if (!win || win.isDestroyed() || !['application', 'edit'].includes(args.name)) return;
+    popup?.closePopup(win);
+    const items =
+      args.name === 'application'
+        ? [
+            { label: '关于 ACG-album', click: () => emit('about') },
+            { label: '检查更新…', click: () => emit('updates') },
+            { type: 'separator' },
+            { label: '退出', role: 'quit', accelerator: 'Alt+F4' }
+          ]
+        : [
+            { label: '撤销', role: 'undo', accelerator: 'CommandOrControl+Z' },
+            { label: '重做', role: 'redo', accelerator: 'CommandOrControl+Y' },
+            { type: 'separator' },
+            { label: '剪切', role: 'cut', accelerator: 'CommandOrControl+X' },
+            {
+              label: '复制',
+              accelerator: 'CommandOrControl+C',
+              enabled: args.copyEnabled !== false,
+              click: () => (args.copyImage ? emit('copy') : win.webContents.copy())
+            },
+            { label: '粘贴', role: 'paste', accelerator: 'CommandOrControl+V' },
+            { type: 'separator' },
+            { label: '全选', role: 'selectAll', accelerator: 'CommandOrControl+A' }
+          ];
+    const menu = Menu.buildFromTemplate(items),
+      bounds = win.getContentBounds();
+    popup = menu;
+    const coordinate = (value, limit) =>
+      Math.max(0, Math.min(limit, Math.round(Number(value) || 0)));
+    return new Promise((resolve) =>
+      menu.popup({
+        window: win,
+        x: coordinate(args.x, bounds.width),
+        y: coordinate(args.y, bounds.height),
+        callback: () => {
+          if (popup === menu) popup = null;
+          resolve();
+        }
+      })
+    );
+  });
+}
+
+module.exports = { registerApplicationHandlers, openExternal, releaseVersion };

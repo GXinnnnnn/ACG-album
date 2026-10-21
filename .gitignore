@@ -1,0 +1,68 @@
+# Dependencies and distributable output
+node_modules/
+/release/
+/dist/
+/build/
+/coverage/
+/test-results/
+/playwright-report/
+/artifacts/
+/.review-data/
+/开发说明.md
+
+# Binary downloads belong to GitHub Releases, not source history
+*.exe
+*.msi
+*.zip
+*.7z
+*.dmg
+*.AppImage
+
+# Imported original collections (never commit or reorganize)
+/ACG图片/
+/游戏图片/
+/新建文件夹/
+
+# Local application / test profiles and caches
+/.profiles/
+/.tmp/
+/tmp/
+/temp/
+**/user-data/
+**/userData/
+**/test-profile*/
+**/temp-profile*/
+**/.cache/
+**/Crashpad/
+**/GPUCache/
+**/Code Cache/
+
+# Private databases, credentials, diagnostics
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+bangumi-token*
+*tokens*.json
+*.token
+*.enc
+.env
+.env.*
+!.env.example
+
+# Editor / OS / temporary files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.swp
+__pycache__/
+*.py[cod]
