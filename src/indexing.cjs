@@ -40,9 +40,11 @@ function createIndexing(db, maintenance = null) {
   const enqueue = db.prepare('INSERT OR IGNORE INTO scan_prune VALUES(?)');
   // Keep the bounded frontier outermost; a regular JOIN can scan all nodes
   // again for every removal batch as this temporary queue drains. A bounded
-  // 512-row write batch amortizes durable commits and yields after each page.
+  // 128-row write batch matches the direct-child page size. Descendant queues
+  // can hold an entire removed subtree; larger batches block reads while FTS
+  // and the missing-keyed browse indexes are updated and durably committed.
   const pending = db.prepare(
-    'SELECT p.id,n.rowid FROM scan_prune p CROSS JOIN nodes n ON n.id=p.id LIMIT 512'
+    'SELECT p.id,n.rowid FROM scan_prune p CROSS JOIN nodes n ON n.id=p.id LIMIT 128'
   );
   const children = db.prepare(
     'SELECT id FROM nodes WHERE parent=? AND missing=0 AND id>? ORDER BY id LIMIT 128'
