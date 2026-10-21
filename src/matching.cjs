@@ -236,7 +236,8 @@ function rankSubjects(
 
 // Import has its own admission threshold and tie policy. Reuse the same identity
 // evidence as normal matching, but decide over every admitted subject before the
-// ten-row presentation limit. An exact title never competes with fuzzy titles.
+// ten-row presentation limit. Complete recall compares exact and nearby fuzzy
+// titles together; incomplete recall admits only verified exact titles.
 function rankImportSubjects(
   terms,
   subjects,
@@ -278,20 +279,18 @@ function rankImportSubjects(
   const admitted = ranked.filter(
     (item) => item.match > IMPORT_MIN_CONFIDENCE && (!titleGroups.length || item.agreement > 0)
   );
-  const exact = admitted.filter((item) => item.match === 1);
-  const highest = admitted.reduce((best, item) => Math.max(best, item.match), 0);
-  const close = exact.length
-    ? exact
-    : admitted.filter((item) => highest - item.match <= 0.03 + Number.EPSILON * 4);
+  // Restrict bounded recall before popularity is considered: an exact match
+  // must never allow a nearby fuzzy candidate to bypass complete recall.
+  const eligible = complete ? admitted : admitted.filter((item) => item.match === 1);
+  const highest = eligible.reduce((best, item) => Math.max(best, item.match), 0);
+  const close = eligible.filter((item) => highest - item.match <= 0.03 + Number.EPSILON * 4);
   const maxTotal = close.reduce((best, item) => Math.max(best, item.total), 0);
   const popular = maxTotal > 0 ? close.filter((item) => item.total >= maxTotal * 0.9) : close;
   popular.sort(
     (a, b) =>
       a.date - b.date || b.total - a.total || b.match - a.match || a.subject.id - b.subject.id
   );
-  // As in the ordinary matcher, a verified exact name can be selected from
-  // bounded search results. Fuzzy imports still need complete recall.
-  const chosen = complete || exact.length ? popular[0] : null;
+  const chosen = popular[0] || null;
   // Keep the selected item visible even when chronology promoted an item that
   // appeared below the first ten rows in the evidence ordering.
   const visible = chosen
@@ -311,7 +310,7 @@ function rankImportSubjects(
         ? 'incomplete-recall'
         : !chosen
           ? 'no-eligible-candidate'
-          : exact.length
+          : chosen.match === 1
             ? 'exact-popularity-date'
             : 'similarity-popularity-date'
   };

@@ -1,6 +1,6 @@
 {
   "name": "acg-album",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Card-based local folder browser for ACG collections with Bangumi matching",
   "repository": {

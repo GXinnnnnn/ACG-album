@@ -350,6 +350,9 @@ test('auto local identity is durable before detail, then enriches by ID without 
   const local = await f.call('get', { id: f.id });
   assert.equal(local.subject_id, 1);
   assert.equal(local.match_confidence, 1);
+  assert.equal(local.confirmed, 1);
+  assert.equal(local.match_review, 0);
+  assert.ok(!(await f.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   assert.equal(local.metadata.details_source, 'local-index');
   assert.equal(local.metadata.resources_complete, false);
   assert.equal(local.metadata.cached_at, 0);
@@ -372,6 +375,9 @@ test('auto local identity is durable before detail, then enriches by ID without 
   assert.equal(enriched.metadata.resources_complete, true);
   assert.equal(enriched.cover, 'subject:1');
   assert.equal(enriched.cover_source, 'bangumi');
+  assert.equal(enriched.confirmed, 1);
+  assert.equal(enriched.match_review, 0);
+  assert.ok(!(await f.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   assert.ok(fs.existsSync(path.join(f.dataDir, 'covers', '1.webp')));
   assert.equal((await f.call('syncStatus')).completed, 1);
   assert.equal((await f.call('syncStatus')).pending, 0);
@@ -475,9 +481,14 @@ test('switching subjects with no new cover restores local fallback and retains e
   assert.equal(node.subject_id, 2);
   assert.equal(node.cover, f.imageId);
   assert.equal(node.cover_source, 'fallback');
+  assert.equal(node.confirmed, 1);
+  assert.equal(node.match_confidence, null);
+  assert.equal(node.match_review, 0);
   f.sql((db) =>
     db
-      .prepare("UPDATE nodes SET cover=?,cover_source='manual',manual_cover=1 WHERE id=?")
+      .prepare(
+        "UPDATE nodes SET cover=?,cover_source='manual',manual_cover=1,confirmed=0 WHERE id=?"
+      )
       .run(f.imageId, f.id)
   );
   node = await f.call('bind', { id: f.id, url: '1' });
@@ -485,6 +496,9 @@ test('switching subjects with no new cover restores local fallback and retains e
   assert.equal(node.cover, f.imageId);
   assert.equal(node.cover_source, 'manual');
   assert.equal(node.manual_cover, 1);
+  assert.equal(node.confirmed, 0);
+  assert.equal(node.match_review, 0);
+  assert.ok(!(await f.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
 });
 
 test('manual bind saves offline first, enriches best effort online and stays immune to auto rebinding', async (t) => {

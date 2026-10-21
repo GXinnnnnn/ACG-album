@@ -135,22 +135,86 @@
   line-height: 1.8;
   color: var(--muted);
 }
+.modal.display-dialog {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.display-dialog .density-popup {
+  margin-top: 0;
+}
 .page-review-setting {
+  display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   flex-wrap: wrap;
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--accent-soft);
 }
 .page-review-setting > div {
   flex: 1 1 240px;
   min-width: 0;
 }
+.page-review-setting strong {
+  font-size: 14px;
+  color: var(--text);
+}
+.page-review-setting p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
 .page-review-setting button {
-  min-height: 40px;
+  min-height: 44px;
   flex-shrink: 0;
+  color: var(--accent);
+  background: var(--surface-solid);
+}
+.page-review-setting button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.page-review-setting button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 .page-review-status {
-  min-height: 1.8em;
-  margin-bottom: 0;
+  flex-basis: 100%;
+  min-height: 0;
+}
+.page-review-status:empty {
+  display: none;
+}
+.page-review-setting .page-review-status[data-state='error'] {
+  color: var(--text);
+  font-weight: 600;
+}
+@media (max-width: 600px) {
+  .modal.display-dialog {
+    padding: 20px;
+  }
+  .display-dialog .density-popup .density-choice {
+    min-width: 0;
+    padding: 12px 6px;
+    gap: 8px;
+    min-height: 90px;
+  }
+  .display-dialog .density-icon {
+    gap: 2px;
+  }
+  .display-dialog .density-icon i {
+    max-width: 16px;
+  }
+  .page-review-setting > div {
+    flex-basis: 100%;
+  }
+  .page-review-setting button {
+    width: 100%;
+    justify-content: center;
+  }
 }
 @media (max-width: 1250px) {
   .toolbar-right {

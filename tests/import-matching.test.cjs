@@ -131,15 +131,15 @@ test('same-date and same-count ties use score before lowest id', () => {
   assert.equal(select(query, [duplicateScore, stronger]).selected.id, 2);
 });
 
-test('available exact matches have their own bucket ahead of extremely popular older fuzzy matches', () => {
+test('complete recall compares exact and nearby fuzzy matches by popularity and date', () => {
   const query = queryOf(51);
   const exact = subject(1, query, { collection: count(1), date: '2020-01-01' });
   const fuzzy = subject(2, fuzzyOf(51, 50), { collection: count(1000000), date: '1980-01-01' });
   assert.equal(similarity(query, fuzzy.name), 0.98);
   const result = select(query, [fuzzy, exact]);
-  assert.equal(result.selected.id, 1);
-  assert.equal(result.selectedMatch, 1);
-  assert.equal(result.selectionReason, 'exact-popularity-date');
+  assert.equal(result.selected.id, 2);
+  assert.equal(result.selectedMatch, 0.98);
+  assert.equal(result.selectionReason, 'similarity-popularity-date');
 });
 
 test('exact ties still follow near-maximum popularity and oldest release date', () => {

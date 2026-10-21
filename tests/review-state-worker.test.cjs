@@ -109,12 +109,21 @@ async function fixture(t, seed) {
     assert.ok(path.resolve(tmp).startsWith(path.join(os.tmpdir(), 'acg-review-worker-')));
     await fs.rm(tmp, { recursive: true, force: true });
   });
-  return c;
+  return {
+    call: (...args) => c.call(...args),
+    get events() {
+      return c.events;
+    },
+    async restart() {
+      await c.close();
+      c = await client(tmp);
+    }
+  };
 }
 
 // Real worker startup executes the compatibility migration and reads persisted
 // rows; this is deliberately not a unit test of a copied UI predicate.
-test('persisted exact automatic subject and character assignments repair without clearing other uncertainty', async (t) => {
+test('startup confirms every matched identity and clears obsolete folder review without overriding manual covers', async (t) => {
   const c = await fixture(t, ({ add }) => {
     add('exact-subject', {
       subject_id: 42,
@@ -129,32 +138,77 @@ test('persisted exact automatic subject and character assignments repair without
       match_review: 1,
       cover_source: 'bangumi-character'
     });
-    add('nonexact', { subject_id: 44, match_confidence: 0.999999, match_review: 1 });
-    add('manual-cover', { subject_id: 42, match_confidence: 1, manual_cover: 1 });
-    add('manual-subject', { subject_id: 42, match_confidence: 1, manual_subject: 1 });
-    add('manual-character', { character_id: 7, match_confidence: 1, manual_character: 1 });
-    add('unknown-character', { character_id: 8, cover_source: 'bangumi-character' });
+    add('nonexact', { subject_id: 44, match_confidence: 40 / 47, match_review: 1 });
+    add('manual-subject', { subject_id: 42, manual_subject: 1 });
+    add('manual-character', { character_id: 7, manual_character: 1 });
+    add('unknown-character', { character_id: 8, cover_source: 'fallback' });
+    add('unknown-subject', { subject_id: 45, cover_source: 'bangumi' });
+    add('manual-cover', {
+      subject_id: 42,
+      manual_cover: 1,
+      cover_source: 'manual',
+      match_review: 1
+    });
+    add('manual-confirmed', {
+      manual_cover: 1,
+      cover_source: 'manual',
+      confirmed: 1,
+      match_review: 1
+    });
     add('unassociated', { match_confidence: 1, match_review: 1 });
+    add('zero-subject', { subject_id: 0, match_review: 1 });
+    add('negative-character', { character_id: -1, match_review: 1 });
+    add('unmatched-online', { cover_source: 'bangumi', match_review: 1 });
+    add('unmatched-portrait', { cover_source: 'bangumi-character', match_review: 1 });
+    add('unmatched-icon', { cover_source: 'local-icon', match_review: 1 });
+    add('unmatched-empty', { cover: null, cover_source: null, match_review: 1 });
+    add('manual-unmatched', { manual_cover: 1, cover_source: 'manual', match_review: 1 });
+    add('confirmed-fallback', { confirmed: 1, match_review: 1 });
+    add('image', { kind: 'image', match_review: 1 });
   });
-  for (const id of ['exact-subject', 'exact-local', 'exact-character']) {
-    const n = await c.call('get', { id });
-    assert.equal(n.confirmed, 1, id);
-    assert.equal(n.match_review, 0, id);
+  async function check() {
+    for (const id of [
+      'exact-subject',
+      'exact-local',
+      'exact-character',
+      'nonexact',
+      'manual-subject',
+      'manual-character',
+      'unknown-character',
+      'unknown-subject',
+      'manual-confirmed',
+      'confirmed-fallback'
+    ]) {
+      const n = await c.call('get', { id });
+      assert.equal(n.confirmed, 1, id);
+      assert.equal(n.match_review, 0, id);
+    }
+    for (const id of [
+      'manual-cover',
+      'unassociated',
+      'zero-subject',
+      'negative-character',
+      'unmatched-online',
+      'unmatched-portrait',
+      'unmatched-icon',
+      'unmatched-empty',
+      'manual-unmatched'
+    ]) {
+      const n = await c.call('get', { id });
+      assert.equal(n.confirmed, 0, id);
+      assert.equal(n.match_review, 0, id);
+    }
+    assert.equal((await c.call('get', { id: 'nonexact' })).match_confidence, 40 / 47);
+    assert.equal((await c.call('get', { id: 'unknown-character' })).match_confidence, null);
+    assert.deepEqual((await c.call('list', { filter: 'pending' })).items.map((n) => n.id).sort(), [
+      'negative-character',
+      'unassociated',
+      'zero-subject'
+    ]);
   }
-  const pending = (await c.call('list', { filter: 'pending' })).items.map((n) => n.id);
-  for (const id of [
-    'nonexact',
-    'manual-cover',
-    'manual-subject',
-    'manual-character',
-    'unknown-character',
-    'unassociated'
-  ]) {
-    assert.equal((await c.call('get', { id })).confirmed, 0, id);
-    assert.ok(pending.includes(id), id);
-  }
-  assert.equal((await c.call('get', { id: 'nonexact' })).match_review, 1);
-  assert.ok(!pending.some((id) => id.startsWith('exact-')));
+  await check();
+  await c.restart();
+  await check();
 });
 
 test('older nodes schema missing review columns opens with unknown evidence preserved', async (t) => {
@@ -167,8 +221,12 @@ test('older nodes schema missing review columns opens with unknown evidence pres
   const n = await c.call('get', { id: 'legacy' });
   assert.equal(n.match_confidence, null);
   assert.equal(n.match_review, 0);
-  assert.equal(n.confirmed, 0);
-  assert.equal((await c.call('list', { filter: 'pending' })).total, 1);
+  assert.equal(n.confirmed, 1);
+  assert.equal((await c.call('list', { filter: 'pending' })).total, 0);
+  await c.restart();
+  const restarted = await c.call('get', { id: 'legacy' });
+  assert.equal(restarted.match_confidence, null);
+  assert.equal(restarted.confirmed, 1);
 });
 
 test('bulk confirmation uses full current parent query beyond loaded pages without confirming descendants or other roots', async (t) => {
@@ -176,7 +234,11 @@ test('bulk confirmation uses full current parent query beyond loaded pages witho
     add('root-a', { parent: null, depth: 0 });
     add('root-b', { root: 'root-b', parent: null, depth: 0 });
     for (let i = 0; i < 620; i++)
-      add('album-' + String(i).padStart(4, '0'), { match_review: i % 2 });
+      add('album-' + String(i).padStart(4, '0'), {
+        match_review: i % 2,
+        manual_cover: i % 4 === 1 ? 1 : 0,
+        cover_source: ['fallback', 'manual', 'local-icon', null][i % 4]
+      });
     add('nested', { parent: 'album-0000', depth: 2, match_review: 1 });
     add('unrelated', { root: 'root-b', parent: 'root-b', match_review: 1 });
     add('missing', { missing: 1, match_review: 1 });
@@ -184,7 +246,20 @@ test('bulk confirmation uses full current parent query beyond loaded pages witho
   });
   assert.equal((await c.call('list', { parent: 'root-a', limit: 5 })).items.length, 5);
   assert.deepEqual(
-    await c.call('confirmReview', { query: { parent: 'root-a', offset: 500, limit: 5 } }),
+    await c.call('confirmReview', {
+      query: {
+        parent: 'root-a',
+        search: 'no matching cards',
+        favorites: true,
+        filter: 'images',
+        timeline: true,
+        month: '2026-10',
+        place: 'somewhere',
+        scope: 'root-b',
+        offset: 500,
+        limit: 5
+      }
+    }),
     { updated: 620 }
   );
   for (const id of ['album-0000', 'album-0619']) {
@@ -196,6 +271,14 @@ test('bulk confirmation uses full current parent query beyond loaded pages witho
     assert.equal((await c.call('get', { id })).confirmed, 0, id);
   assert.deepEqual(await c.call('confirmReview', { query: { parent: 'root-a' } }), { updated: 0 });
   assert.equal(c.events.filter((e) => e.event === 'changed' && e.data.review).length, 1);
+  await c.restart();
+  for (let i = 0; i < 620; i++) {
+    const n = await c.call('get', { id: 'album-' + String(i).padStart(4, '0') });
+    assert.equal(n.confirmed, 1, n.id);
+    assert.equal(n.match_review, 0, n.id);
+  }
+  for (const id of ['root-a', 'root-b', 'nested', 'unrelated', 'missing', 'image'])
+    assert.equal((await c.call('get', { id })).confirmed, 0, id);
 });
 
 test('bulk query semantics match home, favorites, scoped search, pending, media, and empty results', async (t) => {
@@ -207,8 +290,9 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
     [{ search: 'Needle', filter: 'pending', scope: 'root-b' }, ['other-favorite']],
     [{ filter: 'pending' }, ['root-a', 'root-b', 'favorite', 'nested', 'other-favorite']],
     [{ parent: 'root-a', filter: 'folders' }, ['favorite']],
-    [{ parent: 'root-a', filter: 'images' }, []],
-    [{ parent: 'root-a', timeline: true, month: '2026-10', place: 'somewhere' }, []],
+    [{ parent: 'root-a', filter: 'images' }, ['favorite']],
+    [{ parent: 'root-a', timeline: true, month: '2026-10', place: 'somewhere' }, ['favorite']],
+    [{ parent: 'root-a', search: 'no match', favorites: true, filter: 'pending' }, ['favorite']],
     [{ search: "%' OR 1=1 --" }, []],
     [{ parent: 'absent' }, []]
   ];
@@ -229,18 +313,16 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
         add('missing', { missing: 1, favorite: 1 });
         add('resolved', { confirmed: 1, cover_source: 'bangumi' });
       });
-      const before = await c.call('list', query);
-      const visiblePending = before.items
-        .filter(
-          (n) =>
-            n.kind === 'folder' &&
-            (n.match_review ||
-              (!n.confirmed &&
-                ['fallback', 'bangumi', 'bangumi-character'].includes(n.cover_source)))
-        )
-        .map((n) => n.id)
-        .sort();
-      assert.deepEqual(visiblePending, [...expected].sort());
+      if (!query.parent) {
+        const before = await c.call('list', query);
+        assert.deepEqual(
+          before.items
+            .filter((n) => n.kind === 'folder' && !n.confirmed)
+            .map((n) => n.id)
+            .sort(),
+          [...expected].sort()
+        );
+      }
       assert.deepEqual(await c.call('confirmReview', { query }), { updated: expected.length });
       for (const id of ['root-a', 'root-b', 'favorite', 'nested', 'other-favorite']) {
         const n = await c.call('get', { id });
@@ -252,7 +334,7 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
 
 test('invalid patch cannot partially confirm and failed bulk update rolls back every confirmation', async (t) => {
   const c = await fixture(t, ({ add, db }) => {
-    add('a', { match_review: 1 });
+    add('a', { match_review: 1, manual_cover: 1, cover_source: 'manual' });
     add('z', { match_review: 1 });
     db.exec(`CREATE TRIGGER reject_review BEFORE UPDATE OF confirmed ON nodes
       WHEN NEW.id='z' AND NEW.confirmed=1 BEGIN SELECT RAISE(ABORT,'test atomic review'); END`);
@@ -270,13 +352,15 @@ test('invalid patch cannot partially confirm and failed bulk update rolls back e
   ])
     await assert.rejects(c.call('confirmReview', args), /浏览条件/);
   await assert.rejects(
-    c.call('confirmReview', { query: { parent: 'root-a' } }),
+    c.call('confirmReview', {
+      query: { parent: 'root-a', search: 'a', filter: 'images', favorites: true }
+    }),
     /test atomic review/
   );
   for (const id of ['a', 'z']) {
     const n = await c.call('get', { id });
     assert.equal(n.confirmed, 0);
-    assert.equal(n.match_review, 1);
+    assert.equal(n.match_review, 0);
   }
   assert.equal(c.events.filter((e) => e.event === 'changed').length, 0);
   assert.deepEqual(await c.call('confirmReview', { query: { search: 'a' } }), { updated: 1 });
@@ -370,7 +454,7 @@ test('invalid preview payloads and nonoverview queries reject before any root or
   for (const id of ['root-a', 'child']) {
     const n = await c.call('get', { id });
     assert.equal(n.confirmed, 0);
-    assert.equal(n.match_review, 1);
+    assert.equal(n.match_review, 0);
   }
   assert.equal(c.events.filter((e) => e.event === 'changed').length, 0);
   assert.deepEqual(await c.call('confirmReview', { query: { parent: 'absent' }, previewIds: [] }), {
@@ -401,12 +485,12 @@ test('overview roots and rendered previews roll back together when any preview c
   for (const id of ['root-a', 'a', 'z', 'unshown']) {
     const n = await c.call('get', { id });
     assert.equal(n.confirmed, 0);
-    assert.equal(n.match_review, 1);
+    assert.equal(n.match_review, 0);
   }
   assert.equal(c.events.filter((e) => e.event === 'changed').length, 0);
   assert.deepEqual(await c.call('confirmReview', { query: { parent: null }, previewIds: ['a'] }), {
     updated: 2
   });
-  assert.equal((await c.call('get', { id: 'z' })).match_review, 1);
-  assert.equal((await c.call('get', { id: 'unshown' })).match_review, 1);
+  assert.equal((await c.call('get', { id: 'z' })).confirmed, 0);
+  assert.equal((await c.call('get', { id: 'unshown' })).confirmed, 0);
 });

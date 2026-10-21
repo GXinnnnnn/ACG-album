@@ -315,12 +315,27 @@ test('same-name characters stay unbound and manual ID reader selects role even w
   assert.equal(bound.manual_character, 1);
   assert.equal(bound.match_confidence, null);
   assert.equal(bound.match_review, 0);
+  assert.equal(bound.confirmed, 1);
+  assert.equal(bound.cover_source, 'fallback');
+  assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   assert.equal(bound.subject_id, null);
   assert.equal(bound.metadata.name, '綾波レイ');
   await c.call('scan', { path: f.source });
   await c.idle();
   assert.equal((await c.call('get', { id: f.id })).character_id, 9);
   assert.equal(c.requests.length, 0);
+  await c.close();
+  const restarted = await client(t, f);
+  const restored = await restarted.call('get', { id: f.id });
+  assert.equal(restored.character_id, 9);
+  assert.equal(restored.manual_character, 1);
+  assert.equal(restored.match_confidence, null);
+  assert.equal(restored.confirmed, 1);
+  assert.equal(restored.match_review, 0);
+  assert.equal(restored.cover_source, 'fallback');
+  assert.ok(
+    !(await restarted.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id)
+  );
 });
 
 test('Bangumi role portrait uses separate files, shared token API and credential-free image requests', async (t) => {
@@ -379,6 +394,18 @@ test('Bangumi role portrait uses separate files, shared token API and credential
   assert.equal(n.cover, f.second);
   assert.equal(n.crop_x, 32);
   assert.equal(n.crop_zoom, 1.5);
+  assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
+  await c.close();
+  const restarted = await client(t, f);
+  const restored = await restarted.call('get', { id: f.id });
+  assert.equal(restored.confirmed, 0);
+  assert.equal(restored.match_review, 0);
+  assert.equal(restored.manual_cover, 1);
+  assert.equal(restored.cover, f.second);
+  assert.deepEqual([restored.crop_x, restored.crop_zoom], [32, 1.5]);
+  assert.ok(
+    !(await restarted.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id)
+  );
 });
 
 test('local-first still downloads chosen online metadata without replacing local cover', async (t) => {
