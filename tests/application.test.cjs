@@ -115,12 +115,27 @@ test('repository accepts one public owner/repo and rejects traversal, hosts and 
   ])
     assert.equal(validRepository(repo), false, String(repo));
 });
-test('blank update settings never access network; app information carries actual credits', async () => {
-  const h = harness();
-  assert.equal((await h.check()).status, 'unconfigured');
+test('blank update settings use the official release API and app info carries download metadata', async () => {
+  const h = harness({
+    fetch: async (url) => {
+      assert.equal(url, 'https://api.github.com/repos/GXinnnnnn/ACG-album/releases/latest');
+      return response(200, { tag_name: 'v0.3.0' });
+    }
+  });
+  assert.equal((await h.check()).status, 'current');
   const info = await h.handlers.get('library:appInfo')();
   assert.equal(info.version, '0.3.0');
-  assert.equal(info.repository, '');
+  assert.equal(info.repository, 'GXinnnnnn/ACG-album');
+  assert.equal(info.officialRepository, 'GXinnnnnn/ACG-album');
+  assert.equal(info.releaseUrl, 'https://github.com/GXinnnnnn/ACG-album/releases/tag/v0.3.0');
+  for (const [key, label] of [
+    ['lite', 'Lite'],
+    ['full', 'Full']
+  ])
+    assert.equal(
+      info.downloads[key],
+      `https://github.com/GXinnnnnn/ACG-album/releases/download/v0.3.0/ACG-album-Setup-0.3.0-${label}.exe`
+    );
   for (const group of ['runtime', 'development', 'assets', 'services'])
     assert.ok(Array.isArray(info.credits[group]) && info.credits[group].length);
 });
@@ -194,6 +209,82 @@ test('missing release is readable and connection/rate errors propagate', async (
     /无法连接/
   );
 });
+test('rate-limited API falls back to a public HEAD redirect for stable versions', async () => {
+  for (const status of [403, 429]) {
+    for (const [tag, expected] of [
+      ['v0.3.1', 'available'],
+      ['v0.3.0', 'current'],
+      ['v0.2.0', 'current']
+    ]) {
+      const requests = [];
+      const h = harness({
+        repository: 'fixture-owner/fixture-repo',
+        fetch: async (url, options) => {
+          requests.push(url);
+          if (requests.length === 1) return response(status);
+          assert.equal(url, 'https://github.com/fixture-owner/fixture-repo/releases/latest');
+          assert.equal(options.method, 'HEAD');
+          assert.equal(options.redirect, 'follow');
+          assert.ok(options.signal);
+          return {
+            ok: true,
+            status: 200,
+            url: 'https://github.com/fixture-owner/fixture-repo/releases/tag/' + tag
+          };
+        }
+      });
+      const result = await h.check();
+      assert.equal(result.status, expected);
+      assert.equal(result.latestVersion, tag.slice(1));
+      assert.equal(requests.length, 2);
+    }
+  }
+});
+
+test('failed or unsafe public fallback never reports current or trusts foreign URLs', async () => {
+  for (const url of [
+    'https://evil.invalid/a/b/releases/tag/v9.0.0',
+    'http://github.com/a/b/releases/tag/v9.0.0',
+    'https://user@github.com/a/b/releases/tag/v9.0.0',
+    'https://github.com:444/a/b/releases/tag/v9.0.0',
+    'https://github.com/other/b/releases/tag/v9.0.0',
+    'https://github.com/a/b/releases/latest',
+    'https://github.com/a/b/releases/tag/v9.0.0-beta.1',
+    'https://github.com/a/b/releases/tag/v9.0.0/extra',
+    'https://github.com/a/b/releases/tag/v9.0.0?fake=1'
+  ]) {
+    await assert.rejects(
+      harness({
+        repository: 'a/b',
+        fetch: async (request) =>
+          request.startsWith('https://api.') ? response(429) : { ok: true, status: 200, url }
+      }).check(),
+      /频率受限/
+    );
+  }
+  await assert.rejects(
+    harness({
+      fetch: async (url) => {
+        if (url.startsWith('https://api.')) return response(403);
+        throw new Error('offline');
+      }
+    }).check(),
+    /频率受限/
+  );
+});
+
+test('custom repository controls updates while downloads always use official versioned assets', async () => {
+  const h = harness({ repository: 'a/custom' });
+  const info = await h.handlers.get('library:appInfo')();
+  assert.equal(info.repository, 'a/custom');
+  assert.equal(info.officialRepository, 'GXinnnnnn/ACG-album');
+  assert.match(
+    info.downloads.full,
+    /^https:\/\/github.com\/GXinnnnnn\/ACG-album\/releases\/download\/v0.3.0\//
+  );
+  await assert.rejects(harness({ repository: 'https://evil.invalid/a/b' }).check(), /配置无效/);
+});
+
 test('version parsing accepts stable tags and rejects partial, prerelease and unsafe integers', () => {
   const { releaseVersion } = harness();
   for (const tag of ['v0.3.0', 'release/0.3.0', 'release-0.3.0', '0.3.0+build.7'])

@@ -102,7 +102,9 @@ Lite 与 Full 均收录 **695,909 部作品、103,653 个人物 / 团体、223,9
 - **凭证在本机管理**：Windows 上的 Bangumi Token 使用 Electron `safeStorage` 加密保存，变更账号后隔离查询缓存。请勿将个人资料目录、Token 或图库提交到仓库。
 - **副本导出**：编辑导出为新文件，转为 SDR sRGB，并移除 EXIF / GPS；不会修改原件。
 
-检查更新由用户手动触发，可在应用内填写 GitHub `owner/repository` 或仓库地址查询稳定 Release。应用本身不自动下载或安装更新。
+检查更新由用户手动触发，默认连接官方仓库 [GXinnnnnn/ACG-album](https://github.com/GXinnnnnn/ACG-album) 的正式 Releases。新安装与旧版空配置均自动使用该仓库，已保存的自定义更新仓库会保留；也可填写 GitHub `owner/repository` 或仓库地址修改来源。GitHub API 限流时会尝试公开的最新正式发布入口，连接失败会明确提示。应用本身不自动下载或安装更新。
+
+「本地资料检索」中的「资料库补全 / 下载」提供官方仓库内与当前软件版本对应的 Lite、Full 安装包及发布说明。Standard 用户可选择其中一版，退出程序后覆盖安装以补全随附索引；Lite 用户也可切换 Full 获取更多摘要等资料，个人相册与整理结果会保留。两种索引的名称检索覆盖相同。
 
 ## 开发与构建
 

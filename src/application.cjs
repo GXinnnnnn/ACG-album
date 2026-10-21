@@ -1,7 +1,12 @@
 'use strict';
 
 const { app, ipcMain, Menu, net, shell } = require('electron');
-const { validRepository } = require('./repository.cjs');
+const {
+  validRepository,
+  OFFICIAL_REPOSITORY,
+  effectiveRepository,
+  officialDownloads
+} = require('./repository.cjs');
 
 const EXTERNAL_HOSTS = new Set([
   'bgm.tv',
@@ -50,20 +55,22 @@ function registerApplicationHandlers({ call, getWindow }) {
     if (win && !win.isDestroyed())
       win.webContents.send('library:event', { type: 'application', data: { action } });
   };
-  const repository = async () => String((await call('init')).settings.githubRepository || '');
+  const repository = async () =>
+    effectiveRepository((await call('init')).settings?.githubRepository);
   ipcMain.handle('library:quit', () => app.quit());
   ipcMain.handle('library:appInfo', async () => ({
     name: app.getName(),
     version: app.getVersion(),
     author: '友利奈绪的胖次 (GXinnnnnn)',
     repository: await repository(),
+    officialRepository: OFFICIAL_REPOSITORY,
+    ...officialDownloads(app.getVersion()),
     credits: require('./assets/credits.json')
   }));
   ipcMain.handle('library:checkUpdate', async () => {
     const repo = await repository(),
       currentVersion = app.getVersion();
     const base = { repository: repo, currentVersion };
-    if (!repo) return { ...base, status: 'unconfigured' };
     if (!validRepository(repo)) throw new Error('GitHub 仓库配置无效。');
     const releasesUrl = `https://github.com/${repo}/releases`;
     let response;
@@ -84,7 +91,41 @@ function registerApplicationHandlers({ call, getWindow }) {
       );
     }
     if (response.status === 404) return { ...base, status: 'unknown', url: releasesUrl };
-    if ([403, 429].includes(response.status)) throw new Error('GitHub 请求频率受限，请稍后再试。');
+    if ([403, 429].includes(response.status)) {
+      // Public release redirects remain usable when the unauthenticated API is
+      // rate limited. Follow redirects for Electron and trust only this repo's
+      // final stable release tag, never a login page or an unrelated location.
+      try {
+        const page = await net.fetch(`${releasesUrl}/latest`, {
+          method: 'HEAD',
+          redirect: 'follow',
+          signal: AbortSignal.timeout(10000)
+        });
+        const url = new URL(page.url);
+        const prefix = `/${repo}/releases/tag/`;
+        if (
+          !page.ok ||
+          url.protocol !== 'https:' ||
+          url.username ||
+          url.password ||
+          url.port ||
+          url.search ||
+          url.hash ||
+          url.hostname !== 'github.com' ||
+          !url.pathname.toLowerCase().startsWith(prefix.toLowerCase())
+        )
+          throw new Error();
+        const tag = decodeURIComponent(url.pathname.slice(prefix.length));
+        if (!releaseVersion(tag)) throw new Error();
+        response = {
+          ok: true,
+          status: 200,
+          json: async () => ({ tag_name: tag, html_url: url.href })
+        };
+      } catch {
+        throw new Error('GitHub 请求频率受限，请稍后再试。');
+      }
+    }
     if (!response.ok) throw new Error(`GitHub 更新检查失败（${response.status}）。`);
     let release;
     try {

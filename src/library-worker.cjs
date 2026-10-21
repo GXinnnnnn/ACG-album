@@ -20,6 +20,7 @@ const {
   thumbnailKey
 } = require('./model.cjs');
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
+const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
 const { matchedIdentitySql, matchedAutomaticSql, pendingReviewSql } = require('./review-state.cjs');
@@ -138,7 +139,7 @@ const defaults = {
   avatar: '',
   sidebarMode: 'auto',
   details: true,
-  githubRepository: ''
+  githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
   const row = one('SELECT value FROM settings WHERE key=?', key);
@@ -2438,7 +2439,8 @@ const methods = {
         q('SELECT * FROM settings')
           .filter((x) => x.key !== 'token')
           .map((s) => [s.key, JSON.parse(s.value)])
-      )
+      ),
+      githubRepository: effectiveRepository(setting('githubRepository'))
     },
     progress,
     online: onlineStatus({ active: onlineRunning }),
@@ -2569,12 +2571,10 @@ const methods = {
       throw new Error('头像格式无效。');
     if (key === 'sidebarMode' && !['auto', 'expanded', 'compact'].includes(value))
       throw new Error('侧栏模式无效。');
-    if (
-      key === 'githubRepository' &&
-      value !== '' &&
-      !require('./repository.cjs').validRepository(value)
-    )
-      throw new Error('GitHub 仓库应填写「所有者/仓库名」。');
+    if (key === 'githubRepository') {
+      value = effectiveRepository(value);
+      if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');
+    }
     const result = setSetting(key, value);
     if (key === 'watchChanges') reconcileWatches();
     return result;
