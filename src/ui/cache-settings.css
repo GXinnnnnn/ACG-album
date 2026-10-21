@@ -1,0 +1,90 @@
+.cache-location {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.cache-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cache-section-heading h3 {
+  margin: 0 0 8px;
+}
+.cache-section-heading .chip {
+  flex-shrink: 0;
+}
+.cache-section-heading p {
+  margin: 0 0 14px;
+}
+.cache-location .cache-path {
+  background: var(--bg);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.cache-location-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cache-location-actions button {
+  min-height: 38px;
+}
+.cache-note,
+.cache-operation-status {
+  color: var(--soft);
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+  overflow-wrap: anywhere;
+}
+.cache-location .cache-note {
+  margin: 12px 0 0;
+}
+.cache-operation-status:empty {
+  display: none;
+}
+.cache-location .cache-operation-status {
+  margin: 10px 0 0;
+  color: var(--accent);
+}
+.cache-advanced {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.cache-advanced summary {
+  cursor: pointer;
+  padding: 8px 0;
+  color: var(--soft);
+}
+.cache-advanced summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.cache-confirm-dialog {
+  width: 480px;
+  max-width: calc(100vw - 32px);
+}
+.cache-confirm-dialog .modal-actions {
+  flex-wrap: wrap;
+}
+@media (max-width: 540px) {
+  .cache-location {
+    padding: 12px;
+  }
+  .cache-section-heading {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .cache-location-actions {
+    align-items: stretch;
+  }
+  .cache-location-actions button {
+    flex: 1 1 auto;
+  }
+}

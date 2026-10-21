@@ -1,6 +1,6 @@
 # 项目结构与职责
 
-ACG-album 0.5.5 是本地优先的 Windows Electron 应用。主进程与 worker 使用 CommonJS，界面使用原生 HTML、CSS、JavaScript。数据库扫描、图像处理与导出在后台工作线程运行；界面通过明确的 IPC 接口访问应用能力。
+ACG-album 0.7.0 是本地优先的 Windows Electron 应用。主进程与 worker 使用 CommonJS，界面使用原生 HTML、CSS、JavaScript。数据库扫描、图像处理与导出在后台工作线程运行；界面通过明确的 IPC 接口访问应用能力。
 
 ## 源码边界
 
@@ -15,9 +15,11 @@ ACG-album 0.5.5 是本地优先的 Windows Electron 应用。主进程与 worker
 | 媒体能力       | `src/media.cjs`                                                                                                   | 图片元数据、视频信息、Sharp 图像处理、编辑副本与导出；EXIF 使用 exifr                                                                                                  |
 | 预加载桥       | `src/preload.cjs`                                                                                                 | 使用 `contextBridge` 暴露明确的 IPC 能力；界面不直接取得 Node.js、文件系统或数据库访问权                                                                               |
 | 共享领域规则   | `src/model.cjs`                                                                                                   | 扩展名、路径 / ID、多语言检索词、作品名称、通用目录名过滤和最新图片选择等可独立测试的规则                                                                              |
-| 导入匹配策略   | `src/matching-policy.cjs`                                                                                         | 校验 `{ onlineMatch, subjectTypes }` 白名单；明确关闭与缺省选项语义不同，供主进程和 worker 共用                                                                        |
+| 导入匹配策略   | `src/matching-policy.cjs`                                                                                         | 校验 `{ onlineMatch, subjectTypes, directoryKind, characterCover }` 白名单；明确关闭与缺省选项语义不同，供主进程和 worker 共用                                         |
 | 官方搜索召回   | `src/bangumi-search.cjs`                                                                                          | 有界相关度 / 热度分页、ID 去重与搜索完整性证据，供 worker 查询缓存复用                                                                                                 |
 | 作品候选选择   | `src/matching.cjs`                                                                                                | 名称可信度、所选类型、收藏热度、可信同系列的较早条目优先及有界查询缓存；不把跨类型同名作品合并成系列                                                                   |
+| 角色资料       | `src/character-matching.cjs`、`src/character-library.cjs`                                                         | 角色唯一精确名称判定、独立 ID 与资料表、首图 / 立绘策略、手动关联和自定义资料                                                                                          |
+| 缓存目录       | `src/cache-directory.cjs`、`src/ui/cache-settings.js`、`cache-settings.css`                                       | 真实路径与占用、目录迁移和回滚、维护锁、清空与重建，以及设置页状态反馈                                                                                                 |
 | 主进程辅助     | `src/icons.cjs`、`src/file-response.cjs`、`src/clipboard.cjs`                                                     | 系统文件夹图标、文件 Range 流与剪贴板位图写入读回确认；保持有限资源与重试边界                                                                                          |
 | 界面入口       | `src/ui/index.html`、`src/ui/app.js`                                                                              | 页面结构、交互编排、硬编码 SVG 图标及组件联动                                                                                                                          |
 | 界面功能模块   | `src/ui/theme.js`、`navigation.js`、`display.js`、`masonry.js`、`media-ui.js`、`editor.js`、`crop.js`、`about.js` | 主题、导航、展示模式、瀑布流、媒体查看、编辑裁剪与关于页；遵循现有模块边界                                                                                             |
@@ -38,11 +40,10 @@ ACG-album 0.5.5 是本地优先的 Windows Electron 应用。主进程与 worker
 | `README.md`                               | 使用、开发与构建入口                                                                            |
 | `LICENSE`                                 | 作者代码的 MIT 许可；第三方软件、个人图库、头像和收款码另受各自权利约束                         |
 | `release/`、`artifacts/`、`.review-data/` | 本地构建、检查产物或测试资料；忽略提交                                                          |
-| `ACG图片/`、`游戏图片/`、`新建文件夹/`    | 本机导入的原始收藏；根级精确忽略，不属于项目资源，不移动、不改名、不上传                        |
 
 ## 运行数据与常用操作
 
-首次使用且未发现旧数据库时，索引数据库、缩略图、日志和加密凭据保存在系统「文档」的 `ACG-album` 目录。`src/profile-path.cjs` 依次检查 `文档/拾光相册/library.sqlite` 与 `文档/玖玖瑠相册/library.sqlite`，存在时直接沿用对应目录；两者均存在时优先使用 `拾光相册`，不会因更名自动搬迁或合并资料库。Electron 用户配置另在系统应用数据目录中优先沿用已有的 `玖玖瑠相册`、`拾光相册` 配置，保留旧会话与设置。
+新资料默认保存在系统「文档」的 `ACG-album` 目录；实际位置由 `src/profile-path.cjs` 解析。缓存设置通过 `cacheInfo` 展示正在使用的真实路径，通过 `openData` 打开资料目录。`src/cache-directory.cjs` 仅管理 `thumbnails`、`covers`、`metadata` 三类缓存；迁移会复制并核验目录、提交数据库路径后再移除旧副本，失败时回滚。更换缓存位置不搬迁资料库、凭据或收藏原件。
 
 开发 / 自动化检查应通过 `ACG_DATA_DIR` 指定独立资料目录；该覆盖同时将 Electron / Chromium 配置放在指定目录的 `chromium-profile/` 下，避免与个人图库、真实 Token 混用。
 
@@ -53,9 +54,9 @@ ACG-album 0.5.5 是本地优先的 Windows Electron 应用。主进程与 worker
 
 ## 导入与联网阶段
 
-`src/ui/app.js` 使用已有 `#modal` 收集导入选项：首次默认不联网；开启后展示动画（2）、漫画 / Bangumi 书籍（1）、游戏（4）、三次元（6）多选按钮，至少选择一种。确认后通过 `api('import', { onlineMatch, subjectTypes })` 请求主进程；主进程校验后才打开原生目录选择器，再将所选路径与明确策略交给 worker。取消选项、取消原生对话框或空选择均不扫描，也不导航。
+`src/ui/app.js` 在导入窗口收集目录类型、联网策略、作品分类和角色封面来源。作品分类支持动画（2）、漫画 / Bangumi 书籍（1）、游戏（4）、三次元（6）；角色目录支持自然顺序的首张本地图片或 Bangumi 角色头像。`api('import', { onlineMatch, subjectTypes, directoryKind, characterCover })` 通过白名单校验后才打开原生目录选择器，再将路径与策略交给 worker。取消任一选择均不扫描，也不导航。
 
-worker 保存根分类的明确联网策略，使刷新、重启和增量扫描不会误用旧全局设置。缺少策略的历史分类才使用全局默认值。扫描先提交本地索引与按修改时间选出的最新图片封面；网络匹配进入独立异步队列，不延长扫描的完成条件。候选先满足名称与类型限制，再参考热度；可信的同系列才采用较早条目优先。通用目录名跳过检索，手动封面、作品关联与裁切继续保留。
+worker 保存根分类的目录类型、封面来源和联网策略，供刷新、重启和增量扫描复用。扫描先提交本地索引与本地封面；角色首图按自然顺序选择可用图片，跳过视频。网络匹配进入独立异步队列，不延长扫描的完成条件。`src/character-matching.cjs` 与 `src/character-library.cjs` 分别负责角色名称判定和资料持久化，使用独立角色 ID，不把角色写入作品 ID。选择本地首图时仍可匹配简介，在线头像不会覆盖本地封面。人工封面、关联与裁切继续保留。
 
 `src/bangumi-search.cjs` 负责官方搜索召回，每页请求 20 条，按实际响应条数推进偏移，每个词最多两页相关度与一页热度。搜索完整性独立于候选数量：截断、重复 ID、偏移 / 总数矛盾或无效响应不能证明唯一；即使相关度分页重复或为空，仍保留预算内的热度回退。`src/matching.cjs` 负责类型与 ID 准入、原名 / 中文名 / 官方别名评分，同分优先正式主标题。完整类型搜索中的单个候选，主标题完整覆盖并处于分隔边界、归一化长度至少 4、收藏状态合计至少 1000，才允许低于通常置信度的副标题匹配；各名称中的明确续作 / 外传标记均可阻止该放宽。worker 对最终详情独立重排整个候选池，胜出 ID 改变时继续验证，最多请求 6 个不同 ID，保留类型、缓存消费者与过期请求保护。
 
@@ -78,4 +79,4 @@ worker 保存根分类的明确联网策略，使刷新、重启和增量扫描�
 - `src/assets/credits.json` 驱动关于页致谢。升级依赖时同步核对版本、完整许可、`licenses/manifest.json` 和第三方通知。
 - 构建只收集应用源码、生产依赖、独立演示资源及明确列出的说明。Prettier、Playwright、检查脚本、真实图库与本地测试资料不进入应用运行时。
 - 安装目录包含 `README.md`、`LICENSE.app.txt`、`docs/`、Electron `LICENSES.chromium.html`；应用 ASAR 内保留 `src/assets/licenses/`。LGPL 原生库解包在 `resources/app.asar.unpacked/`，便于在 ABI 兼容条件下替换。
-- 项目远程仓库待指定；作者主页用于身份与联系。构建命令固定 `--publish never`，不会隐式上传或发布。
+- 项目源码由 Git 管理并同步至 [GitHub 仓库](https://github.com/GXinnnnnn/ACG-album)；安装包、索引数据和原生组件源码附件通过 Releases 发布。构建命令固定 `--publish never`，构建本身不会上传或发布。

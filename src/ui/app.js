@@ -521,6 +521,7 @@ function shouldIntro(n) {
   );
 }
 function renderIntro(n) {
+  if (n.effective_album_kind === 'character') return renderCharacterIntro(n);
   const area = $('#intro-area');
   area.replaceChildren();
   if (!shouldIntro(n)) return;
@@ -566,6 +567,127 @@ function renderIntro(n) {
       }
     });
 }
+function renderCharacterIntro(n) {
+  const area = $('#intro-area');
+  area.replaceChildren();
+  if (!shouldIntro(n)) return;
+  const m = n.metadata;
+  if (!m) {
+    area.innerHTML = `<div class="intro-unbound"><span>${svg('sparkles')}</span><div><strong>为这个相册，补上角色的故事</strong><p>${n.character_id ? '角色关联已保留，可重新同步简介。' : '仅唯一精确名称会自动关联；可手动选角色或填写自定义简介。'}</p></div><button class="subtle-button" id="intro-bind">${svg('link')}关联角色</button></div>`;
+    $('#intro-bind').onclick = () => characterBindModal(n);
+    return;
+  }
+  area.innerHTML = `<section class="intro-panel"><div class="intro-art"><img class="intro-cover" alt="${esc(m.name_cn || m.name)}"></div><div class="intro-content"><div class="intro-labels"><span class="chip accent">角色</span><span class="chip">${m.source === 'custom' ? '自定义资料' : n.manual_character ? '手动关联' : '精确匹配'} · 本地保存</span></div><h2>${esc(m.name_cn || m.name)}</h2><div class="intro-original">${esc(m.name || '')}</div><p class="intro-summary">${esc(m.summary || '暂无简介')}</p><div class="intro-actions"><button id="intro-details" class="text-button">查看完整简介 ${svg('chevron-right')}</button><button id="intro-edit" class="text-button">${svg('link')}更改角色资料</button>${m.source !== 'custom' ? `<button id="intro-refresh" class="text-button">${svg('refresh')}更新角色简介</button>` : ''}</div></div></section>`;
+  const image = area.querySelector('img');
+  applyCoverCrop(image, n);
+  image.src = thumb(n);
+  image.onerror = () => (image.style.display = 'none');
+  $('#intro-details').onclick = () => detailModal(n);
+  $('#intro-edit').onclick = () => characterBindModal(n);
+  if ($('#intro-refresh'))
+    $('#intro-refresh').onclick = (event) =>
+      attempt(async () => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          S.current = await api('refreshMetadata', { id: n.id });
+          renderIntro(S.current);
+          toast('角色简介已更新');
+        } finally {
+          if (button.isConnected) button.disabled = false;
+        }
+      });
+}
+function characterBindModal(n) {
+  const custom = n.metadata?.source === 'custom';
+  openModal(
+    '关联角色简介',
+    `<div class="binding-scroll"><p>为「${esc(n.name)}」选择角色资料。手动保存后，自动检索与重扫会保留你的选择。</p><label for="character-mode">资料来源</label><select id="character-mode" class="field-input"><option value="bangumi">Bangumi 角色条目</option><option value="custom">自定义名称与简介</option></select><div id="character-online-fields"><label for="character-keyword">角色名称</label><input id="character-keyword" class="field-input" maxlength="240" value="${esc(n.name)}"><p class="field-help">自动匹配仅接受唯一精确名称；同名角色、模糊与不完整结果需手动核对。联网检索受 API 权限与 Access Token 影响。</p><label for="character-url">角色网址或 ID</label><input id="character-url" class="field-input" placeholder="https://bgm.tv/character/123" value="${n.character_id ? 'https://bgm.tv/character/' + n.character_id : ''}"><p class="field-help">支持 bgm.tv、bangumi.tv、chii.in 的角色网址。本地封面优先与角色简介关联可独立使用。</p><p id="character-status" class="field-help" role="status" aria-live="polite"></p><div id="character-candidates" class="candidate-list" aria-label="角色候选"></div></div><div id="character-custom-fields" hidden><label for="character-name">角色名称</label><input id="character-name" class="field-input" maxlength="240" value="${esc(custom ? n.metadata.name : n.name)}"><label for="character-summary">角色简介</label><textarea id="character-summary" class="field-input" rows="8" maxlength="30000">${esc(custom ? n.metadata.summary : '')}</textarea><p class="field-help">自定义资料保存在资料库，封面可继续使用本地首图或手动指定。</p></div><p id="character-error" class="inline-error" role="alert"></p></div><div class="modal-actions binding-actions"><button id="character-search" class="subtle-button">${svg('sparkles')}检索角色候选</button><button id="character-save" class="primary">保存角色资料</button></div>`
+  ).classList.add('binding-modal');
+  const generation = modalGeneration,
+    mode = $('#character-mode'),
+    search = $('#character-search'),
+    save = $('#character-save');
+  const keyword = $('#character-keyword'),
+    url = $('#character-url'),
+    list = $('#character-candidates'),
+    status = $('#character-status'),
+    error = $('#character-error');
+  let request = 0;
+  const connected = () => generation === modalGeneration && save.isConnected;
+  const updateMode = () => {
+    request++;
+    $('#character-online-fields').hidden = mode.value !== 'bangumi';
+    $('#character-custom-fields').hidden = mode.value !== 'custom';
+    search.hidden = mode.value !== 'bangumi';
+    error.textContent = '';
+  };
+  mode.value = custom ? 'custom' : 'bangumi';
+  mode.onchange = updateMode;
+  updateMode();
+  keyword.oninput = () => {
+    request++;
+    list.replaceChildren();
+    url.value = '';
+    status.textContent = '名称已改变，请重新检索。';
+  };
+  search.onclick = async () => {
+    const ticket = ++request;
+    search.disabled = save.disabled = true;
+    error.textContent = '';
+    list.replaceChildren();
+    status.textContent = '正在检索角色名称，选择候选并保存后才会更改关联…';
+    try {
+      const result = await api('match', { id: n.id, kind: 'character', keyword: keyword.value });
+      if (!connected() || ticket !== request) return;
+      list.innerHTML = (result?.candidates || [])
+        .map(
+          (candidate) =>
+            `<button class="candidate" data-character="${candidate.id}" aria-pressed="false"><span><strong>${esc(candidate.name_cn || candidate.name)}</strong><small>${esc(candidate.name)} · 角色 #${candidate.id}</small></span><span class="chip">${candidate.exact ? '名称精确' : '需核对'}</span></button>`
+        )
+        .join('');
+      status.textContent = result?.candidates?.length
+        ? '请核对同名角色，选中后点击「保存角色资料」。'
+        : '没有找到角色，可换用原名、粘贴角色链接或填写自定义资料。';
+      list.querySelectorAll('.candidate').forEach(
+        (button) =>
+          (button.onclick = () => {
+            list
+              .querySelectorAll('.candidate')
+              .forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+            url.value = 'https://bgm.tv/character/' + button.dataset.character;
+            status.textContent = '角色已选中，点击「保存角色资料」确认。';
+          })
+      );
+    } catch (exception) {
+      if (connected() && ticket === request) error.textContent = exception.message;
+    } finally {
+      if (connected()) search.disabled = save.disabled = false;
+    }
+  };
+  save.onclick = async () => {
+    if (save.disabled) return;
+    request++;
+    save.disabled = search.disabled = mode.disabled = true;
+    error.textContent = '';
+    try {
+      const args = { id: n.id, kind: 'character' };
+      if (mode.value === 'custom')
+        args.custom = { name: $('#character-name').value, summary: $('#character-summary').value };
+      else args.url = url.value;
+      await api('bind', args);
+      if (!connected()) return;
+      closeModal();
+      await loadPage(true);
+      toast('角色资料已保存');
+    } catch (exception) {
+      if (connected()) error.textContent = exception.message;
+    } finally {
+      if (connected()) save.disabled = search.disabled = mode.disabled = false;
+    }
+  };
+  (custom ? $('#character-name') : keyword).focus();
+}
 function openModal(title, html, width = 610) {
   modalGeneration++;
   if (!$('#modal').open) modalReturnFocus = document.activeElement;
@@ -593,6 +715,26 @@ $('#modal').addEventListener('click', (e) => {
 function detailModal(n) {
   const m = n.metadata;
   if (!m) return bindModal(n);
+  if (n.effective_album_kind === 'character') {
+    openModal(
+      m.name_cn || m.name,
+      `<p class="muted">${m.source === 'custom' ? '自定义角色资料' : 'https://bgm.tv/character/' + m.id}</p><div class="long-summary">${esc(m.summary || '暂无简介')}</div><h3>角色信息</h3><dl class="property-grid">${(
+        m.infobox || []
+      )
+        .slice(0, 40)
+        .map(
+          (item) =>
+            `<dt>${esc(item.key)}</dt><dd>${esc(typeof item.value === 'string' ? item.value : JSON.stringify(item.value))}</dd>`
+        )
+        .join(
+          ''
+        )}</dl>${m.source !== 'custom' ? `<div class="modal-actions"><button id="detail-character-external" class="subtle-button">${svg('external')}打开 Bangumi 角色</button></div>` : ''}`
+    );
+    if ($('#detail-character-external'))
+      $('#detail-character-external').onclick = () =>
+        attempt(() => api('external', { url: 'https://bgm.tv/character/' + m.id }));
+    return;
+  }
   openModal(
     m.name_cn || m.name,
     `<p class="muted">${esc(m.name)} · https://bgm.tv/subject/${m.id}</p><div class="long-summary">${esc(m.summary || '暂无简介')}</div><h3>Staff</h3><div class="long-summary">${esc((m.staff || []).map((p) => p.name + ' · ' + (p.relation || '')).join('\n') || '暂无 Staff 信息')}</div><h3>作品信息</h3><dl class="property-grid">${(
@@ -611,6 +753,7 @@ function detailModal(n) {
     attempt(() => api('external', { url: 'https://bgm.tv/subject/' + m.id }));
 }
 function bindModal(n) {
+  if (n.effective_album_kind === 'character') return characterBindModal(n);
   openModal(
     '关联作品简介',
     `<div class="binding-scroll"><p>为「${esc(n.name)}」指定 Bangumi 作品条目。手动关联后，自动匹配会保留你的选择。</p><label for="subject-type">检索类型</label><select class="field-input" id="subject-type"><option value="-1">继承上级分类与全局偏好</option><option value="0">全部类型</option><option value="2">动画</option><option value="1">书籍</option><option value="4">游戏</option><option value="3">音乐</option><option value="6">三次元 / 特摄</option></select><label for="subject-keyword">作品名称</label><input class="field-input" id="subject-keyword" value="${esc(n.name)}" placeholder="可输入具体番剧标题，例如黄金庭院"><p class="field-help">检索类型会保存到本相册，下级相册默认继承；不确定的候选需要你核对。</p><label for="subject-url">条目网址或 ID</label><input class="field-input" id="subject-url" placeholder="https://bgm.tv/subject/123" value="${n.subject_id ? 'https://bgm.tv/subject/' + n.subject_id : ''}"><p class="field-help">支持 bgm.tv、bangumi.tv、chii.in 的条目网址。简介、封面、评分和 Staff 会缓存在本地。</p><p id="bind-error" class="inline-error" role="alert"></p><p id="candidate-access" class="field-help" role="status" aria-live="polite">正在读取检索权限设置…</p><p id="candidate-status" class="field-help" role="status" aria-live="polite"></p><div id="candidate-list" class="candidate-list" aria-label="作品候选"></div></div><div class="modal-actions binding-actions"><button id="auto-match" class="subtle-button">${svg('sparkles')}检索候选作品</button><button id="bind-save" class="primary">保存关联</button></div>`
@@ -791,7 +934,7 @@ async function properties(n) {
   const dims = n.kind === 'image' ? await api('dimensions', { id: n.id }) : null;
   openModal(
     '属性',
-    `<dl class="property-grid"><dt>名称</dt><dd>${esc(n.name)}</dd><dt>类型</dt><dd>${n.kind === 'folder' ? '相册文件夹' : esc(pathExt(n.name)) + ' 图片'}</dd><dt>文件地址</dt><dd>${esc(n.path)}</dd><div class="wide-rule"></div><dt>大小</dt><dd>${bytes(n.kind === 'folder' ? n.total_bytes : n.bytes)}${n.kind === 'folder' ? '（已索引媒体合计）' : ''}</dd>${n.kind === 'folder' ? `<dt>包含</dt><dd>${fmt(n.folders)} 个子文件夹，${fmt(n.files)} 个媒体项目</dd>` : `<dt>分辨率</dt><dd>${dims.width ? dims.width + ' × ' + dims.height : '暂不支持读取'}</dd>`}<dt>创建时间</dt><dd>${date(n.birth)}</dd><dt>修改时间</dt><dd>${date(n.mtime)}</dd><dt>索引时间</dt><dd>${date(n.indexed)}</dd>${n.kind === 'folder' ? `<div class="wide-rule"></div><dt>封面来源</dt><dd>${{ manual: '手动指定', 'local-icon': '本地 ICO 图标', 'local-name': '与文件夹同名的图片', fallback: '自动选择相册内图片', bangumi: 'Bangumi 条目封面', 'folder-icon': 'Windows 自定义文件夹图标' }[n.cover_source] || 'Windows 文件夹图标'}${n.confirmed ? ' · 已确认' : ' · 待确认'}</dd><dt>作品条目</dt><dd>${n.subject_id ? 'https://bgm.tv/subject/' + n.subject_id : '未关联'}</dd><dt>简介缓存</dt><dd>${n.metadata_updated ? date(n.metadata_updated) : '未缓存'}</dd>` : ''}${n.scan_error ? `<dt>扫描提示</dt><dd>${esc(n.scan_error)}</dd>` : ''}</dl><div class="modal-actions"><button id="prop-copy" class="subtle-button">${svg('copy')}复制地址</button><button id="prop-reveal" class="primary">${svg('folder')}在资源管理器中定位</button></div>`
+    `<dl class="property-grid"><dt>名称</dt><dd>${esc(n.name)}</dd><dt>类型</dt><dd>${n.kind === 'folder' ? '相册文件夹' : esc(pathExt(n.name)) + ' 图片'}</dd><dt>文件地址</dt><dd>${esc(n.path)}</dd><div class="wide-rule"></div><dt>大小</dt><dd>${bytes(n.kind === 'folder' ? n.total_bytes : n.bytes)}${n.kind === 'folder' ? '（已索引媒体合计）' : ''}</dd>${n.kind === 'folder' ? `<dt>包含</dt><dd>${fmt(n.folders)} 个子文件夹，${fmt(n.files)} 个媒体项目</dd>` : `<dt>分辨率</dt><dd>${dims.width ? dims.width + ' × ' + dims.height : '暂不支持读取'}</dd>`}<dt>创建时间</dt><dd>${date(n.birth)}</dd><dt>修改时间</dt><dd>${date(n.mtime)}</dd><dt>索引时间</dt><dd>${date(n.indexed)}</dd>${n.kind === 'folder' ? `<div class="wide-rule"></div><dt>封面来源</dt><dd>${{ manual: '手动指定', 'local-icon': '本地 ICO 图标', 'local-name': '与文件夹同名的图片', fallback: '自动选择相册内图片', bangumi: 'Bangumi 作品封面', 'bangumi-character': 'Bangumi 角色立绘', 'folder-icon': 'Windows 自定义文件夹图标' }[n.cover_source] || 'Windows 文件夹图标'}${n.confirmed ? ' · 已确认' : ' · 待确认'}</dd><dt>${n.effective_album_kind === 'character' ? '角色条目' : '作品条目'}</dt><dd>${n.effective_album_kind === 'character' ? (n.character_id ? 'https://bgm.tv/character/' + n.character_id : n.custom_character ? '自定义角色资料' : '未关联') : n.subject_id ? 'https://bgm.tv/subject/' + n.subject_id : '未关联'}</dd><dt>简介缓存</dt><dd>${n.metadata_updated ? date(n.metadata_updated) : '未缓存'}</dd>` : ''}${n.scan_error ? `<dt>扫描提示</dt><dd>${esc(n.scan_error)}</dd>` : ''}</dl><div class="modal-actions"><button id="prop-copy" class="subtle-button">${svg('copy')}复制地址</button><button id="prop-reveal" class="primary">${svg('folder')}在资源管理器中定位</button></div>`
   );
   $('#prop-copy').onclick = () =>
     attempt(async () => {
@@ -859,7 +1002,17 @@ function showContext(e, n) {
       toast('已恢复自动封面规则');
     });
     actions.push({ rule: true });
-    action(n.subject_id ? '更改作品关联…' : '关联作品简介…', 'link', () => bindModal(n));
+    action(
+      n.effective_album_kind === 'character'
+        ? n.character_id || n.custom_character
+          ? '更改角色资料…'
+          : '关联角色简介…'
+        : n.subject_id
+          ? '更改作品关联…'
+          : '关联作品简介…',
+      'link',
+      () => bindModal(n)
+    );
     action(shouldIntro(n) ? '隐藏顶部简介' : '显示顶部简介', 'info', async () => {
       await api('patch', { id: n.id, changes: { intro: shouldIntro(n) ? 0 : 1 } });
       await loadPage(true);
@@ -1045,12 +1198,17 @@ function scheduleGrowingRefresh() {
     Math.max(0, 1200 - (Date.now() - growingLast))
   );
 }
-const importChoices = { onlineMatch: false, subjectTypes: [1, 2, 4, 6] };
+const importChoices = {
+  onlineMatch: false,
+  subjectTypes: [1, 2, 4, 6],
+  directoryKind: 'work',
+  characterCover: 'local-first'
+};
 function importFolder() {
   if (pendingImport || scanActive) return;
   const existing = $('#import-options');
   if (existing?.isConnected && $('#modal').open) {
-    $('#import-online-match').focus({ preventScroll: true });
+    $('#import-directory-kind').focus({ preventScroll: true });
     return;
   }
   const categories = [
@@ -1061,7 +1219,7 @@ function importFolder() {
   ];
   const dialog = openModal(
     '导入文件夹',
-    `<div id="import-options" class="import-options"><p class="import-options-intro">保留文件夹层级，原始文件留在原处。</p><label class="import-match-row" for="import-online-match"><span><strong>联网匹配 Bangumi 作品</strong><span id="import-match-help">按文件夹的中、英、日文名称查找作品封面与简介。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先较早发行的作品。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p class="import-options-note">满分匹配不显示提示；未满分会标记匹配度，可右键更改作品关联或确认匹配。未开启或没有合适匹配时，使用最新本地图片。手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
+    `<div id="import-options" class="import-options"><p class="import-options-intro">保留文件夹层级，原始文件留在原处。本次选择应用到整个导入目录，重扫时继续使用。</p><div class="import-select-row"><label for="import-directory-kind">文件夹按什么命名</label><select id="import-directory-kind"><option value="work">作品名称</option><option value="character">角色名称</option><option value="photo">普通图片 / 相册</option></select></div><div id="import-character-options" class="import-select-row" hidden><label for="import-character-cover">角色封面来源</label><select id="import-character-cover" aria-describedby="import-character-help"><option value="local-first">本地图片 · 自然名称顺序第一张</option><option value="bangumi">Bangumi 角色立绘 · 找不到用本地首图</option></select><p id="import-character-help">仅唯一精确名称自动关联；同名角色请右键手动绑定。封面选择不影响角色简介；立绘下载需要开启联网匹配。</p></div><label class="import-match-row" for="import-online-match"><span><strong id="import-match-label">联网匹配 Bangumi 作品</strong><span id="import-match-help">按文件夹的中、英、日文名称查找作品封面与简介。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先较早发行的作品。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p id="import-options-note" class="import-options-note">手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
     560
   );
   dialog.setAttribute('aria-labelledby', 'modal-title');
@@ -1071,9 +1229,36 @@ function importFolder() {
     error = $('#import-options-error'),
     chips = [...root.querySelectorAll('[data-import-subject-type]')];
   let submitted = false;
+  const kindSelect = $('#import-directory-kind'),
+    coverSelect = $('#import-character-cover');
+  kindSelect.onchange = () => {
+    importChoices.directoryKind = kindSelect.value;
+    updateChoices();
+  };
+  coverSelect.onchange = () => {
+    importChoices.characterCover = coverSelect.value;
+    updateChoices();
+  };
   function updateChoices() {
-    const enabled = importChoices.onlineMatch;
-    toggle.checked = enabled;
+    const kind = importChoices.directoryKind;
+    kindSelect.value = kind;
+    coverSelect.value = importChoices.characterCover;
+    $('#import-character-options').hidden = kind !== 'character';
+    toggle.closest('label').hidden = kind === 'photo';
+    $('#import-match-label').textContent =
+      kind === 'character' ? '联网匹配 Bangumi 角色简介与立绘' : '联网匹配 Bangumi 作品';
+    $('#import-match-help').textContent =
+      kind === 'character'
+        ? '先查本地角色索引；开启后可联网补全角色简介和所选立绘。'
+        : '按文件夹的中、英、日文名称查找作品封面与简介。';
+    $('#import-options-note').textContent =
+      kind === 'character'
+        ? '角色只按唯一精确名称自动关联，同名或未找到时保留本地首图，可右键手动绑定。自然顺序如 1、2、10；手动关联、封面和裁切会保留。'
+        : kind === 'photo'
+          ? '不匹配 Bangumi 条目，使用本地图片封面。手动封面和裁切会保留。'
+          : '满分匹配不显示提示；未满分会标记匹配度，可右键更改作品关联或确认匹配。未开启或没有合适匹配时，使用最新本地图片。手动关联、封面和裁切会保留。';
+    const enabled = kind === 'work' && importChoices.onlineMatch;
+    toggle.checked = importChoices.onlineMatch;
     toggle.setAttribute('aria-expanded', String(enabled));
     fieldset.hidden = !enabled;
     fieldset.disabled = !enabled;
@@ -1109,7 +1294,11 @@ function importFolder() {
   $('#import-options-cancel').onclick = closeModal;
   $('#import-options-confirm').onclick = () => {
     if (submitted || pendingImport || scanActive || !root.isConnected || !dialog.open) return;
-    if (importChoices.onlineMatch && !importChoices.subjectTypes.length) {
+    if (
+      importChoices.directoryKind === 'work' &&
+      importChoices.onlineMatch &&
+      !importChoices.subjectTypes.length
+    ) {
       error.textContent = '请至少选择一种作品类型，或关闭联网匹配。';
       error.hidden = false;
       fieldset.setAttribute('aria-invalid', 'true');
@@ -1118,14 +1307,18 @@ function importFolder() {
     }
     submitted = true;
     const options = {
-      onlineMatch: importChoices.onlineMatch,
-      subjectTypes: [...importChoices.subjectTypes]
+      onlineMatch: importChoices.directoryKind === 'photo' ? false : importChoices.onlineMatch,
+      subjectTypes: [...importChoices.subjectTypes],
+      directoryKind: importChoices.directoryKind,
+      ...(importChoices.directoryKind === 'character'
+        ? { characterCover: importChoices.characterCover }
+        : {})
     };
     closeModal();
     void startFolderImport(options);
   };
   updateChoices();
-  toggle.focus({ preventScroll: true });
+  kindSelect.focus({ preventScroll: true });
 }
 async function startFolderImport(options) {
   if (pendingImport || scanActive) return;
@@ -1142,7 +1335,7 @@ async function startFolderImport(options) {
         toast(
           result.cancelled
             ? '导入已取消，已索引内容保留'
-            : `${options.onlineMatch ? '文件导入完成，作品简介在后台检索' : '导入完成'}${result.errors ? '，有 ' + result.errors + ' 个资源无法访问，请查看属性或日志' : ''}`
+            : `${options.onlineMatch ? `文件导入完成，${options.directoryKind === 'character' ? '角色' : '作品'}资料在后台检索` : '导入完成'}${result.errors ? '，有 ' + result.errors + ' 个资源无法访问，请查看属性或日志' : ''}`
         );
       }
     } finally {
@@ -1400,59 +1593,7 @@ async function settingsModal(tab = 'appearance') {
             if (alive() && current === content) closeModal();
           });
       }
-      if (tab === 'cache') {
-        const info = await api('cacheInfo');
-        if (!content.isConnected) return;
-        content.innerHTML = `<p class="muted">清理只作用于 ACG-album 生成的缓存，保留手动封面、裁切位置和条目关联。</p><div class="cache-cards">${[
-          ['thumbnails', '缩略图'],
-          ['covers', '在线封面'],
-          ['metadata', 'Markdown 简介']
-        ]
-          .map(
-            ([k, label]) =>
-              `<div class="cache-card"><small>${label}</small><strong>${bytes(info[k].bytes)}</strong><span>${fmt(info[k].count)} 个文件</span></div>`
-          )
-          .join(
-            ''
-          )}</div><div class="setting-row"><div><strong>清理未使用缓存</strong><p>移除原图已删除或改变后遗留的缩略图，以及未关联的在线封面。仍在图库中的图片缩略图会继续保留。</p></div><button id="cache-unused" class="subtle-button">清理</button></div><div class="setting-row"><div><strong>重建全部缩略图</strong><p>清空后，会在下次浏览时按需生成。</p></div><button id="cache-all" class="text-button danger">清空缩略图</button></div><div class="setting-row"><div><strong>清空简介缓存</strong><p>保留作品 ID 与封面，可在相册顶部重新同步。</p></div><button id="cache-meta" class="text-button danger">清空简介</button></div><div class="setting-row"><div><strong>自动更新索引</strong><p>文件夹变化后在后台更新对应相册；大型网络目录也可关闭，改为手动更新。</p></div><input id="watch-toggle" class="switch" type="checkbox" aria-label="自动更新索引"></div><h3>数据存放位置</h3><div class="cache-path">${esc(info.path)}</div><div class="modal-actions"><button id="open-data" class="subtle-button">${svg('folder')}打开数据目录</button></div>`;
-        $('#watch-toggle').checked = S.settings.watchChanges !== false;
-        $('#watch-toggle').onchange = (e) =>
-          attempt(() => saveSetting('watchChanges', e.target.checked));
-        const clean = async (mode) => {
-          const actionGeneration = modalGeneration;
-          const r = await api('cleanCache', { mode });
-          S.rev = Date.now();
-          await loadPage(true);
-          toast(`已清理 ${r.removed} 个缓存文件，释放 ${bytes(r.bytes)}`);
-          if (alive()) {
-            const updated = await api('cacheInfo');
-            if (!alive()) return;
-            ['thumbnails', 'covers', 'metadata'].forEach((key, index) => {
-              const card = content.querySelectorAll('.cache-card')[index];
-              card.querySelector('strong').textContent = bytes(updated[key].bytes);
-              card.querySelector('span').textContent = `${fmt(updated[key].count)} 个文件`;
-            });
-          } else if (dialog.open && actionGeneration === modalGeneration) {
-            await settingsModal('cache');
-          }
-        };
-        $('#cache-unused').onclick = () => attempt(() => clean('unused'));
-        $('#cache-all').onclick = () =>
-          confirmModal(
-            '清空缩略图缓存',
-            '浏览时会按需重建缩略图。已保存的封面和原始图片会保留。',
-            () => clean('all-thumbnails'),
-            '清空'
-          );
-        $('#cache-meta').onclick = () =>
-          confirmModal(
-            '清空作品简介缓存',
-            '将删除缓存的 Markdown 简介与本地作品详情，保留作品条目关联。',
-            () => clean('metadata'),
-            '清空'
-          );
-        $('#open-data').onclick = () => attempt(() => api('openData'));
-      }
+      if (tab === 'cache') await prepareCacheSettings(content, { alive, dialog });
     }
   }
   async function switchTab(name) {

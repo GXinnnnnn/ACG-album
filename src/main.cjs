@@ -321,6 +321,23 @@ function handlers() {
     await call('token', { value });
     return true;
   });
+  ipcMain.handle('library:openCache', async () => {
+    const info = await call('cacheInfo');
+    const error = await shell.openPath(info.path);
+    if (error) throw new Error(error);
+    return true;
+  });
+  ipcMain.handle('library:changeCacheDirectory', async () => {
+    const info = await call('cacheInfo');
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择缓存存放位置（将创建 ACG-album-cache 子目录）',
+      defaultPath: path.dirname(info.path),
+      properties: ['openDirectory', 'createDirectory', 'dontAddToRecent']
+    });
+    if (result.canceled || !result.filePaths?.length) return { cancelled: true };
+    return call('changeCacheDirectory', { path: result.filePaths[0] });
+  });
+  ipcMain.handle('library:resetCacheDirectory', () => call('resetCacheDirectory'));
   ipcMain.handle('library:openData', () => shell.openPath(dataDir));
   ipcMain.handle('library:external', (_, args) => openExternal(args.url));
   ipcMain.handle('window:action', (_, action) => {

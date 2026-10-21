@@ -7,6 +7,16 @@ const SUBJECT_TYPES = Object.freeze([1, 2, 4, 6]);
 function importOptions(options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options))
     throw new Error('导入选项无效。');
+  const directoryKind = options.directoryKind;
+  const characterCover = options.characterCover;
+  if (directoryKind !== undefined && !['work', 'character', 'photo'].includes(directoryKind))
+    throw new Error('目录类型无效。');
+  if (characterCover !== undefined && !['local-first', 'bangumi'].includes(characterCover))
+    throw new Error('角色封面来源无效。');
+  if (characterCover !== undefined && directoryKind !== 'character')
+    throw new Error('角色封面来源仅适用于角色目录。');
+  if (directoryKind !== undefined && !Object.hasOwn(options, 'onlineMatch'))
+    throw new Error('请明确选择是否在线匹配。');
   if (!Object.hasOwn(options, 'onlineMatch')) {
     if (Object.hasOwn(options, 'subjectTypes')) throw new Error('请明确选择是否在线匹配。');
     return {};
@@ -21,10 +31,21 @@ function importOptions(options = {}) {
   )
     throw new Error('作品类型仅支持动画、漫画、游戏和三次元。');
   const types = [...new Set(supplied || [])].sort((a, b) => a - b);
-  if (options.onlineMatch && !types.length) throw new Error('在线匹配时请至少选择一种作品类型。');
+  if (options.onlineMatch && (!directoryKind || directoryKind === 'work') && !types.length)
+    throw new Error('在线匹配时请至少选择一种作品类型。');
+  const extra =
+    directoryKind === undefined
+      ? {}
+      : {
+          directoryKind,
+          ...(directoryKind === 'character'
+            ? { characterCover: characterCover || 'local-first' }
+            : {})
+        };
   return {
-    onlineMatch: options.onlineMatch,
-    subjectTypes: types.length ? types : [...SUBJECT_TYPES]
+    onlineMatch: directoryKind === 'photo' ? false : options.onlineMatch,
+    subjectTypes: types.length ? types : [...SUBJECT_TYPES],
+    ...extra
   };
 }
 

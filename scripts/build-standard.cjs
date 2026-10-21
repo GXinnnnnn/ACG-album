@@ -48,7 +48,7 @@ async function assertNoLocalIndex(directory) {
 
 (async () => {
   assert.equal(process.argv.length, 2, 'Usage: node scripts/build-standard.cjs');
-  assert.equal(metadata.version, '0.6.0');
+  assert.match(metadata.version, /^\d+\.\d+\.\d+$/, 'A stable release version is required');
   assert.equal(metadata.build.appId, 'local.acg.album');
   assert.ok(!fs.existsSync(installer), 'Refusing to overwrite an existing installer: ' + installer);
   assert.ok(

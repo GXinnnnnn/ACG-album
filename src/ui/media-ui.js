@@ -60,7 +60,7 @@ function updateMediaView() {
 function albumKindModal(n) {
   openModal(
     '相册类型',
-    `<p>「${esc(n.name)}」当前按${n.effective_album_kind === 'work' ? '作品' : '普通'}相册显示。选择会向下级目录继承；下级仍可单独设置。</p><label for="album-kind-select">类型</label><select id="album-kind-select" class="field-input"><option value="auto">自动识别 / 继承上级</option><option value="photo">普通相册 · 照片与旅行</option><option value="work">作品相册 · ACG、游戏与影视</option></select><p class="field-help">自动识别查看前两层目录名称。普通相册使用本地媒体详情；作品相册可自动检索 Bangumi 简介。</p><div class="modal-actions"><button id="album-kind-save" class="primary">保存类型</button></div>`
+    `<p>「${esc(n.name)}」当前按${{ work: '作品', character: '角色', photo: '普通' }[n.effective_album_kind] || '普通'}相册显示。选择会向下级目录继承；下级仍可单独设置。</p><label for="album-kind-select">类型</label><select id="album-kind-select" class="field-input"><option value="auto">自动识别 / 继承上级</option><option value="photo">普通相册 · 照片与旅行</option><option value="work">作品相册 · ACG、游戏与影视</option><option value="character">角色相册 · 名称、简介与立绘</option></select><p class="field-help">自动识别查看前两层目录名称。普通相册使用本地媒体详情；作品相册可检索 Bangumi 作品；角色相册按唯一精确名称关联，也可自定义简介。</p><div class="modal-actions"><button id="album-kind-save" class="primary">保存类型</button></div>`
   );
   $('#album-kind-select').value = n.album_kind || 'auto';
   $('#album-kind-save').onclick = () =>

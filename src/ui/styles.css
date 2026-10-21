@@ -1804,7 +1804,9 @@ h1 {
 .toast-region {
   position: fixed;
   bottom: 48px;
-  left: calc(50% + var(--sidebar) / 2);
+  left: 50%;
+  width: max-content;
+  max-width: min(530px, calc(100vw - 24px));
   transform: translateX(-50%);
   z-index: 150;
   pointer-events: none;
@@ -1821,10 +1823,12 @@ h1 {
   align-items: center;
   gap: 9px;
   animation: modal-in 0.2s ease;
-  max-width: 530px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   line-height: 1.7;
 }
 .toast svg {
+  flex-shrink: 0;
   width: 15px;
   height: 15px;
   color: var(--green);

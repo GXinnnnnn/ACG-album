@@ -20,6 +20,8 @@ const {
   thumbnailKey
 } = require('./model.cjs');
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
+const { firstImage } = require('./character-matching.cjs');
+const { createCharacterLibrary } = require('./character-library.cjs');
 const {
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
@@ -31,6 +33,7 @@ const { searchSubjectPages } = require('./bangumi-search.cjs');
 const { normalizeAccessToken, safeAccessError } = require('./bangumi-access.cjs');
 const { createHash } = require('node:crypto');
 const { createBangumiCache } = require('./bangumi-cache.cjs');
+const cacheDirectory = require('./cache-directory.cjs');
 const localIndex = require('./local-index.cjs').createLocalIndex({
   localIndexPath: workerData.localIndexPath,
   resourcesPath: workerData.resourcesPath || process.resourcesPath
@@ -41,8 +44,6 @@ const accessScope = () =>
     .digest('hex');
 const home = workerData.dataDir;
 fs.mkdirSync(home, { recursive: true });
-for (const d of ['thumbnails', 'metadata', 'covers'])
-  fs.mkdirSync(path.join(home, d), { recursive: true });
 const db = new DatabaseSync(path.join(home, 'library.sqlite'));
 // Keep a 16 MiB page-cache target to avoid FTS/index churn in large libraries.
 // Cache budgeting does not relax the durable WAL commit policy.
@@ -146,6 +147,44 @@ function setSetting(key, value) {
   run('INSERT OR REPLACE INTO settings VALUES(?,?)', key, JSON.stringify(value));
   return value;
 }
+let cacheHome = setting('cacheDirectory') || home;
+cacheDirectory.initializeCache(cacheHome);
+let cacheChanging = false,
+  cacheTask = null,
+  activeRequests = 0;
+const cacheReadMethods = new Set([
+  'init',
+  'list',
+  'get',
+  'ancestors',
+  'syncStatus',
+  'localIndexStatus',
+  'searchLocalIndex',
+  'cancel'
+]);
+async function changeCache(operation) {
+  if (
+    cacheChanging ||
+    running ||
+    thumbJobs.size ||
+    onlineRunning ||
+    onlineScheduled ||
+    activeNetwork ||
+    networkControllers.size ||
+    subjectJobs.size ||
+    activeRequests
+  )
+    throw new Error('正在导入、联网、保存或生成缓存，请稍后再试。');
+  cacheChanging = true;
+  try {
+    cacheTask = operation();
+    return await cacheTask;
+  } finally {
+    cacheChanging = false;
+    cacheTask = null;
+    startOnline();
+  }
+}
 const sortKey = (s) =>
   s
     .normalize('NFKC')
@@ -159,6 +198,28 @@ if (setting('searchVersion') !== 1) {
 }
 db.exec('PRAGMA optimize=0x10002');
 const getNode = (id) => one('SELECT * FROM nodes WHERE id=?', id);
+const characters = createCharacterLibrary({
+  db,
+  q,
+  one,
+  run,
+  getNode,
+  hydrate,
+  localIndex,
+  policy: matchPolicy,
+  api,
+  assertLive: assertMatchLive,
+  accessScope,
+  cacheHome: () => cacheHome,
+  controllers: networkControllers,
+  jobs: subjectJobs,
+  send,
+  refreshLocalCover,
+  matchGuard,
+  matchJob,
+  paused: onlinePause,
+  tokenPresent: () => !!normalizeAccessToken(workerData.token)
+});
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
   path.join(home, 'library.sqlite')
@@ -170,8 +231,13 @@ function albumKind(n) {
   for (let p = n; p; p = p.parent ? getNode(p.parent) : null) {
     ancestors.push(p);
     if (p.album_kind && p.album_kind !== 'auto') return p.album_kind;
+  }
+  for (const p of ancestors) {
+    if (p.character_id || p.custom_character) return 'character';
     if (p.subject_id) return 'work';
   }
+  const imported = n && one('SELECT directory_kind FROM root_match_policy WHERE root=?', n.root);
+  if (imported) return imported.directory_kind;
   return ancestors.some(
     (p) =>
       p.depth <= 1 &&
@@ -189,9 +255,12 @@ function searchType(n) {
 }
 function hydrate(n) {
   if (!n) return null;
-  const meta = n.subject_id
-    ? one('SELECT json,updated FROM metadata WHERE id=?', n.subject_id)
-    : null;
+  const character = albumKind(n) === 'character';
+  const meta = character
+    ? characters.metadata(n)
+    : n.subject_id
+      ? one('SELECT json,updated FROM metadata WHERE id=?', n.subject_id)
+      : null;
   return {
     ...n,
     effective_album_kind: albumKind(n),
@@ -199,6 +268,7 @@ function hydrate(n) {
     effective_subject_types: n.kind === 'folder' ? manualMatchTypes(n) : [],
     association_type_mismatch: !!(
       meta &&
+      !character &&
       n.kind === 'folder' &&
       !manualMatchTypes(n).includes(JSON.parse(meta.json).type)
     ),
@@ -332,14 +402,22 @@ function list({
   const items = rows.map((n) => ({
     ...n,
     effective_album_kind: n.kind === 'folder' ? albumKind(n) : undefined,
-    metadata: n.subject_id
-      ? (() => {
-          const m = one('SELECT json FROM metadata WHERE id=?', n.subject_id);
-          if (!m) return null;
-          const j = JSON.parse(m.json);
-          return { name: j.name, name_cn: j.name_cn, rating: j.rating, date: j.date };
-        })()
-      : null
+    metadata:
+      albumKind(n) === 'character'
+        ? (() => {
+            const row = characters.metadata(n);
+            if (!row) return null;
+            const j = JSON.parse(row.json);
+            return { name: j.name, name_cn: j.name_cn, kind: 'character' };
+          })()
+        : n.subject_id
+          ? (() => {
+              const m = one('SELECT json FROM metadata WHERE id=?', n.subject_id);
+              if (!m) return null;
+              const j = JSON.parse(m.json);
+              return { name: j.name, name_cn: j.name_cn, rating: j.rating, date: j.date };
+            })()
+          : null
   }));
   return { items, total: count, folders };
 }
@@ -357,7 +435,16 @@ function emitProgress(force = false) {
 }
 const yieldNow = () => new Promise((r) => setImmediate(r));
 function coverFor(folder, choice) {
-  if (!folder || folder.manual_cover || (folder.subject_id && folder.cover_source === 'bangumi'))
+  if (
+    !folder ||
+    folder.manual_cover ||
+    (albumKind(folder) !== 'character' && folder.subject_id && folder.cover_source === 'bangumi') ||
+    (albumKind(folder) === 'character' &&
+      matchPolicy(folder).characterCover === 'bangumi' &&
+      folder.character_id &&
+      folder.cover_source === 'bangumi-character' &&
+      fs.existsSync(characters.coverFile(folder.character_id)))
+  )
     return;
   run(
     'UPDATE nodes SET cover=?,cover_source=?,confirmed=CASE WHEN cover=? THEN confirmed ELSE 0 END WHERE id=? AND manual_cover=0',
@@ -368,7 +455,13 @@ function coverFor(folder, choice) {
   );
 }
 async function refreshLocalCover(id, direct, checkpoint = yieldNow) {
-  if (direct === undefined)
+  const character = albumKind(getNode(id)) === 'character';
+  if (character)
+    direct = one(
+      "SELECT id,name,sortkey,mtime FROM nodes WHERE parent=? AND missing=0 AND kind='image' ORDER BY sortkey,id LIMIT 1",
+      id
+    );
+  else if (direct === undefined)
     direct = one(
       "SELECT id,name,sortkey,mtime FROM nodes WHERE parent=? AND missing=0 AND kind='image' ORDER BY mtime DESC,sortkey,id LIMIT 1",
       id
@@ -392,7 +485,8 @@ async function refreshLocalCover(id, direct, checkpoint = yieldNow) {
         const pointer = getNode(child.cursor)?.local_newest;
         candidate = pointer ? getNode(pointer) : null;
       }
-      if (candidate?.id) newest = newestImage(newest, candidate);
+      if (candidate?.id)
+        newest = character ? firstImage(newest, candidate) : newestImage(newest, candidate);
     }
     after = page.at(-1).cursor;
     await checkpoint();
@@ -418,6 +512,7 @@ function updateTotals(id) {
   );
 }
 async function scan(rootPath, options = {}) {
+  if (cacheChanging) throw new Error('正在管理缓存，请稍后再导入。');
   if (running) throw new Error('已有导入任务正在运行，请等待完成或先取消。');
   running = true;
   cancelled = false;
@@ -444,6 +539,7 @@ async function scanContents(rootPath, options = {}) {
       !dataRelative.startsWith('..' + path.sep))
   )
     throw new Error('不能将程序数据或缓存目录导入为相册，请选择原图库文件夹。');
+  await cacheDirectory.validateCacheLocation(cacheHome, [rootPath]);
   const id = idFor(rootPath);
   const containing = q('SELECT id,path FROM nodes WHERE parent IS NULL AND missing=0').find(
     (r) =>
@@ -610,11 +706,13 @@ async function scanContents(rootPath, options = {}) {
     });
     if (Object.hasOwn(matchOptions, 'onlineMatch'))
       run(
-        `INSERT INTO root_match_policy VALUES(?,?,?,1) ON CONFLICT(root) DO UPDATE SET
-        enabled=excluded.enabled,types=excluded.types,revision=root_match_policy.revision+1`,
+        `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover) VALUES(?,?,?,1,?,?) ON CONFLICT(root) DO UPDATE SET
+        enabled=excluded.enabled,types=excluded.types,directory_kind=excluded.directory_kind,character_cover=excluded.character_cover,revision=root_match_policy.revision+1`,
         id,
         matchOptions.onlineMatch ? 1 : 0,
-        JSON.stringify(matchOptions.subjectTypes)
+        JSON.stringify(matchOptions.subjectTypes || []),
+        matchOptions.directoryKind || 'work',
+        matchOptions.characterCover || 'local-first'
       );
     libraryRevision++;
     emitProgress(true);
@@ -909,8 +1007,8 @@ async function saveSubjectContents(
       data.access_scope = scope;
     }
     // Media downloads only accept Bangumi's image host; never forward the API token.
-    let coverPath = fs.existsSync(path.join(home, 'covers', `${subject.id}.webp`))
-      ? path.join(home, 'covers', `${subject.id}.webp`)
+    let coverPath = fs.existsSync(path.join(cacheHome, 'covers', `${subject.id}.webp`))
+      ? path.join(cacheHome, 'covers', `${subject.id}.webp`)
       : null;
     const image = data.images?.large || data.images?.common;
     let coverComplete = !image || (fresh && !!coverPath && previous.cover_url === image);
@@ -926,7 +1024,7 @@ async function saveSubjectContents(
             const buffer = Buffer.from(await response.arrayBuffer());
             assertMatchLive(guard);
             if (buffer.length > 20000000) throw new Error('封面过大');
-            const targetCover = path.join(home, 'covers', `${subject.id}.webp`);
+            const targetCover = path.join(cacheHome, 'covers', `${subject.id}.webp`);
             const temp = targetCover + `.${++coverTempCounter}.tmp`;
             try {
               await sharp(buffer, { limitInputPixels: 40000000 })
@@ -938,7 +1036,7 @@ async function saveSubjectContents(
               coverPath = targetCover;
               coverComplete = true;
             } finally {
-              if (path.dirname(path.resolve(temp)) === path.resolve(home, 'covers'))
+              if (path.dirname(path.resolve(temp)) === path.resolve(cacheHome, 'covers'))
                 await fsp.rm(temp, { force: true }).catch(() => {});
             }
           }
@@ -955,7 +1053,7 @@ async function saveSubjectContents(
         : false
       : coverComplete;
     const serialized = JSON.stringify(data);
-    const markdown = path.join(home, 'metadata', `${subject.id}.md`);
+    const markdown = path.join(cacheHome, 'metadata', `${subject.id}.md`);
     if (
       (!local || !previousOnline || !fs.existsSync(markdown)) &&
       (row?.json !== serialized || !fs.existsSync(markdown))
@@ -966,7 +1064,7 @@ async function saveSubjectContents(
         assertMatchLive(guard);
         await fsp.rename(temp, markdown);
       } finally {
-        if (path.dirname(path.resolve(temp)) === path.resolve(home, 'metadata'))
+        if (path.dirname(path.resolve(temp)) === path.resolve(cacheHome, 'metadata'))
           await fsp.rm(temp, { force: true }).catch(() => {});
       }
     }
@@ -1049,7 +1147,10 @@ function matchPolicy(folder) {
     }
     return {
       explicit: true,
-      enabled: !!row.enabled,
+      kind: albumKind(folder),
+      characterCover: row.character_cover || 'local-first',
+      networkEnabled: !!row.enabled,
+      enabled: albumKind(folder) === 'character' ? true : !!row.enabled,
       types,
       revision: row.revision
     };
@@ -1057,6 +1158,9 @@ function matchPolicy(folder) {
   const type = folder ? searchType(folder) : 0;
   return {
     explicit: false,
+    kind: folder && albumKind(folder) === 'character' ? 'character' : 'work',
+    characterCover: 'local-first',
+    networkEnabled: !!setting('autoMatch'),
     enabled: !!setting('autoMatch'),
     types: type ? [type] : [...SUBJECT_TYPES],
     revision: 0
@@ -1119,11 +1223,12 @@ function incompleteResources(folder) {
       metadata.cover_url &&
       !folder.manual_cover &&
       (folder.cover !== 'subject:' + folder.subject_id ||
-        !fs.existsSync(path.join(home, 'covers', `${folder.subject_id}.webp`)))
+        !fs.existsSync(path.join(cacheHome, 'covers', `${folder.subject_id}.webp`)))
     )
   );
 }
 function eligibleMatch(folder, policy = matchPolicy(folder)) {
+  if (policy.kind === 'character') return characters.eligible(folder, policy);
   if (
     !folder ||
     folder.missing ||
@@ -1170,6 +1275,9 @@ function matchJob(folder, explicit = false) {
     policy: policyStamp(folder),
     subject: folder.subject_id,
     manual: folder.manual_subject,
+    character: folder.character_id,
+    manualCharacter: folder.manual_character,
+    customCharacter: folder.custom_character,
     manualTypes: explicit ? manualMatchTypes(folder).join(',') : ''
   };
 }
@@ -1188,6 +1296,9 @@ function matchGuard(folder, job, explicit) {
       current.missing ||
       current.subject_id !== job.subject ||
       current.manual_subject !== job.manual ||
+      current.character_id !== job.character ||
+      current.manual_character !== job.manualCharacter ||
+      current.custom_character !== job.customCharacter ||
       policyStamp(current) !== job.policy
     )
       return false;
@@ -1247,6 +1358,8 @@ function metadataAliases(subject, types) {
 async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
   const folder = getNode(id);
   if (!folder || folder.kind !== 'folder' || folder.missing) return null;
+  if (matchPolicy(folder).kind === 'character')
+    return characters.match(folder, explicit, keyword, queuedJob);
   if (!explicit && !eligibleMatch(folder)) return hydrate(folder);
   const job = queuedJob || matchJob(folder, explicit),
     guard = matchGuard(folder, job, explicit);
@@ -1638,7 +1751,7 @@ function localPauseKey(state) {
   );
 }
 function startOnline() {
-  if (stopping || running || onlineRunning || onlineScheduled) return;
+  if (cacheChanging || stopping || running || onlineRunning || onlineScheduled) return;
   const paused = onlinePause();
   if (paused && (!localIndex.status().available || localPauseSweep === localPauseKey(paused))) {
     send('online', onlineStatus({ active: false }));
@@ -1648,7 +1761,7 @@ function startOnline() {
   onlineScheduled = true;
   setImmediate(() => {
     onlineScheduled = false;
-    if (stopping || running) return;
+    if (cacheChanging || stopping || running) return;
     onlineRunning = true;
     onlineTask = pumpOnline()
       .catch((e) => send('error', { message: e.message }))
@@ -1783,9 +1896,13 @@ async function sourceFor(id) {
   const n = getNode(id);
   if (!n || n.missing) throw new Error('资源未在索引中或已离线。');
   if (n.kind === 'image' || n.kind === 'video') return { node: n, file: n.path };
-  if (n.cover?.startsWith('subject:')) {
-    const sid = Number(n.cover.slice(8));
-    const file = path.join(home, 'covers', `${sid}.webp`);
+  if (/^(?:subject|character):\d+$/.test(n.cover || '')) {
+    const [kind, sid] = n.cover.split(':');
+    const file = path.join(
+      cacheHome,
+      'covers',
+      `${kind === 'character' ? 'character-' : ''}${Number(sid)}.webp`
+    );
     try {
       const st = await fsp.stat(file);
       return { node: { ...n, path: file, mtime: st.mtimeMs, bytes: st.size }, file };
@@ -1801,13 +1918,13 @@ async function thumb(id, size = 1024, priority = false) {
   size = [512, 768, 1024].includes(Number(size)) ? Number(size) : 1024;
   const source = await sourceFor(id);
   if (source.node.kind === 'video') {
-    const dest = path.join(home, 'thumbnails', thumbnailKey(source.node, 512) + '.webp');
+    const dest = path.join(cacheHome, 'thumbnails', thumbnailKey(source.node, 512) + '.webp');
     return fs.existsSync(dest) ? { path: dest } : { placeholder: true };
   }
   if (source.icon || path.extname(source.file).toLowerCase() === '.ico')
     return { icon: true, path: source.file };
   const key = thumbnailKey(source.node, size);
-  const dest = path.join(home, 'thumbnails', key + '.webp');
+  const dest = path.join(cacheHome, 'thumbnails', key + '.webp');
   if (fs.existsSync(dest)) {
     run('UPDATE thumbs SET last_used=? WHERE key=?', Date.now(), key);
     return { path: dest };
@@ -1866,7 +1983,7 @@ function storeVideoThumb({ id, bytes, width, height }) {
     if (m.format !== 'webp' || m.width > 1024 || m.height > 1024)
       throw new Error('缩略图格式或尺寸无效。');
     const key = thumbnailKey(n, 512),
-      dest = path.join(home, 'thumbnails', key + '.webp'),
+      dest = path.join(cacheHome, 'thumbnails', key + '.webp'),
       temp = dest + '.tmp';
     await sharp(buffer)
       .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
@@ -1882,27 +1999,112 @@ function storeVideoThumb({ id, bytes, width, height }) {
   return job;
 }
 async function cacheInfo() {
-  const stats = {
-    thumbnails: { count: 0, bytes: 0 },
-    metadata: { count: 0, bytes: 0 },
-    covers: { count: 0, bytes: 0 }
+  return cacheDirectory.cacheStats(cacheHome, home);
+}
+async function rewriteCachePaths(destination) {
+  const source = cacheHome;
+  const replace = (file) => {
+    if (typeof file !== 'string') return file;
+    for (const kind of cacheDirectory.KINDS) {
+      if (path.dirname(file).toLowerCase() === path.join(source, kind).toLowerCase())
+        return path.join(destination, kind, path.basename(file));
+    }
+    return file;
   };
-  for (const kind of Object.keys(stats)) {
-    for (const entry of await fsp.readdir(path.join(home, kind), { withFileTypes: true })) {
-      if (entry.isFile()) {
-        const st = await fsp.stat(path.join(home, kind, entry.name)).catch(() => null);
-        if (st) {
-          stats[kind].count++;
-          stats[kind].bytes += st.size;
+  const updates = [];
+  for (const row of q('SELECT * FROM thumbs')) {
+    let key = row.key;
+    const targetSource = replace(row.source);
+    let targetPath = replace(row.path);
+    if (targetSource !== row.source) {
+      const oldStat = await fsp.stat(row.source).catch(() => null);
+      const newStat = await fsp.stat(targetSource).catch(() => null);
+      if (oldStat && newStat)
+        for (const size of [512, 768, 1024]) {
+          if (
+            thumbnailKey(
+              { path: row.source, mtime: oldStat.mtimeMs, bytes: oldStat.size },
+              size
+            ) !== row.key
+          )
+            continue;
+          key = thumbnailKey(
+            { path: targetSource, mtime: newStat.mtimeMs, bytes: newStat.size },
+            size
+          );
+          targetPath = path.join(destination, 'thumbnails', key + '.webp');
+          if (fs.existsSync(replace(row.path)) && replace(row.path) !== targetPath)
+            await fsp.rename(replace(row.path), targetPath);
+          break;
+        }
+    }
+    updates.push({ ...row, key, path: targetPath, source: targetSource });
+  }
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM thumbs');
+    for (const row of updates)
+      run(
+        'INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)',
+        row.key,
+        row.path,
+        row.source,
+        row.last_used,
+        row.bytes
+      );
+    for (const table of ['metadata', 'character_metadata'])
+      for (const row of q(`SELECT id,json FROM ${table}`)) {
+        const value = JSON.parse(row.json);
+        if (value.local_cover && replace(value.local_cover) !== value.local_cover) {
+          value.local_cover = replace(value.local_cover);
+          run(`UPDATE ${table} SET json=? WHERE id=?`, JSON.stringify(value), row.id);
         }
       }
-    }
+    setSetting('cacheDirectory', destination === home ? '' : destination);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
   }
-  return { path: home, ...stats };
+  cacheHome = destination;
+}
+async function relocateCache(destination) {
+  const result = await cacheDirectory.migrateCache({
+    source: cacheHome,
+    destination,
+    roots: q('SELECT path FROM nodes WHERE parent IS NULL').map((row) => row.path),
+    commit: rewriteCachePaths,
+    progress: (data) => send('cache-progress', data)
+  });
+  send('changed', { cache: true });
+  return {
+    ...(await cacheInfo()),
+    ...(result?.cleanupWarning ? { warning: result.cleanupWarning } : {})
+  };
 }
 async function cleanCache(mode = 'unused') {
-  if (running || thumbJobs.size || onlineRunning || activeNetwork)
-    throw new Error('正在导入、同步简介或生成缩略图，请稍后再清理。');
+  if (!['unused', 'all-thumbnails', 'metadata', 'reset-cache'].includes(mode))
+    throw new Error('不支持的缓存清理方式。');
+  // Complete safety preflight before the first deletion in every cleanup mode.
+  await cacheInfo();
+  if (mode === 'reset-cache') {
+    const result = await cacheDirectory.resetCacheFiles(cacheHome, () => {
+      db.exec('BEGIN');
+      try {
+        db.exec('DELETE FROM thumbs; DELETE FROM metadata; DELETE FROM character_metadata');
+        diskCache.clear();
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      searchCache.clear();
+      detailCache.clear();
+      staffCache.clear();
+    });
+    send('changed', { cache: true });
+    return result;
+  }
   let removed = 0,
     bytes = 0;
   const live = new Set(
@@ -1913,9 +2115,12 @@ async function cleanCache(mode = 'unused') {
       [512, 768, 1024].map((size) => thumbnailKey(n, size))
     )
   );
-  for (const n of q("SELECT * FROM nodes WHERE missing=0 AND cover LIKE 'subject:%'")) {
+  for (const n of q('SELECT * FROM nodes WHERE missing=0 AND cover IS NOT NULL')) {
+    const match = /^([a-z-]+):(\d+)$/.exec(n.cover);
+    if (!match) continue;
     try {
-      const file = path.join(home, 'covers', `${Number(n.cover.slice(8))}.webp`),
+      const filename = (match[1] === 'subject' ? '' : match[1] + '-') + match[2] + '.webp';
+      const file = path.join(cacheHome, 'covers', filename),
         st = await fsp.stat(file);
       for (const size of [512, 768, 1024])
         valid.add(thumbnailKey({ ...n, path: file, mtime: st.mtimeMs, bytes: st.size }, size));
@@ -1925,9 +2130,9 @@ async function cleanCache(mode = 'unused') {
     if (
       mode === 'all-thumbnails' ||
       !valid.has(row.key) ||
-      (!live.has(row.source) && !row.source.startsWith(path.join(home, 'covers') + path.sep))
+      (!live.has(row.source) && !row.source.startsWith(path.join(cacheHome, 'covers') + path.sep))
     ) {
-      const expected = path.join(home, 'thumbnails', row.key + '.webp');
+      const expected = path.join(cacheHome, 'thumbnails', row.key + '.webp');
       if (row.path !== expected) continue;
       try {
         await fsp.unlink(expected);
@@ -1941,8 +2146,8 @@ async function cleanCache(mode = 'unused') {
   }
   // Orphans are safe to delete only inside the app-owned cache directory.
   const known = new Set(q('SELECT path FROM thumbs').map((t) => t.path));
-  for (const e of await fsp.readdir(path.join(home, 'thumbnails'))) {
-    const file = path.join(home, 'thumbnails', e);
+  for (const e of await fsp.readdir(path.join(cacheHome, 'thumbnails'))) {
+    const file = path.join(cacheHome, 'thumbnails', e);
     if (!known.has(file)) {
       const st = await fsp.stat(file);
       await fsp.unlink(file);
@@ -1952,14 +2157,14 @@ async function cleanCache(mode = 'unused') {
   }
   if (mode === 'metadata') {
     if (onlineRunning) throw new Error('正在同步简介，请稍后再清理。');
-    for (const e of await fsp.readdir(path.join(home, 'metadata'))) {
-      const file = path.join(home, 'metadata', e);
+    for (const e of await fsp.readdir(path.join(cacheHome, 'metadata'))) {
+      const file = path.join(cacheHome, 'metadata', e);
       const st = await fsp.stat(file);
       await fsp.unlink(file);
       removed++;
       bytes += st.size;
     }
-    db.exec('DELETE FROM metadata');
+    db.exec('DELETE FROM metadata; DELETE FROM character_metadata');
     diskCache.clear();
     searchCache.clear();
     detailCache.clear();
@@ -1971,9 +2176,13 @@ async function cleanCache(mode = 'unused') {
       (n) => String(n.id) + '.webp'
     )
   );
-  for (const e of await fsp.readdir(path.join(home, 'covers'))) {
+  for (const row of q('SELECT DISTINCT cover FROM nodes WHERE missing=0 AND cover IS NOT NULL')) {
+    const match = /^([a-z-]+):(\d+)$/.exec(row.cover);
+    if (match) referenced.add((match[1] === 'subject' ? '' : match[1] + '-') + match[2] + '.webp');
+  }
+  for (const e of await fsp.readdir(path.join(cacheHome, 'covers'))) {
     if (!referenced.has(e)) {
-      const file = path.join(home, 'covers', e);
+      const file = path.join(cacheHome, 'covers', e);
       const st = await fsp.stat(file);
       await fsp.unlink(file);
       removed++;
@@ -2091,7 +2300,7 @@ function queueWatch(root, filename) {
   watchTimer = setTimeout(drainWatches, 1400);
 }
 async function drainWatches() {
-  if (running) {
+  if (cacheChanging || running) {
     watchTimer = setTimeout(drainWatches, 1400);
     return;
   }
@@ -2194,7 +2403,7 @@ const methods = {
   storeVideoThumb,
   setAlbumKind: ({ id, kind }) => {
     const n = getNode(id);
-    if (n?.kind !== 'folder' || !['auto', 'work', 'photo'].includes(kind))
+    if (n?.kind !== 'folder' || !['auto', 'work', 'character', 'photo'].includes(kind))
       throw new Error('相册类型无效。');
     run('UPDATE nodes SET album_kind=? WHERE id=?', kind, id);
     send('changed', { id });
@@ -2241,6 +2450,18 @@ const methods = {
     await refreshLocalCover(id);
     const current = getNode(id);
     if (
+      albumKind(current) === 'character' &&
+      current.character_id &&
+      matchPolicy(current).characterCover === 'bangumi' &&
+      fs.existsSync(characters.coverFile(current.character_id))
+    )
+      run(
+        "UPDATE nodes SET cover=?,cover_source='bangumi-character',confirmed=0 WHERE id=?",
+        'character:' + current.character_id,
+        id
+      );
+    if (
+      albumKind(current) !== 'character' &&
       current.subject_id &&
       !['local-icon', 'local-name', 'folder-icon'].includes(current.cover_source)
     ) {
@@ -2309,9 +2530,11 @@ const methods = {
     return true;
   },
   match: ({ id, keyword }) => matchFolder(id, true, keyword),
-  bind: async ({ id, url }) => {
+  bind: async ({ id, url, kind, custom }) => {
     const n = getNode(id);
     if (!n || n.kind !== 'folder') throw new Error('请选择相册');
+    if (kind === 'character' || matchPolicy(n).kind === 'character')
+      return characters.bind(n, { url, custom });
     const subjectId = parseSubjectId(url),
       types = manualMatchTypes(n),
       job = matchJob(n, true),
@@ -2338,6 +2561,7 @@ const methods = {
   },
   refreshMetadata: async ({ id }) => {
     const n = getNode(id);
+    if (n && matchPolicy(n).kind === 'character') return characters.refresh(n);
     if (!n?.subject_id) throw new Error('尚未绑定作品条目。');
     const types = n.manual_subject ? manualMatchTypes(n) : matchPolicy(n).types,
       job = matchJob(n, true),
@@ -2377,7 +2601,15 @@ const methods = {
   },
   syncStatus: () => onlineStatus({ active: onlineRunning }),
   cacheInfo,
-  cleanCache: ({ mode }) => cleanCache(mode),
+  changeCacheDirectory: ({ path: selected }) =>
+    changeCache(() => {
+      if (typeof selected !== 'string' || !path.isAbsolute(selected))
+        throw new Error('请选择有效的缓存父目录。');
+      return relocateCache(path.join(selected, cacheDirectory.DIRECTORY_NAME));
+    }),
+  resetCacheDirectory: () => changeCache(() => relocateCache(home)),
+  cleanCache: ({ mode }) => changeCache(() => cleanCache(mode)),
+
   clipboardImage: async ({ id }) => {
     const { path: p } = await methods.asset({ id });
     return sharp(p, { limitInputPixels: 160000000, page: 0 }).rotate().png().toBuffer();
@@ -2412,6 +2644,7 @@ const methods = {
     return true;
   },
   shutdown: async () => {
+    if (cacheTask) await cacheTask.catch(() => {});
     stopping = true;
     cancelled = true;
     clearOnline({ preserve: true });
@@ -2440,12 +2673,21 @@ const mediaStartupTimer = setTimeout(() => {
 }, 600);
 reconcileWatches();
 parentPort.on('message', async ({ request, method, args }) => {
+  let tracked = false;
   try {
     if (!Object.hasOwn(methods, method)) throw new Error('未知操作');
+    if (cacheChanging && method !== 'shutdown' && !cacheReadMethods.has(method))
+      throw new Error('正在管理缓存，请稍后再试。');
+    tracked =
+      !cacheReadMethods.has(method) &&
+      !['changeCacheDirectory', 'resetCacheDirectory', 'cleanCache', 'shutdown'].includes(method);
+    if (tracked) activeRequests++;
     const result = await methods[method](args || {});
     parentPort.postMessage({ request, result });
   } catch (e) {
     parentPort.postMessage({ request, error: e.message, stack: e.stack });
+  } finally {
+    if (tracked) activeRequests--;
   }
 });
 parentPort.postMessage({ event: 'ready', data: {} });
