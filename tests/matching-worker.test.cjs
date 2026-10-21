@@ -363,16 +363,16 @@ test('fresh legacy-root exact and fuzzy API matches persist their actual confide
         let node = await c.call('get', { id: f.id });
         assert.equal(node.subject_id, 420);
         assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
-        assert.equal(node.match_review, exact ? 0 : 1);
-        assert.equal(node.confirmed, exact ? 1 : 0);
+        assert.equal(node.match_review, 0);
+        assert.equal(node.confirmed, 1);
         await c.call('refreshMetadata', { id: f.id });
         node = await c.call('get', { id: f.id });
         assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
-        assert.equal(node.match_review, exact ? 0 : 1);
+        assert.equal(node.match_review, 0);
         const pending = await c.call('list', { filter: 'pending' });
         assert.equal(
           pending.items.some((item) => item.id === f.id),
-          !exact
+          false
         );
       } finally {
         await c.close();
@@ -2099,7 +2099,7 @@ test('import resolves close primary candidates while manual matching keeps alter
     await c.idle();
     const node = await c.call('get', { id: f.id });
     assert.equal(node.subject_id, 801);
-    assert.equal(node.match_review, 1);
+    assert.equal(node.match_review, 0);
     const result = await c.call('match', { id: f.id });
     assert.equal(result.node.subject_id, 801);
     assert.equal(result.needs_selection, true);
@@ -2392,7 +2392,7 @@ test('exact match stays confirmed through fallback changes, reset, later Bangumi
   }
 });
 
-test('nonexact automatic association retains identity review through changed fallback and new Bangumi cover', async () => {
+test('nonexact matched identity stays confirmed through fallback changes, downloaded cover and restart while unassociated fallback stays pending', async () => {
   const chars = Array.from({ length: 230 }, (_, i) => String.fromCodePoint(0x5000 + i));
   const title = chars.slice(0, 25).join('');
   let subject = {
@@ -2401,13 +2401,16 @@ test('nonexact automatic association retains identity review through changed fal
     name: chars.slice(0, 21).join('') + chars.slice(200, 203).join('')
   };
   const f = await fixture(title);
-  const c = await client(f.data, (request) => responder(subject, f.png)(request), { token: '' });
+  const controlFolder = path.join(f.source, 'Unmatched Local Pictures');
+  await fs.mkdir(controlFolder);
+  await fs.writeFile(path.join(controlFolder, 'local.png'), f.png);
+  let c = await client(f.data, (request) => responder(subject, f.png)(request), { token: '' });
   try {
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle();
     let node = await c.call('get', { id: f.id });
     assert.equal(node.match_confidence, 40 / 47);
-    assert.equal(node.match_review, 1);
+    assert.equal(node.match_review, 0);
     assert.equal(node.cover_source, 'fallback');
     const later = path.join(f.folder, 'newest.png');
     await fs.writeFile(later, f.png);
@@ -2415,24 +2418,39 @@ test('nonexact automatic association retains identity review through changed fal
     await c.call('scan', { path: f.source });
     node = await c.call('get', { id: f.id });
     assert.equal(node.cover, idFor(later));
-    assert.equal(node.match_review, 1);
-    assert.equal(node.confirmed, 0);
+    assert.equal(node.match_review, 0);
+    assert.equal(node.confirmed, 1);
     subject = { ...subject, images: { large: 'https://lain.bgm.tv/uncertain-cover.png' } };
     await c.call('refreshMetadata', { id: f.id });
     node = await c.call('get', { id: f.id });
     assert.equal(node.cover_source, 'bangumi');
-    assert.equal(node.match_review, 1);
+    assert.equal(node.match_review, 0);
     assert.equal(node.match_confidence, 40 / 47);
+    assert.equal(node.confirmed, 1);
+    assert.ok(c.requests.some((request) => request.url === subject.images.large));
     await c.call('resetCover', { id: f.id });
-    assert.equal((await c.call('get', { id: f.id })).match_review, 1);
-    assert.ok((await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
+    await c.close();
+    c = await client(f.data, (request) => responder(subject, f.png)(request), { token: '' });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.match_review, 0);
+    assert.equal(node.confirmed, 1);
+    assert.equal(node.match_confidence, 40 / 47);
+    const control = await c.call('get', { id: idFor(controlFolder) });
+    assert.equal(control.subject_id, null);
+    assert.equal(control.character_id, null);
+    assert.equal(control.cover_source, 'fallback');
+    assert.equal(control.confirmed, 0);
+    assert.equal(control.match_review, 0);
+    const pending = (await c.call('list', { filter: 'pending' })).items;
+    assert.ok(!pending.some((item) => item.id === f.id));
+    assert.ok(pending.some((item) => item.id === control.id));
   } finally {
     await c.close();
     await cleanup(f);
   }
 });
 
-test('85.1-percent import review survives restart, covers and crops until explicit confirmation or manual binding', async (t) => {
+test('85.1-percent identity keeps manual cover and crop confirmation through refresh and restart without identity review', async (t) => {
   for (const resolution of ['confirm', 'bind'])
     await t.test(resolution, async () => {
       const chars = Array.from({ length: 230 }, (_, i) => String.fromCodePoint(0x5000 + i));
@@ -2447,26 +2465,32 @@ test('85.1-percent import review survives restart, covers and crops until explic
       try {
         await c.call('scan', { path: f.source, offline: true });
         await c.call('setCover', { id: f.id, imageId: idFor(f.image) });
-        await c.call('patch', { id: f.id, changes: { crop_x: 35, crop_y: 65, crop_zoom: 1.5 } });
+        await c.call('patch', {
+          id: f.id,
+          changes: { confirmed: 0, crop_x: 35, crop_y: 65, crop_zoom: 1.5 }
+        });
         const start = c.events.length;
         await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
         await c.idle(start);
         let node = await c.call('get', { id: f.id });
         assert.equal(node.subject_id, 420);
         assert.equal(node.match_confidence, 40 / 47);
-        assert.equal(node.match_review, 1);
+        assert.equal(node.match_review, 0);
         assert.equal(node.manual_cover, 1);
         assert.equal(node.cover, idFor(f.image));
         assert.deepEqual([node.crop_x, node.crop_y, node.crop_zoom], [35, 65, 1.5]);
-        // Adjusting/confirming the cover alone is not confirmation of the identity.
+        assert.equal(node.confirmed, 0);
+        assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
+        // An explicit cover confirmation takes priority through refresh and restart.
         await c.call('patch', { id: f.id, changes: { confirmed: 1, crop_x: 36 } });
         await c.call('refreshMetadata', { id: f.id });
         await c.close();
         c = await client(f.data, responder(subject, f.png), { token: '' });
         node = await c.call('get', { id: f.id });
-        assert.equal(node.match_review, 1);
+        assert.equal(node.match_review, 0);
         assert.equal(node.match_confidence, 40 / 47);
-        assert.ok((await c.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
+        assert.equal(node.confirmed, 1);
+        assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
         if (resolution === 'confirm')
           await c.call('patch', { id: f.id, changes: { match_review: 0, confirmed: 1 } });
         else await c.call('bind', { id: f.id, url: '420' });

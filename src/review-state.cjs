@@ -1,17 +1,17 @@
 'use strict';
 
-// Confidence belongs to an automatic identity assignment. A manually selected
-// cover has its own confirmation lifecycle and must not inherit that evidence.
-function exactAutomaticIdentitySql(alias = '') {
+// A selected Bangumi identity has already passed the matching policy. Confidence
+// is ranking evidence, not a second request to approve a successfully matched cover.
+function matchedIdentitySql(alias = '') {
   const p = alias ? alias + '.' : '';
-  return `${p}match_confidence=1 AND ${p}manual_subject=0 AND ${p}manual_character=0 AND (${p}subject_id>0 OR ${p}character_id>0)`;
+  return `(${p}subject_id>0 OR ${p}character_id>0)`;
 }
-function exactAutomaticSql(alias = '') {
+function matchedAutomaticSql(alias = '') {
   const p = alias ? alias + '.' : '';
-  return `${p}manual_cover=0 AND ${exactAutomaticIdentitySql(alias)}`;
+  return `${p}manual_cover=0 AND ${matchedIdentitySql(alias)}`;
 }
 function pendingReviewSql(alias = '') {
   const p = alias ? alias + '.' : '';
-  return `${p}kind='folder' AND (${p}match_review=1 OR (${p}confirmed=0 AND ${p}cover_source IN ('fallback','bangumi','bangumi-character')))`;
+  return `${p}kind='folder' AND ${p}confirmed=0 AND ${p}cover_source='fallback' AND NOT COALESCE(${matchedIdentitySql(alias)},0)`;
 }
-module.exports = { exactAutomaticIdentitySql, exactAutomaticSql, pendingReviewSql };
+module.exports = { matchedIdentitySql, matchedAutomaticSql, pendingReviewSql };

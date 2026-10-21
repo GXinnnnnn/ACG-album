@@ -22,11 +22,7 @@ const {
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
-const {
-  exactAutomaticIdentitySql,
-  exactAutomaticSql,
-  pendingReviewSql
-} = require('./review-state.cjs');
+const { matchedIdentitySql, matchedAutomaticSql, pendingReviewSql } = require('./review-state.cjs');
 const {
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
@@ -225,10 +221,12 @@ const characters = createCharacterLibrary({
   paused: onlinePause,
   tokenPresent: () => !!normalizeAccessToken(workerData.token)
 });
-// Repair persisted exact automatic assignments from versions where a later
-// cover refresh could reopen review. Run after character schema migration.
+// Repair prior versions that treated a successful nonexact match as unreviewed.
+// Only unmatched local fallback covers need review; stale confidence-review flags
+// must not survive an explicit confirmation or reopen a matched cover.
 run(
-  `UPDATE nodes SET confirmed=1,match_review=0 WHERE ${exactAutomaticSql()} AND (confirmed<>1 OR match_review<>0)`
+  `UPDATE nodes SET confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE confirmed END,match_review=0
+   WHERE kind='folder' AND ((${matchedAutomaticSql()} AND confirmed<>1) OR match_review<>0)`
 );
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
@@ -462,20 +460,22 @@ function confirmReview({ query, previewIds = [] } = {}) {
       !['all', 'folders'].includes(query.filter || 'all'))
   )
     throw new Error('预览卡片仅适用于首页浏览条件。');
-  const { where, args } = browseWhere(query);
+  // Inside an opened directory this action confirms every direct subfolder,
+  // even if a search/media/favorites filter or pagination hides some cards.
+  const { where, args } = browseWhere(query.parent ? { parent: query.parent } : query);
   const from = where.some((w) => w.startsWith('m.'))
     ? 'media m JOIN nodes n ON n.id=m.id'
     : 'nodes n';
-  // One bound SQL operation selects every browse result, including unloaded
-  // pages, plus explicitly rendered overview previews. Preview IDs may only
-  // select live direct children of live roots in that same home browse result.
+  // One transaction confirms every selected folder, including unloaded cards
+  // and covers without a visible dot. Overview preview IDs can only select live
+  // direct children of live roots in the same home browse result.
   db.exec('BEGIN IMMEDIATE');
   let updated;
   try {
     updated = run(
       `WITH browse AS (SELECT n.id FROM ${from} WHERE ${where.join(' AND ')})
        UPDATE nodes AS n SET confirmed=1,match_review=0
-       WHERE n.missing=0 AND ${pendingReviewSql('n')} AND
+       WHERE n.missing=0 AND n.kind='folder' AND (n.confirmed<>1 OR n.match_review<>0) AND
        (n.id IN (SELECT id FROM browse) OR
         (n.id IN (SELECT value FROM json_each(?)) AND n.root=n.parent AND
          n.parent IN (SELECT r.id FROM browse b JOIN nodes r ON r.id=b.id
@@ -517,7 +517,7 @@ function coverFor(folder, choice) {
   )
     return;
   run(
-    `UPDATE nodes SET cover=?,cover_source=?,confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 WHEN cover=? THEN confirmed ELSE 0 END WHERE id=? AND manual_cover=0`,
+    `UPDATE nodes SET cover=?,cover_source=?,confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 WHEN cover=? THEN confirmed ELSE 0 END WHERE id=? AND manual_cover=0`,
     choice?.id || null,
     choice ? 'fallback' : null,
     choice?.id || null,
@@ -1180,14 +1180,12 @@ async function saveSubjectContents(
         );
       else if (Number.isFinite(matchConfidence))
         run(
-          'UPDATE nodes SET match_confidence=?,match_review=?,confirmed=CASE WHEN ?=1 AND manual_cover=0 THEN 1 ELSE confirmed END WHERE id=?',
+          'UPDATE nodes SET match_confidence=?,match_review=0 WHERE id=?',
           matchConfidence,
-          matchConfidence < 1 ? 1 : 0,
-          matchConfidence === 1 ? 1 : 0,
           folder.id
         );
       run(
-        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${exactAutomaticSql()}`,
+        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${matchedAutomaticSql()}`,
         folder.id
       );
       db.exec('COMMIT');
@@ -2525,7 +2523,7 @@ const methods = {
   resetCover: async ({ id }) => {
     const n = getNode(id);
     run(
-      `UPDATE nodes SET manual_cover=0,crop_x=50,crop_y=50,crop_zoom=1,cover_revision=NULL,cover_source=NULL,cover=NULL,confirmed=CASE WHEN ${exactAutomaticIdentitySql()} THEN 1 ELSE 0 END WHERE id=?`,
+      `UPDATE nodes SET manual_cover=0,crop_x=50,crop_y=50,crop_zoom=1,cover_revision=NULL,cover_source=NULL,cover=NULL,confirmed=CASE WHEN ${matchedIdentitySql()} THEN 1 ELSE 0 END WHERE id=?`,
       id
     );
     await refreshLocalCover(id);
@@ -2537,7 +2535,7 @@ const methods = {
       fs.existsSync(characters.coverFile(current.character_id))
     )
       run(
-        `UPDATE nodes SET cover=?,cover_source='bangumi-character',confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
+        `UPDATE nodes SET cover=?,cover_source='bangumi-character',confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
         'character:' + current.character_id,
         id
       );
@@ -2549,7 +2547,7 @@ const methods = {
       const m = one('SELECT json FROM metadata WHERE id=?', current.subject_id);
       if (m && JSON.parse(m.json).local_cover)
         run(
-          `UPDATE nodes SET cover=?,cover_source='bangumi',confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
+          `UPDATE nodes SET cover=?,cover_source='bangumi',confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
           'subject:' + current.subject_id,
           id
         );

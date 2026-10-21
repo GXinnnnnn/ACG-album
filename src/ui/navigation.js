@@ -298,14 +298,13 @@ function updateCoverNode(n) {
       img.classList.toggle('folder-icon', n.cover_source === 'folder-icon' || !n.cover);
       const src = thumb(n);
       if (img.getAttribute('src') !== src) img.src = src;
-      tile.querySelector('.match-review')?.remove();
-      if (n.match_review)
-        tile.querySelector('.collection-image').insertAdjacentHTML('beforeend', cardReviewBadge(n));
+      tile.querySelector('.card-review')?.remove();
+      tile.querySelector('.collection-image').insertAdjacentHTML('beforeend', cardReviewBadge(n));
       tile
         .querySelector('.collection-open')
         .setAttribute(
           'aria-label',
-          '打开分类 ' + n.name + (n.match_review ? '，' + cardReviewMessage(n) : '')
+          '打开分类 ' + n.name + (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '')
         );
       tile.oncontextmenu = (e) => showContext(e, n);
     }

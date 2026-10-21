@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const sharp = require('sharp');
-const { exactAutomaticSql } = require('./review-state.cjs');
+const { matchedAutomaticSql } = require('./review-state.cjs');
 const {
   safeCharacter,
   rankCharacters,
@@ -239,14 +239,12 @@ function createCharacterLibrary(e) {
         );
       } else if (Number.isFinite(matchConfidence))
         run(
-          'UPDATE nodes SET match_confidence=?,match_review=?,confirmed=CASE WHEN ?=1 AND manual_cover=0 THEN 1 ELSE confirmed END WHERE id=?',
+          'UPDATE nodes SET match_confidence=?,match_review=0 WHERE id=?',
           matchConfidence,
-          matchConfidence < 1 ? 1 : 0,
-          matchConfidence === 1 ? 1 : 0,
           folder.id
         );
       run(
-        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${exactAutomaticSql()}`,
+        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${matchedAutomaticSql()}`,
         folder.id
       );
       db.exec('COMMIT');

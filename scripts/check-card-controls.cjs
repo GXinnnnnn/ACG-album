@@ -182,21 +182,26 @@ async function seed(collections) {
     const names = [
       '000 Exact automatic subject',
       '001 Exact automatic character',
-      '002 Uncertain match',
-      '003 Manual full score',
-      '004 Manual cover review',
+      '002 Uncertain matched subject',
+      '003 Manual matched subject',
+      '004 Manual cover with matched subject',
       '005 Already confirmed',
+      '006 Uncertain matched character',
+      '007 Confirmed with stale review',
+      '008 Unmatched fallback with stale review',
+      '009 Manual local cover with stale review',
       ...Array.from({ length: 225 }, (_, i) => `Page item ${String(i).padStart(3, '0')}`)
     ];
     const folders = names.map((name) => path.join(collection, name));
     const nested = path.join(folders[6], 'Nested unrelated review');
     const unrelated = path.join(other, 'Outside current page');
+    const filteredSibling = path.join(other, 'Hidden outside search');
     const image = await sharp({
       create: { width: 48, height: 64, channels: 3, background: '#cbb7d8' }
     })
       .png()
       .toBuffer();
-    for (const folder of [...folders, ...previewFolders, nested, unrelated]) {
+    for (const folder of [...folders, ...previewFolders, nested, unrelated, filteredSibling]) {
       await fs.mkdir(folder, { recursive: true });
       await fs.writeFile(path.join(folder, 'generated.png'), image, { flag: 'wx' });
     }
@@ -238,21 +243,42 @@ async function seed(collections) {
     update(3, 904, null, 1, 1, 1, 0, 0, 'bangumi');
     update(4, 905, null, 1, 0, 0, 1, 0, 'manual');
     update(5, null, null, null, 0, 0, 0, 1, 'fallback');
-    // A manually selected source does not create a fallback-cover dot. Existing match review still does.
+    update(6, null, 906, 0.64, 1, 0, 0, 0, 'bangumi-character', 'character');
+    update(7, null, null, null, 1, 0, 0, 1, 'fallback');
+    update(8, null, null, 0.2, 1, 0, 0, 0, 'fallback');
+    update(9, null, null, null, 1, 0, 1, 0, 'manual');
+    // Legacy match_review must not override successful matches, local manual
+    // covers, or persisted manual confirmation.
     db.prepare('UPDATE nodes SET match_review=1 WHERE id=?').run(idFor(folders[4]));
-    db.prepare("UPDATE nodes SET cover_source='bangumi-character',match_review=0 WHERE id=?").run(
-      idFor(unrelated)
-    );
     db.close();
     await launch();
     const parent = idFor(collection);
-    await go(parent);
     await check(
-      'exact automatic subject and character have no red dot; uncertain and manual evidence stay pending',
+      'opening a real imported directory carries its ID into the bulk query',
       async () => {
-        for (const index of [0, 1]) {
+        const tile = page.locator(`#category-overview .collection-tile[data-id="${parent}"]`);
+        await tile.locator('.category-enter').click();
+        await page.waitForFunction(
+          (parent) => S.parent === parent && grid.active && grid.cards.size > 0,
+          parent
+        );
+        const navigation = await page.evaluate(() => ({
+          parent: S.parent,
+          path: S.current.path,
+          query: queryArgs()
+        }));
+        assert.equal(navigation.parent, parent);
+        assert.equal(navigation.query.parent, parent);
+        assert.equal(path.resolve(navigation.path), collection);
+        report.directoryNavigation = navigation;
+      }
+    );
+    await check(
+      'matched subjects and characters at any confidence have no dot; only unmatched local fallback stays pending',
+      async () => {
+        for (const index of [0, 1, 2, 3, 4, 6]) {
           const node = await rpc('get', { id: idFor(folders[index]) });
-          assert.equal(node.confirmed, 1);
+          if (index !== 4) assert.equal(node.confirmed, 1);
           assert.equal(node.match_review, 0);
           assert.equal(
             await page.evaluate(
@@ -263,16 +289,26 @@ async function seed(collections) {
           );
           await expect(page.locator(`[data-id="${node.id}"] .card-review`)).toHaveCount(0);
         }
-        for (const index of [2, 3, 4]) {
+        for (const index of [5, 7, 9]) {
+          const node = await rpc('get', { id: idFor(folders[index]) });
+          assert.equal(await page.evaluate((node) => cardReviewMessage(node), node), '');
+          await expect(page.locator(`[data-id="${node.id}"] .card-review`)).toHaveCount(0);
+        }
+        assert.equal((await rpc('get', { id: idFor(folders[7]) })).confirmed, 1);
+        for (const index of [8, 10]) {
           const node = await rpc('get', { id: idFor(folders[index]) });
           assert.equal(node.confirmed, 0);
           await expect(page.locator(`[data-id="${node.id}"] .card-review`)).toHaveCount(1);
         }
+        const pending = (await rpc('list', { filter: 'pending', limit: 500 })).items;
+        const matchedIds = [0, 1, 2, 3, 4, 5, 6, 7, 9].map((index) => idFor(folders[index]));
         assert.equal(
-          (await rpc('list', { filter: 'pending', limit: 500 })).items.some((n) =>
-            [idFor(folders[0]), idFor(folders[1])].includes(n.id)
-          ),
+          pending.some((n) => matchedIds.includes(n.id)),
           false
+        );
+        assert.equal(
+          pending.some((n) => n.id === idFor(folders[8])),
+          true
         );
       }
     );
@@ -292,7 +328,7 @@ async function seed(collections) {
         await page.locator('#density-button').click();
         await shot('home-preview-before');
         await page.locator('#clear-page-review').click();
-        await expect(page.locator('#page-review-status')).toContainText('15 个项目');
+        await expect(page.locator('#page-review-status')).toContainText('15 个文件夹封面');
         await expect(page.locator('#category-overview .card-review')).toHaveCount(0);
         for (const id of previewIds) assert.equal((await rpc('get', { id })).confirmed, 1);
         const hidden = previewFolders.filter((folder) => !previewIds.includes(idFor(folder)));
@@ -300,7 +336,7 @@ async function seed(collections) {
         for (const folder of hidden)
           assert.equal((await rpc('get', { id: idFor(folder) })).confirmed, 0);
         assert.equal((await rpc('get', { id: idFor(unrelated) })).confirmed, 0);
-        assert.equal((await rpc('get', { id: idFor(folders[2]) })).confirmed, 0);
+        assert.equal((await rpc('get', { id: idFor(folders[8]) })).confirmed, 0);
         assert.equal((await rpc('get', { id: idFor(nested) })).confirmed, 0);
         report.homePreview = { displayed: previewIds.length, hiddenPreserved: hidden.length };
         await shot('home-preview-cleared');
@@ -319,13 +355,43 @@ async function seed(collections) {
         assert.ok(
           before.total > 180 && before.loaded < before.total && before.cards < before.total
         );
-        report.virtualPage = before;
+        const unloadedId = idFor(folders[folders.length - 1]);
+        assert.equal(
+          await page.evaluate(
+            (id) => [...grid.items.values()].some((node) => node.id === id),
+            unloadedId
+          ),
+          false,
+          'the last real folder has never loaded into the virtual grid'
+        );
+        assert.equal((await rpc('get', { id: unloadedId })).confirmed, 0);
+        report.virtualPage = { ...before, unloadedId };
         await page.locator('#density-button').click();
-        await expect(page.locator('#clear-page-review')).toHaveAccessibleName('清除本页红点');
+        await expect(page.locator('#density-button')).toHaveAttribute('title', /批量确认封面/);
+        await expect(page.locator('#clear-page-review')).toHaveAccessibleName('批量确认封面');
+        await expect(page.locator('#page-review-help')).toContainText('当前目录');
+        await expect(page.locator('#page-review-help')).toContainText('全部文件夹封面');
+        await expect(page.locator('#page-review-help')).toContainText('尚未滚动加载');
+        await expect(page.locator('#modal .density-popup')).toHaveCount(1);
+        await expect(page.locator('#modal #clear-page-review')).toHaveCount(1);
+        await expect(page.locator('dialog[open]')).toHaveCount(1);
+        const layout = await page.locator('#clear-page-review').evaluate((button) => {
+          const modal = document.querySelector('#modal').getBoundingClientRect();
+          const rect = button.getBoundingClientRect();
+          return {
+            visible: rect.top >= modal.top && rect.bottom <= modal.bottom,
+            beforeRatio: Boolean(
+              button.compareDocumentPosition(document.querySelector('#ratio-select')) &
+                Node.DOCUMENT_POSITION_FOLLOWING
+            )
+          };
+        });
+        assert.equal(layout.visible, true, 'bulk button fits the same card-size dialog');
+        assert.equal(layout.beforeRatio, true, 'bulk action precedes secondary ratio settings');
         await shot('page-review-before');
         await page.locator('#clear-page-review').focus();
         await page.keyboard.press('Enter');
-        await expect(page.locator('#page-review-status')).toContainText('已清除本页');
+        await expect(page.locator('#page-review-status')).toContainText('已清除当前页面红点');
         const rows = await rpc('list', { parent, limit: 500 });
         assert.equal(rows.total, folders.length);
         assert.equal(
@@ -337,12 +403,14 @@ async function seed(collections) {
         assert.equal(await page.locator('#virtual-grid .card-review').count(), 0);
         await shot('page-review-cleared');
         await page.locator('#clear-page-review').click();
-        await expect(page.locator('#page-review-status')).toHaveText('当前页没有需要清除的红点。');
+        await expect(page.locator('#page-review-status')).toHaveText(
+          '当前目录全部文件夹封面均已确认，没有需要清除的红点。'
+        );
         await page.locator('#modal-close').click();
       }
     );
     await check(
-      'media filter cannot clear folders and scoped search clears only matching results',
+      'an opened directory confirms all direct folders despite media filters or search, preserving nested folders',
       async () => {
         await go(idFor(other));
         await page.evaluate(async () => {
@@ -351,18 +419,20 @@ async function seed(collections) {
         });
         await page.locator('#density-button').click();
         await page.locator('#clear-page-review').click();
-        await expect(page.locator('#page-review-status')).toHaveText('当前页没有需要清除的红点。');
-        assert.equal((await rpc('get', { id: idFor(unrelated) })).confirmed, 0);
+        await expect(page.locator('#page-review-status')).toContainText('2 个文件夹封面');
+        for (const folder of [unrelated, filteredSibling])
+          assert.equal((await rpc('get', { id: idFor(folder) })).confirmed, 1);
+        assert.equal((await rpc('get', { id: idFor(nested) })).confirmed, 0);
         await page.locator('#modal-close').click();
-        await page.evaluate(async () => {
-          S.filter = 'all';
-          S.search = 'Outside';
-          await loadPage();
-        });
+        await go(idFor(overview), { search: 'Preview item 00' });
+        assert.equal(await page.evaluate(() => queryArgs().parent), idFor(overview));
+        const before = await rpc('list', { parent: idFor(overview), limit: 100 });
+        assert.equal(before.items.filter((node) => !node.confirmed).length, 2);
         await page.locator('#density-button').click();
         await page.locator('#clear-page-review').click();
-        await expect(page.locator('#page-review-status')).toContainText('1 个项目');
-        assert.equal((await rpc('get', { id: idFor(unrelated) })).confirmed, 1);
+        await expect(page.locator('#page-review-status')).toContainText('2 个文件夹封面');
+        for (const folder of previewFolders)
+          assert.equal((await rpc('get', { id: idFor(folder) })).confirmed, 1);
         assert.equal((await rpc('get', { id: idFor(nested) })).confirmed, 0);
         await page.locator('#modal-close').click();
         await go(parent, { search: '' });
@@ -386,6 +456,11 @@ async function seed(collections) {
           window.__clearCompletion = clearPageReview();
         });
         await page.waitForFunction(() => window.__summaryEntered);
+        await expect(page.locator('#clear-page-review')).toBeDisabled();
+        await expect(page.locator('#clear-page-review')).toHaveAttribute('aria-busy', 'true');
+        await expect(page.locator('#clear-page-review')).toContainText('正在批量确认');
+        await expect(page.locator('#page-review-status')).toContainText('包含未加载项目');
+        await expect(page.locator('dialog[open]')).toHaveCount(1);
         await go(idFor(other));
         await go(parent);
         const version = await page.evaluate(() => S.loadVersion);
@@ -398,6 +473,69 @@ async function seed(collections) {
         await expect(page.locator('#page-review-status')).toHaveText('');
         await expect(page.locator('#clear-page-review')).toBeEnabled();
         await page.locator('#modal-close').click();
+      }
+    );
+    await check(
+      'bulk refresh failures explain retry and the same button recovers without another dialog',
+      async () => {
+        await page.locator('#density-button').click();
+        await page.evaluate(() => {
+          window.__originalSummary = loadSummary;
+          loadSummary = async () => {
+            throw new Error('Generated refresh failure');
+          };
+        });
+        try {
+          await page.locator('#clear-page-review').click();
+          await expect(page.locator('#page-review-status')).toContainText(
+            '封面已确认，但页面刷新失败'
+          );
+          await expect(page.locator('#page-review-status')).toContainText(
+            '请再次点击“批量确认封面”重试'
+          );
+          await expect(page.locator('#clear-page-review')).toBeEnabled();
+          await expect(page.locator('dialog[open]')).toHaveCount(1);
+        } finally {
+          await page.evaluate(() => {
+            loadSummary = window.__originalSummary;
+          });
+        }
+        await page.locator('#clear-page-review').click();
+        await expect(page.locator('#page-review-status')).toContainText('全部文件夹封面均已确认');
+        await page.locator('#modal-close').click();
+      }
+    );
+    await check(
+      'the minimum desktop window keeps the bulk entry reachable in the card-size dialog',
+      async () => {
+        await app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()[0].setContentSize(980, 680)
+        );
+        await page.waitForFunction(() => innerWidth === 980 && innerHeight === 680);
+        await page.locator('#density-button').click();
+        await expect(page.locator('#clear-page-review')).toBeVisible();
+        await page.locator('#clear-page-review').scrollIntoViewIfNeeded();
+        const bounds = await page.locator('#clear-page-review').evaluate((button) => {
+          const modal = document.querySelector('#modal');
+          const outer = modal.getBoundingClientRect();
+          const inner = button.getBoundingClientRect();
+          return {
+            inside:
+              inner.top >= outer.top &&
+              inner.bottom <= outer.bottom &&
+              inner.left >= outer.left &&
+              inner.right <= outer.right,
+            noHorizontalClip: modal.scrollWidth <= modal.clientWidth + 1
+          };
+        });
+        assert.equal(bounds.inside, true);
+        assert.equal(bounds.noHorizontalClip, true);
+        await shot('minimum-window-card-settings');
+        await page.locator('#modal-close').click();
+        await app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()[0].setContentSize(1180, 900)
+        );
+        await page.waitForFunction(() => innerWidth === 1180 && innerHeight === 900);
       }
     );
     await check(
@@ -576,11 +714,16 @@ async function seed(collections) {
       await launch();
       assert.equal(await page.evaluate(() => S.settings.density), 186);
       await go(parent);
-      for (const index of [0, 1, 2, folders.length - 1]) {
+      for (const index of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, folders.length - 1]) {
         const node = await rpc('get', { id: idFor(folders[index]) });
         assert.equal(node.confirmed, 1);
         assert.equal(node.match_review, 0);
+        assert.equal(await page.evaluate((node) => cardReviewMessage(node), node), '');
       }
+      await expect(page.locator('#virtual-grid .card-review')).toHaveCount(0);
+      assert.equal((await rpc('get', { id: report.virtualPage.unloadedId })).confirmed, 1);
+      for (const folder of [unrelated, filteredSibling, ...previewFolders])
+        assert.equal((await rpc('get', { id: idFor(folder) })).confirmed, 1);
       assert.equal((await rpc('get', { id: idFor(nested) })).confirmed, 0);
       assert.equal(report.errors.length, 0, JSON.stringify(report.errors));
     });

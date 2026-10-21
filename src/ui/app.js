@@ -314,30 +314,17 @@ function renderEmpty(first = true) {
     })
   );
 }
-function matchPercentage(n) {
-  return Number.isFinite(n.match_confidence)
-    ? `${Math.floor(n.match_confidence * 1000) / 10}%`
-    : '待核对';
-}
 function cardReviewMessage(n) {
-  if (
-    n.kind !== 'folder' ||
-    (Number(n.match_confidence) === 1 &&
-      !n.manual_cover &&
-      !n.manual_subject &&
-      !n.manual_character &&
-      (n.subject_id > 0 || n.character_id > 0))
-  )
-    return '';
-  if (n.match_review) return `匹配 ${matchPercentage(n)}，待核对；右键可更改作品关联`;
-  return !n.confirmed && ['fallback', 'bangumi', 'bangumi-character'].includes(n.cover_source)
-    ? '封面待确认'
-    : '';
+  // Persisted manual confirmation wins over legacy review flags. A Bangumi
+  // association is a successful match at any confidence; only local fallback
+  // covers without an associated entry need review.
+  if (n.kind !== 'folder' || n.confirmed || n.subject_id > 0 || n.character_id > 0) return '';
+  return n.cover_source === 'fallback' ? '本地封面待确认；右键可更改封面或关联条目' : '';
 }
 function cardReviewBadge(n) {
   const message = cardReviewMessage(n);
   if (!message) return '';
-  return `<span class="card-review${n.match_review ? ' match-review' : ''}" title="${esc(message)}">${n.match_review ? esc('匹配 ' + matchPercentage(n)) : ''}</span>`;
+  return `<span class="card-review" title="${esc(message)}"></span>`;
 }
 function card(n, index = 0, inline = false) {
   const b = document.createElement('button');
@@ -438,7 +425,7 @@ async function renderOverview(version) {
     tile.dataset.id = n.id;
     tile.className = 'collection-tile' + (expanded ? ' expanded' : '');
     if (!retained)
-      tile.innerHTML = `<div class="collection-image"><img alt="" class="${n.cover_source === 'folder-icon' || !n.cover ? 'folder-icon' : ''}"><button class="collection-open" aria-label="打开分类 ${esc(n.name)}${n.match_review ? '，' + esc(cardReviewMessage(n)) : ''}"></button>${n.match_review ? cardReviewBadge(n) : ''}<span class="collection-path">本地分类</span></div><div class="collection-details"><div><h3>${esc(n.name)}</h3><p>${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目</p></div><button class="category-enter" title="打开分类" aria-label="打开 ${esc(n.name)}">${svg('arrow-left').replace('<svg ', '<svg style="transform:rotate(180deg)" ')}</button><button class="category-expand" aria-label="${expanded ? '收起' : '展开'}分类" title="${expanded ? '收起' : '展开'}分类" aria-expanded="${expanded}">${svg(expanded ? 'collapse' : 'chevron-down')}</button></div>`;
+      tile.innerHTML = `<div class="collection-image"><img alt="" class="${n.cover_source === 'folder-icon' || !n.cover ? 'folder-icon' : ''}"><button class="collection-open" aria-label="打开分类 ${esc(n.name)}${cardReviewMessage(n) ? '，' + esc(cardReviewMessage(n)) : ''}"></button>${cardReviewBadge(n)}<span class="collection-path">本地分类</span></div><div class="collection-details"><div><h3>${esc(n.name)}</h3><p>${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目</p></div><button class="category-enter" title="打开分类" aria-label="打开 ${esc(n.name)}">${svg('arrow-left').replace('<svg ', '<svg style="transform:rotate(180deg)" ')}</button><button class="category-expand" aria-label="${expanded ? '收起' : '展开'}分类" title="${expanded ? '收起' : '展开'}分类" aria-expanded="${expanded}">${svg(expanded ? 'collapse' : 'chevron-down')}</button></div>`;
     tile.querySelector('h3').textContent = n.name;
     tile.querySelector('.collection-details p').textContent =
       `${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目`;
@@ -446,11 +433,10 @@ async function renderOverview(version) {
       .querySelector('.collection-open')
       .setAttribute(
         'aria-label',
-        `打开分类 ${n.name}${n.match_review ? '，' + cardReviewMessage(n) : ''}`
+        `打开分类 ${n.name}${cardReviewMessage(n) ? '，' + cardReviewMessage(n) : ''}`
       );
-    tile.querySelector('.match-review')?.remove();
-    if (n.match_review)
-      tile.querySelector('.collection-image').insertAdjacentHTML('beforeend', cardReviewBadge(n));
+    tile.querySelector('.card-review')?.remove();
+    tile.querySelector('.collection-image').insertAdjacentHTML('beforeend', cardReviewBadge(n));
     const cover = tile.querySelector('img');
     applyCoverCrop(cover, n);
     cover.classList.toggle('folder-icon', n.cover_source === 'folder-icon' || !n.cover);
@@ -702,7 +688,7 @@ function openModal(title, html, width = 610) {
   modalGeneration++;
   if (!$('#modal').open) modalReturnFocus = document.activeElement;
   const d = $('#modal');
-  d.classList.remove('binding-modal');
+  d.classList.remove('binding-modal', 'display-dialog');
   $('#modal-title').textContent = title;
   $('#modal-content').innerHTML = html;
   d.style.width = width + 'px';
@@ -1370,10 +1356,14 @@ async function refreshLibrary() {
   }
 }
 function densityModal() {
-  openModal(
+  const help = S.parent
+    ? `确认当前目录“${esc(S.current?.name || '已打开目录')}”下全部文件夹封面，清除当前页面红点；包含尚未滚动加载的项目，不受搜索或显示筛选限制。`
+    : '确认当前页面全部文件夹封面，清除当前页面红点；包含尚未滚动加载的项目，首页同时包含已展开的相册预览。';
+  const dialog = openModal(
     '查看设置',
-    `<p class="display-help">工具栏可直接切换小、中、大卡片，也可在浏览区按住 Ctrl 滚动鼠标滚轮。分类、相册和图片一起调整，重启后保留选择。</p><div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">分类封面保留横向概览。尺寸按 Windows 显示比例自动适配，切换时保留正在浏览的卡片。</p><div class="setting-row page-review-setting"><div><strong>当前页红点</strong><p id="page-review-help">将当前结果中的作品匹配与封面标记为已确认，包含尚未滚动加载的卡片；首页包含已展开的相册预览。</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}清除本页红点</button></div><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p>`
+    `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 Ctrl + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
   );
+  dialog.classList.add('display-dialog');
   applyDisplaySettings();
   $$('#modal [data-density]').forEach(
     (b) =>
@@ -1390,6 +1380,7 @@ async function clearPageReview() {
     version = S.loadVersion,
     query = { ...queryArgs() },
     queryKey = JSON.stringify(query),
+    scope = S.parent ? '当前目录' : '当前页面',
     previewIds = isOverview()
       ? $$('#category-overview .collection-preview .album-card').map((card) => card.dataset.id)
       : [];
@@ -1397,13 +1388,17 @@ async function clearPageReview() {
   if (!button || button.disabled) return;
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
-  status.textContent = '正在清除当前页红点…';
-  let completionVersion = version;
+  button.innerHTML = `${svg('refresh')}正在批量确认…`;
+  status.dataset.state = 'busy';
+  status.textContent = `正在确认${scope}全部文件夹封面，包含未加载项目…`;
+  let completionVersion = version,
+    confirmed = false;
   try {
     const result = await api('confirmReview', {
       query,
       ...(previewIds.length ? { previewIds } : {})
     });
+    confirmed = true;
     if (sameBrowse() && version === S.loadVersion) {
       clearTimeout(changedTimer);
       await loadSummary();
@@ -1413,25 +1408,28 @@ async function clearPageReview() {
         await refresh;
       }
     }
-    if (generation === modalGeneration && status.isConnected)
+    if (generation === modalGeneration && status.isConnected) {
+      status.dataset.state = 'success';
       status.textContent =
         sameBrowse() && completionVersion === S.loadVersion
           ? result.updated
-            ? `已清除本页 ${fmt(result.updated)} 个项目的红点。`
-            : '当前页没有需要清除的红点。'
+            ? `已确认 ${fmt(result.updated)} 个文件夹封面，已清除当前页面红点。`
+            : `${scope}全部文件夹封面均已确认，没有需要清除的红点。`
           : '';
+    }
   } catch (error) {
     if (generation === modalGeneration && status.isConnected) {
-      if (sameBrowse() && completionVersion === S.loadVersion) {
-        status.textContent = '清除失败，请重试。';
-        throw error;
-      }
-      status.textContent = '';
+      status.dataset.state = 'error';
+      status.textContent =
+        sameBrowse() && completionVersion === S.loadVersion
+          ? `${confirmed ? '封面已确认，但页面刷新失败' : '批量确认失败'}：${error.message || String(error)}。请再次点击“批量确认封面”重试。`
+          : '';
     }
   } finally {
     if (generation === modalGeneration && button.isConnected) {
       button.disabled = false;
       button.removeAttribute('aria-busy');
+      button.innerHTML = `${svg('check-circle')}批量确认封面`;
     }
   }
 }
@@ -2122,6 +2120,9 @@ $('#back-button').onclick = () => attempt(back);
 $('#import-sidebar').onclick = importFolder;
 $('#refresh-button').onclick = refreshLibrary;
 $('#settings-button').onclick = () => attempt(() => settingsModal());
+$('#density-button').title = '查看设置：卡片尺寸、封面比例与批量确认封面';
+$('#density-button').setAttribute('aria-label', $('#density-button').title);
+$('#density-button').setAttribute('aria-haspopup', 'dialog');
 $('#density-button').onclick = densityModal;
 $('#theme-button').onclick = () => attempt(toggleTheme);
 $('#cancel-import').onclick = () => attempt(() => api('cancel'));

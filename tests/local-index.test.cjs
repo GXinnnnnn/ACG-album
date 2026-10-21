@@ -470,8 +470,8 @@ test('fresh legacy-root local-index selection stores exact and fuzzy evidence un
       const node = await f.call('get', { id: f.id });
       assert.equal(node.subject_id, 420);
       assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
-      assert.equal(node.match_review, exact ? 0 : 1);
-      assert.equal(node.confirmed, exact ? 1 : 0);
+      assert.equal(node.match_review, 0);
+      assert.equal(node.confirmed, 1);
       assert.equal(node.metadata.source, 'local-index');
     });
 });
@@ -528,7 +528,7 @@ test('local imports preserve strict85 threshold, three-point cohort and90 percen
   });
   assert.equal(exact.index.search({ query: 'AIR', types: [4], mode: 'import' }).selected.id, 2);
 });
-test('85.1 percent local import persists confidence and pending identity review', async (t) => {
+test('85.1 percent local import persists confidence and confirms the successfully matched identity', async (t) => {
   const chars = Array.from({ length: 230 }, (_, i) => String.fromCodePoint(0x5000 + i));
   const album = chars.slice(0, 25).join('');
   const subject = { id: 420, name: chars.slice(0, 21).join('') + chars.slice(200, 203).join('') };
@@ -538,9 +538,9 @@ test('85.1 percent local import persists confidence and pending identity review'
   const node = await f.call('get', { id: f.id });
   assert.equal(node.subject_id, 420);
   assert.equal(node.match_confidence, 40 / 47);
-  assert.equal(node.match_review, 1);
-  assert.equal(node.confirmed, 0);
-  assert.ok((await f.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
+  assert.equal(node.match_review, 0);
+  assert.equal(node.confirmed, 1);
+  assert.ok(!(await f.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
 });
 test('worker refresh falls back to local data after 403 and keeps the manual association', async (t) => {
   const f = await scanned(t, { subjects, network: 'forbidden' });
