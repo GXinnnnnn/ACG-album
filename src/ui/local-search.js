@@ -2,7 +2,23 @@
 
 // Classic-script extension. A separate native dialog preserves settings drafts and scroll.
 (() => {
+  const officialRepository = 'GXinnnnnn/ACG-album';
+  const officialReleases = `https://github.com/${officialRepository}/releases`;
   const kinds = { subject: '作品', person: '人物', character: '角色' };
+  function githubUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      return url.protocol === 'https:' &&
+        url.hostname === 'github.com' &&
+        !url.username &&
+        !url.password &&
+        !url.port
+        ? url.href
+        : '';
+    } catch {
+      return '';
+    }
+  }
   const types = { 1: '书籍', 2: '动画', 3: '音乐', 4: '游戏', 6: '影视 / 三次元' };
   let cachedStatus = null;
   let activeDialog = null;
@@ -15,7 +31,7 @@
     const version = status.dataVersion ? ` · 数据版本 ${status.dataVersion}` : ' · 数据版本未知';
     if (status.error) return `${source}${version} · 索引暂不可用：${errorText(status.error)}`;
     if (!status.available)
-      return `未安装本地检索索引${status.dataVersion ? version : ''}。请使用附带精简检索或完整检索索引的安装包。`;
+      return `未安装本地检索索引${status.dataVersion ? version : ''}。可在下方「资料库补全 / 下载」选择 Lite 或 Full 安装包。`;
     return `已随安装包附带 · ${source}${version}`;
   }
 
@@ -54,7 +70,7 @@
     dialog.id = 'local-search-dialog';
     dialog.className = 'modal local-search-dialog';
     dialog.setAttribute('aria-labelledby', 'local-search-title');
-    dialog.innerHTML = `<div class="modal-top"><div><span class="eyebrow">Bangumi · 本地索引</span><h2 id="local-search-title">本地资料检索</h2></div><button type="button" id="local-search-close" class="icon-button" aria-label="关闭本地资料检索">${svg('x')}</button></div><div class="local-search-scroll"><section class="local-search-source" aria-label="索引来源"><p id="local-search-source" data-local-index-status role="status" aria-live="polite">${esc(statusText(cachedStatus))}</p><p>精简与完整的名称检索覆盖相同；完整检索附带更多摘要等资料。名称可离线查询，打开官方条目需要联网。</p></section><form id="local-search-form"><div class="local-search-fields"><div><label for="local-search-kind">条目类别</label><select id="local-search-kind" class="field-input"><option value="subject">作品</option><option value="person">人物</option><option value="character">角色</option></select></div><div id="local-search-type-field"><label for="local-search-type">作品类型</label><select id="local-search-type" class="field-input"><option value="0">全部类型</option>${Object.entries(
+    dialog.innerHTML = `<div class="modal-top"><div><span class="eyebrow">Bangumi · 本地索引</span><h2 id="local-search-title">本地资料检索</h2></div><button type="button" id="local-search-close" class="icon-button" aria-label="关闭本地资料检索">${svg('x')}</button></div><div class="local-search-scroll"><section class="local-search-source" aria-label="索引来源"><p id="local-search-source" data-local-index-status role="status" aria-live="polite">${esc(statusText(cachedStatus))}</p><p>资料来源为 Bangumi 数据快照；名称可离线查询，在线条目和封面仍由 Bangumi 提供。GitHub 提供软件与索引安装包，不能代替 Bangumi 访问受权限限制的在线条目。</p></section><section id="local-search-downloads" class="local-search-source" data-download-state="loading" aria-labelledby="local-search-download-title" aria-busy="true"><h3 id="local-search-download-title" style="margin:0 0 8px;font-size:15px">资料库补全 / 下载</h3><p>Standard 用户可下载 Lite 或 Full，覆盖安装即可补全本地资料库，并保留个人相册数据。Lite 与 Full 的名称检索覆盖相同；Full 附带更多摘要等详细资料。</p><p id="local-search-download-status" role="status" aria-live="polite" style="margin-top:8px">正在读取当前版本下载链接…</p><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"><button id="local-search-download-lite" type="button" class="primary" data-local-download="lite" disabled>${svg('external')}下载 Lite</button><button id="local-search-download-full" type="button" class="subtle-button" data-local-download="full" disabled>${svg('external')}下载 Full</button><button id="local-search-release" type="button" class="text-button">${svg('external')}查看官方发布说明</button><button id="local-search-download-retry" type="button" class="text-button" hidden>${svg('refresh')}重试读取下载链接</button></div><p id="local-search-download-error" class="inline-error" role="alert" style="margin-top:8px" hidden></p><p style="margin-top:8px">安装包来自官方仓库 GXinnnnnn/ACG-album，由浏览器下载后手动安装。软件不会在此自动下载或替换数据库。</p></section><form id="local-search-form"><div class="local-search-fields"><div><label for="local-search-kind">条目类别</label><select id="local-search-kind" class="field-input"><option value="subject">作品</option><option value="person">人物</option><option value="character">角色</option></select></div><div id="local-search-type-field"><label for="local-search-type">作品类型</label><select id="local-search-type" class="field-input"><option value="0">全部类型</option>${Object.entries(
       types
     )
       .map(([id, name]) => `<option value="${id}">${name}</option>`)
@@ -74,7 +90,78 @@
     const errorArea = find('#local-search-error');
     let serial = 0;
     let statusSerial = 0;
+    let downloadSerial = 0;
+    let releaseUrl = officialReleases;
+    let downloadUrls = {};
     const alive = () => activeDialog === dialog && dialog.open && dialog.isConnected;
+    const downloadPanel = find('#local-search-downloads');
+    const downloadError = find('#local-search-download-error');
+    async function readDownloads() {
+      const request = ++downloadSerial;
+      downloadPanel.dataset.downloadState = 'loading';
+      downloadPanel.setAttribute('aria-busy', 'true');
+      downloadError.hidden = true;
+      find('#local-search-download-retry').hidden = true;
+      find('#local-search-download-status').textContent = '正在读取当前版本下载链接…';
+      downloadUrls = {};
+      dialog.querySelectorAll('[data-local-download]').forEach((button) => {
+        button.disabled = true;
+      });
+      try {
+        const info = await api('appInfo');
+        if (!alive() || request !== downloadSerial) return;
+        const version = String(info?.version || '');
+        const currentRelease = githubUrl(info?.releaseUrl);
+        const lite = githubUrl(info?.downloads?.lite);
+        const full = githubUrl(info?.downloads?.full);
+        if (!version || !currentRelease || !lite || !full)
+          throw new Error('当前版本下载信息不完整，请从官方发布页选择对应版本。');
+        releaseUrl = currentRelease;
+        downloadUrls = { lite, full };
+        downloadPanel.dataset.downloadState = 'ready';
+        find('#local-search-download-status').textContent =
+          `当前软件版本 ${version} · 下载同版本安装包`;
+        find('#local-search-release').innerHTML = svg('external') + `查看 ${esc(version)} 发布说明`;
+        for (const edition of ['lite', 'full']) {
+          const button = find(`[data-local-download="${edition}"]`);
+          button.innerHTML =
+            svg('external') + `下载 ${edition === 'lite' ? 'Lite' : 'Full'} ${esc(version)}`;
+          button.disabled = false;
+        }
+      } catch (error) {
+        if (!alive() || request !== downloadSerial) return;
+        releaseUrl = officialReleases;
+        downloadPanel.dataset.downloadState = 'error';
+        find('#local-search-download-status').textContent =
+          '暂时无法读取同版本安装包链接。可重试，或前往官方发布页选择 Lite / Full。';
+        find('#local-search-release').innerHTML = svg('external') + '查看官方发布说明';
+        find('#local-search-download-retry').hidden = false;
+        downloadError.hidden = false;
+        downloadError.textContent = errorText(error);
+      } finally {
+        if (alive() && request === downloadSerial) downloadPanel.setAttribute('aria-busy', 'false');
+      }
+    }
+    async function openDownload(button, url) {
+      if (!githubUrl(url)) return;
+      button.disabled = true;
+      downloadError.hidden = true;
+      try {
+        await api('external', { url });
+      } catch (error) {
+        if (!alive()) return;
+        downloadError.hidden = false;
+        downloadError.textContent = `无法打开下载 / 发布页：${errorText(error)}。请重试。`;
+      } finally {
+        if (alive()) button.disabled = false;
+      }
+    }
+    dialog.querySelectorAll('[data-local-download]').forEach((button) => {
+      button.onclick = () => openDownload(button, downloadUrls[button.dataset.localDownload]);
+    });
+    find('#local-search-release').onclick = () =>
+      openDownload(find('#local-search-release'), releaseUrl);
+    find('#local-search-download-retry').onclick = readDownloads;
     function clearError() {
       errorArea.hidden = true;
       errorArea.textContent = '';
@@ -138,6 +225,7 @@
       () => {
         serial++;
         statusSerial++;
+        downloadSerial++;
         parentDialog?.removeEventListener('close', parentClosed);
         if (activeDialog === dialog) activeDialog = null;
         dialog.remove();
@@ -173,7 +261,8 @@
         rememberStatus(result);
         if (result.error) throw new Error(errorText(result.error));
         if (!result.available) {
-          status.textContent = '本地检索索引未安装。安装附带精简检索或完整检索索引的软件包后再试。';
+          status.textContent =
+            '本地检索索引未安装。请在上方「资料库补全 / 下载」选择 Lite 或 Full，覆盖安装后再试。';
           return;
         }
         const candidates = Array.isArray(result.candidates) ? result.candidates : [];
@@ -240,6 +329,7 @@
     dialog.showModal();
     query.focus();
     readStatus();
+    readDownloads();
     return dialog;
   }
 

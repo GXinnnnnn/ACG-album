@@ -3,8 +3,9 @@
 // Classic-script extension: app.js owns modal, settings and IPC primitives.
 (() => {
   let activeContext = null;
+  const officialRepository = 'GXinnnnnn/ACG-album';
   const authorLinks = {
-    github: 'https://github.com/GXinnnnnn',
+    github: `https://github.com/${officialRepository}`,
     bilibili: 'https://space.bilibili.com/396517775',
     bangumi: 'https://bgm.tv'
   };
@@ -250,8 +251,8 @@
     const latest = result?.latestVersion;
     const statuses = {
       unconfigured: [
-        '尚未配置更新仓库',
-        '填写本应用实际发布 Release 的公开 GitHub 仓库后，再检查更新。'
+        '暂时无法检查更新',
+        '默认使用官方仓库 GXinnnnnn/ACG-album。可直接打开发布页查看版本与安装包。'
       ],
       current: [
         '当前已是最新版本',
@@ -268,15 +269,15 @@
     };
     const [title, message] = statuses[result?.status] || statuses.unknown;
     const directUrl = webUrl(result?.url);
-    const releasesUrl = repository ? `https://github.com/${repository}/releases` : '';
-    const actionUrl = directUrl || (result?.status !== 'unconfigured' ? releasesUrl : '');
+    const releasesUrl = `https://github.com/${repository || officialRepository}/releases`;
+    const actionUrl = directUrl || releasesUrl;
     return `<div class="updates-result-card" data-update-status="${esc(statuses[result?.status] ? result.status : 'unknown')}"><strong>${esc(title)}</strong><p>${esc(message)}</p>${actionUrl ? externalLink(actionUrl, result?.status === 'available' ? '打开 Release / 下载' : '查看 Releases', 'subtle-button about-release-link') : ''}</div>`;
   }
 
   window.showUpdates = async function showUpdates() {
     const context = mount(
       '检查更新',
-      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">从你指定的 GitHub 公开仓库检查正式 Release。公开发布无需登录；找到更新后，可在系统默认浏览器中查看发布说明并下载。</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/仓库名" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址。尚未配置时保持为空，请以作者实际发布地址为准。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com" data-about-external="https://github.com">GitHub 首页${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><p class="updates-footnote">更新由你决定，下载安装包后手动安装。</p></div>`,
+      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">默认从官方仓库 GXinnnnnn/ACG-album 检查正式 Release，也可保留或填写自定义 GitHub 仓库。找到更新后，在系统默认浏览器中查看发布说明并下载。</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/ACG-album" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址；留空则使用官方仓库 GXinnnnnn/ACG-album。有效的自定义仓库会保留。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com/GXinnnnnn/ACG-album" data-about-external="https://github.com/GXinnnnnn/ACG-album">官方 GitHub 仓库${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><p class="updates-footnote">更新由你决定，下载安装包后手动安装。${externalLink(`https://github.com/${officialRepository}/releases`, '前往官方发布页', 'about-inline-link')}<span data-update-release></span></p></div>`,
       640
     );
     const input = context.find('#album-update-repository');
@@ -287,9 +288,13 @@
     let checking = false;
     let ready = false;
     const idleText = (repository) =>
-      repository
-        ? '点击「保存并检查更新」，查询此仓库的最新正式发布。'
-        : '尚未配置更新仓库，暂时无法检查更新。';
+      `点击「保存并检查更新」，查询${repository === officialRepository ? '官方仓库' : `自定义仓库 ${repository}`}的最新正式发布。`;
+    function updateReleaseLink(repository) {
+      context.find('[data-update-release]').innerHTML =
+        repository && repository !== officialRepository
+          ? ` · ${externalLink(`https://github.com/${repository}/releases`, '前往自定义仓库发布页')}`
+          : '';
+    }
     input.addEventListener(
       'input',
       () => {
@@ -306,7 +311,7 @@
         if (checking || !ready || !context.alive()) return;
         let repository;
         try {
-          repository = normalizeRepository(input.value);
+          repository = normalizeRepository(input.value) || officialRepository;
         } catch (error) {
           errorHost.textContent = errorText(error);
           input.setAttribute('aria-invalid', 'true');
@@ -315,6 +320,7 @@
         }
         checking = true;
         input.value = repository;
+        updateReleaseLink(repository);
         input.disabled = button.disabled = true;
         input.removeAttribute('aria-invalid');
         errorHost.textContent = '';
@@ -329,7 +335,7 @@
           resultHost.innerHTML = renderUpdateResult(result, version, repository);
         } catch (error) {
           if (!context.alive()) return;
-          resultHost.replaceChildren();
+          resultHost.innerHTML = `<div class="updates-result-card" data-update-status="error"><strong>检查更新未完成</strong><p>GitHub API 暂时不可用或请求未成功。可重试，或直接前往发布页查看版本与安装包。</p>${externalLink(`https://github.com/${repository}/releases`, '前往发布页', 'subtle-button about-release-link')}</div>`;
           errorHost.textContent = `检查未完成：${errorText(error)}`;
         } finally {
           checking = false;
@@ -347,13 +353,16 @@
       if (!context.alive()) return;
       version = String(info?.version || '');
       context.find('[data-update-version]').textContent = `当前版本 ${version || '未知'}`;
-      input.value = String(info?.repository || '');
-      resultHost.innerHTML = `<p class="about-note">${esc(idleText(input.value.trim()))}</p>`;
+      input.value = normalizeRepository(info?.repository) || officialRepository;
+      updateReleaseLink(input.value);
+      resultHost.innerHTML = `<p class="about-note">${esc(idleText(input.value))}</p>`;
     } catch (error) {
       if (!context.alive()) return;
       context.find('[data-update-version]').textContent = '当前版本暂不可用';
+      input.value = officialRepository;
+      context.find('[data-update-version]').textContent = '暂时无法读取当前版本';
       errorHost.textContent = `无法读取应用信息：${errorText(error)}`;
-      resultHost.innerHTML = `<p class="about-note">${esc(idleText(''))}</p>`;
+      resultHost.innerHTML = `<p class="about-note">已使用官方仓库 ${esc(officialRepository)}。仍可检查更新或前往官方发布页。</p>`;
     } finally {
       if (context.alive()) {
         ready = true;
