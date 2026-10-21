@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { Worker, MessageChannel } = require('node:worker_threads');
+const { DatabaseSync } = require('node:sqlite');
 const sharp = require('sharp');
 const { idFor } = require('../src/model.cjs');
 
@@ -333,6 +334,51 @@ test('legacy roots without import options preserve global fallback and shallow w
     await c.close();
     await cleanup(f);
   }
+});
+
+test('fresh legacy-root exact and fuzzy API matches persist their actual confidence without import policy', async (t) => {
+  for (const exact of [true, false])
+    await t.test(exact ? 'exact' : 'fuzzy', async () => {
+      const chars = Array.from({ length: 210 }, (_, i) => String.fromCodePoint(0x5000 + i));
+      const title = chars.slice(0, 25).join('');
+      const subject = {
+        id: 420,
+        type: 2,
+        name: exact ? title : chars.slice(0, 23).join('') + chars[200]
+      };
+      const f = await fixture(title);
+      const c = await client(f.data, responder(subject, f.png), { token: '' });
+      try {
+        await c.call('settings', { key: 'autoMatch', value: false });
+        await c.call('scan', { path: f.source });
+        await c.idle();
+        await c.call('setAlbumKind', { id: idFor(f.source), kind: 'work' });
+        const db = new DatabaseSync(path.join(f.data, 'library.sqlite'), { readOnly: true });
+        assert.equal(db.prepare('SELECT count(*) AS count FROM root_match_policy').get().count, 0);
+        db.close();
+        await c.call('settings', { key: 'autoMatch', value: true });
+        const after = c.events.length;
+        await c.call('scan', { path: f.source });
+        await c.idle(after);
+        let node = await c.call('get', { id: f.id });
+        assert.equal(node.subject_id, 420);
+        assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
+        assert.equal(node.match_review, exact ? 0 : 1);
+        assert.equal(node.confirmed, exact ? 1 : 0);
+        await c.call('refreshMetadata', { id: f.id });
+        node = await c.call('get', { id: f.id });
+        assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
+        assert.equal(node.match_review, exact ? 0 : 1);
+        const pending = await c.call('list', { filter: 'pending' });
+        assert.equal(
+          pending.items.some((item) => item.id === f.id),
+          !exact
+        );
+      } finally {
+        await c.close();
+        await cleanup(f);
+      }
+    });
 });
 
 test('explicit opt-in works with global false at deep folders; all language parts and safe cover download are used', async () => {
@@ -2289,6 +2335,8 @@ test('import exact association is silent and remains silent after resource refre
     assert.equal(node.match_review, 0);
     assert.equal(node.confirmed, 1);
     assert.equal(node.cover_source, 'bangumi');
+    await c.call('resetCover', { id: f.id });
+    assert.equal((await c.call('get', { id: f.id })).confirmed, 1);
     await c.call('refreshMetadata', { id: f.id });
     await c.close();
     c = await client(f.data, responder(subject, f.png), { token: '' });
@@ -2297,6 +2345,87 @@ test('import exact association is silent and remains silent after resource refre
     assert.equal(node.match_review, 0);
     assert.equal(node.confirmed, 1);
     assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((n) => n.id === f.id));
+  } finally {
+    await c.close();
+    await cleanup(f);
+  }
+});
+
+test('exact match stays confirmed through fallback changes, reset, later Bangumi cover and manual cover refresh', async () => {
+  const f = await fixture();
+  let subject = entry();
+  const c = await client(f.data, (request) => responder(subject, f.png)(request), { token: '' });
+  try {
+    await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+    await c.idle();
+    let node = await c.call('get', { id: f.id });
+    assert.equal(node.match_confidence, 1);
+    assert.equal(node.cover_source, 'fallback');
+    assert.equal(node.confirmed, 1);
+    const later = path.join(f.folder, 'newest.png');
+    await fs.writeFile(later, f.png);
+    await fs.utimes(later, 1900000000, 1900000000);
+    await c.call('scan', { path: f.source });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.cover, idFor(later));
+    assert.equal(node.confirmed, 1);
+    await c.call('resetCover', { id: f.id });
+    assert.equal((await c.call('get', { id: f.id })).confirmed, 1);
+    subject = { ...entry(), images: { large: 'https://lain.bgm.tv/later-cover.png' } };
+    await c.call('refreshMetadata', { id: f.id });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.cover_source, 'bangumi');
+    assert.equal(node.confirmed, 1);
+    assert.equal(node.match_review, 0);
+    await c.call('setCover', { id: f.id, imageId: idFor(f.image) });
+    await c.call('patch', { id: f.id, changes: { confirmed: 0, crop_x: 37 } });
+    await c.call('refreshMetadata', { id: f.id });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.manual_cover, 1);
+    assert.equal(node.cover, idFor(f.image));
+    assert.equal(node.crop_x, 37);
+    assert.equal(node.confirmed, 0);
+    assert.equal(node.match_review, 0);
+  } finally {
+    await c.close();
+    await cleanup(f);
+  }
+});
+
+test('nonexact automatic association retains identity review through changed fallback and new Bangumi cover', async () => {
+  const chars = Array.from({ length: 230 }, (_, i) => String.fromCodePoint(0x5000 + i));
+  const title = chars.slice(0, 25).join('');
+  let subject = {
+    id: 420,
+    type: 2,
+    name: chars.slice(0, 21).join('') + chars.slice(200, 203).join('')
+  };
+  const f = await fixture(title);
+  const c = await client(f.data, (request) => responder(subject, f.png)(request), { token: '' });
+  try {
+    await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+    await c.idle();
+    let node = await c.call('get', { id: f.id });
+    assert.equal(node.match_confidence, 40 / 47);
+    assert.equal(node.match_review, 1);
+    assert.equal(node.cover_source, 'fallback');
+    const later = path.join(f.folder, 'newest.png');
+    await fs.writeFile(later, f.png);
+    await fs.utimes(later, 1900000000, 1900000000);
+    await c.call('scan', { path: f.source });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.cover, idFor(later));
+    assert.equal(node.match_review, 1);
+    assert.equal(node.confirmed, 0);
+    subject = { ...subject, images: { large: 'https://lain.bgm.tv/uncertain-cover.png' } };
+    await c.call('refreshMetadata', { id: f.id });
+    node = await c.call('get', { id: f.id });
+    assert.equal(node.cover_source, 'bangumi');
+    assert.equal(node.match_review, 1);
+    assert.equal(node.match_confidence, 40 / 47);
+    await c.call('resetCover', { id: f.id });
+    assert.equal((await c.call('get', { id: f.id })).match_review, 1);
+    assert.ok((await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   } finally {
     await c.close();
     await cleanup(f);

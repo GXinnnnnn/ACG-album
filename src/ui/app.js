@@ -320,9 +320,19 @@ function matchPercentage(n) {
     : '待核对';
 }
 function cardReviewMessage(n) {
-  if (n.kind !== 'folder') return '';
+  if (
+    n.kind !== 'folder' ||
+    (Number(n.match_confidence) === 1 &&
+      !n.manual_cover &&
+      !n.manual_subject &&
+      !n.manual_character &&
+      (n.subject_id > 0 || n.character_id > 0))
+  )
+    return '';
   if (n.match_review) return `匹配 ${matchPercentage(n)}，待核对；右键可更改作品关联`;
-  return !n.confirmed && ['fallback', 'bangumi'].includes(n.cover_source) ? '封面待确认' : '';
+  return !n.confirmed && ['fallback', 'bangumi', 'bangumi-character'].includes(n.cover_source)
+    ? '封面待确认'
+    : '';
 }
 function cardReviewBadge(n) {
   const message = cardReviewMessage(n);
@@ -1362,7 +1372,7 @@ async function refreshLibrary() {
 function densityModal() {
   openModal(
     '查看设置',
-    `<p class="display-help">工具栏可直接切换小、中、大卡片。分类、相册和图片一起调整，重启后保留选择。</p><div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">分类封面保留横向概览。尺寸按 Windows 显示比例自动适配，切换时保留正在浏览的卡片。</p>`
+    `<p class="display-help">工具栏可直接切换小、中、大卡片，也可在浏览区按住 Ctrl 滚动鼠标滚轮。分类、相册和图片一起调整，重启后保留选择。</p><div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">分类封面保留横向概览。尺寸按 Windows 显示比例自动适配，切换时保留正在浏览的卡片。</p><div class="setting-row page-review-setting"><div><strong>当前页红点</strong><p id="page-review-help">将当前结果中的作品匹配与封面标记为已确认，包含尚未滚动加载的卡片；首页包含已展开的相册预览。</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}清除本页红点</button></div><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p>`
   );
   applyDisplaySettings();
   $$('#modal [data-density]').forEach(
@@ -1370,6 +1380,60 @@ function densityModal() {
       (b.onclick = () => attempt(() => changeDisplaySetting('density', Number(b.dataset.density))))
   );
   $('#ratio-select').onchange = (e) => attempt(() => changeDisplaySetting('ratio', e.target.value));
+  $('#clear-page-review').onclick = () => attempt(clearPageReview);
+}
+async function clearPageReview() {
+  const button = $('#clear-page-review'),
+    status = $('#page-review-status'),
+    generation = modalGeneration,
+    key = viewKey(),
+    version = S.loadVersion,
+    query = { ...queryArgs() },
+    queryKey = JSON.stringify(query),
+    previewIds = isOverview()
+      ? $$('#category-overview .collection-preview .album-card').map((card) => card.dataset.id)
+      : [];
+  const sameBrowse = () => key === viewKey() && queryKey === JSON.stringify(queryArgs());
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  status.textContent = '正在清除当前页红点…';
+  let completionVersion = version;
+  try {
+    const result = await api('confirmReview', {
+      query,
+      ...(previewIds.length ? { previewIds } : {})
+    });
+    if (sameBrowse() && version === S.loadVersion) {
+      clearTimeout(changedTimer);
+      await loadSummary();
+      if (sameBrowse() && version === S.loadVersion) {
+        const refresh = loadPage(true);
+        completionVersion = S.loadVersion;
+        await refresh;
+      }
+    }
+    if (generation === modalGeneration && status.isConnected)
+      status.textContent =
+        sameBrowse() && completionVersion === S.loadVersion
+          ? result.updated
+            ? `已清除本页 ${fmt(result.updated)} 个项目的红点。`
+            : '当前页没有需要清除的红点。'
+          : '';
+  } catch (error) {
+    if (generation === modalGeneration && status.isConnected) {
+      if (sameBrowse() && completionVersion === S.loadVersion) {
+        status.textContent = '清除失败，请重试。';
+        throw error;
+      }
+      status.textContent = '';
+    }
+  } finally {
+    if (generation === modalGeneration && button.isConnected) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
 }
 async function settingsModal(tab = 'appearance') {
   const names = ['profile', 'appearance', 'metadata', 'cache', 'application'];
@@ -1996,6 +2060,62 @@ window.album.onEvent((event) => {
   }
 });
 initializeDisplayControls();
+// Coalesce a wheel burst before using the same persisted, anchor-preserving preset controls.
+let densityWheelTimer = null,
+  densityWheelTarget = null;
+const densityWheelEditing = (element) =>
+  element instanceof Element &&
+  !!element.closest(
+    'input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"],[role="slider"],[role="spinbutton"]'
+  );
+function densityWheelBlocked() {
+  return (
+    !!document.querySelector('dialog[open]') ||
+    !$('#context-menu').hidden ||
+    densityWheelEditing(document.activeElement)
+  );
+}
+$('#viewport').addEventListener(
+  'wheel',
+  (event) => {
+    if (
+      !event.ctrlKey ||
+      event.altKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      !event.deltaY ||
+      event.defaultPrevented ||
+      densityWheelBlocked() ||
+      densityWheelEditing(event.target)
+    )
+      return;
+    event.preventDefault();
+    const current = Number(densityWheelTarget ?? pendingDisplay.density ?? S.settings.density),
+      widths = cardDisplayPresets.map((preset) => preset.width),
+      candidates = widths.filter((width) => (event.deltaY < 0 ? width > current : width < current)),
+      next = event.deltaY < 0 ? candidates[0] : candidates.at(-1);
+    if (next === undefined) return;
+    densityWheelTarget = next;
+    clearTimeout(densityWheelTimer);
+    const key = viewKey();
+    densityWheelTimer = setTimeout(() => {
+      densityWheelTimer = null;
+      const value = densityWheelTarget;
+      if (key !== viewKey() || densityWheelBlocked()) {
+        densityWheelTarget = null;
+        return;
+      }
+      void attempt(async () => {
+        try {
+          await changeDisplaySetting('density', value);
+        } finally {
+          if (densityWheelTimer === null && densityWheelTarget === value) densityWheelTarget = null;
+        }
+      });
+    }, 90);
+  },
+  { passive: false }
+);
 $$('[data-window]').forEach((b) => (b.onclick = () => window.album.window(b.dataset.window)));
 $('#brand-home').onclick = $('#home-button').onclick = () => attempt(() => navigate({}));
 $('#back-button').onclick = () => attempt(back);

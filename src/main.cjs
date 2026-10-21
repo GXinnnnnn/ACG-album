@@ -176,6 +176,7 @@ function handlers() {
     'get',
     'ancestors',
     'patch',
+    'confirmReview',
     'setCover',
     'resetCover',
     'match',
