@@ -178,7 +178,7 @@ async function bounds(page, selector) {
     report.missingPrompt = await page.locator('#local-search-source').innerText();
     assert.match(report.missingPrompt, /索引/);
     assert.match(report.missingPrompt, /未安装/);
-    assert.match(report.missingPrompt, /精简检索.*完整检索/);
+    assert.match(report.missingPrompt, /资料库补全.*Lite.*Full/);
     assert.doesNotMatch(report.missingPrompt, /ENOENT/);
     await page.fill('#local-search-query', '千恋＊万花');
     await page.click('#local-search-submit');
