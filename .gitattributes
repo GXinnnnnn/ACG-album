@@ -1,0 +1,5 @@
+# Use stable source line endings across Windows and other platforms.
+* text=auto eol=lf
+
+# Upstream license records are preserved byte-for-byte for their checksum manifest.
+src/assets/licenses/** -text -whitespace

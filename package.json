@@ -1,0 +1,95 @@
+{
+  "name": "acg-album",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Card-based local folder browser for ACG collections with Bangumi matching",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GXinnnnnn/ACG-album.git"
+  },
+  "homepage": "https://github.com/GXinnnnnn/ACG-album",
+  "bugs": {
+    "url": "https://github.com/GXinnnnnn/ACG-album/issues"
+  },
+  "author": {
+    "name": "友利奈绪的胖次 (GXinnnnnn)",
+    "url": "https://github.com/GXinnnnnn"
+  },
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "format": "prettier --write \"src/**/*.{cjs,js,css,html}\" \"tests/**/*.cjs\" \"scripts/*.cjs\" package.json",
+    "format:check": "prettier --check \"src/**/*.{cjs,js,css,html}\" \"tests/**/*.cjs\" \"scripts/*.cjs\" package.json",
+    "package:dir": "electron-builder --dir --publish never",
+    "package:installer": "electron-builder --win nsis --publish never",
+    "package:standard": "node scripts/build-standard.cjs",
+    "verify:standard": "node scripts/check-standard.cjs",
+    "package:search": "node scripts/build-search-editions.cjs",
+    "verify:search": "node scripts/check-search-editions.cjs"
+  },
+  "dependencies": {
+    "@img/sharp-win32-x64": "0.34.5",
+    "exifr": "7.1.3",
+    "sharp": "0.34.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "electron": "40.10.6",
+    "electron-builder": "26.8.1",
+    "prettier": "3.6.2"
+  },
+  "build": {
+    "appId": "local.acg.album",
+    "productName": "ACG-album",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "!src/demo/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "src/demo",
+        "to": "demo"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE.app.txt"
+      },
+      {
+        "from": "README.md",
+        "to": "README.md"
+      },
+      {
+        "from": "docs",
+        "to": "docs"
+      }
+    ],
+    "npmRebuild": false,
+    "asarUnpack": [
+      "**/node_modules/@img/**/*"
+    ],
+    "win": {
+      "icon": "src/assets/app.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

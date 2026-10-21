@@ -1,0 +1,606 @@
+/* Scoped extension for the shared native dialog; existing album theme tokens remain authoritative. */
+.modal.album-info-dialog {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  max-height: calc(100dvh - 64px);
+  padding: 25px 28px 22px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 20px;
+}
+
+.album-info-dialog .modal-top {
+  margin-bottom: 19px;
+}
+.album-info-dialog .modal-top h2 {
+  font-size: 21px;
+}
+.album-info-dialog :is(#modal-close, .info-dialog-close) {
+  width: 36px;
+  height: 36px;
+}
+.album-about,
+.album-updates {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.album-info-dialog :is(a, button, summary, input):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.album-info-dialog a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.album-info-dialog a:hover {
+  text-decoration: underline;
+}
+.album-info-dialog p {
+  margin: 0;
+}
+
+.about-identity {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.about-app-icon {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+}
+.about-identity > div {
+  min-width: 0;
+}
+.about-kicker {
+  display: block;
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.album-info-dialog .about-app-name {
+  margin: 3px 0 4px;
+  color: var(--text);
+  font-size: 23px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.about-version {
+  display: block;
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.album-info-dialog .about-description p {
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.85;
+  margin: 0 0 8px;
+}
+.about-description {
+  margin-bottom: 18px;
+}
+.about-disclosure {
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface);
+}
+.about-disclosure > summary {
+  min-height: 44px;
+  padding: 12px 15px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.6;
+  border-radius: 14px;
+}
+.about-disclosure > summary::marker {
+  color: var(--accent);
+  font-size: 10px;
+}
+.about-disclosure > summary:hover {
+  background: var(--accent-soft);
+}
+.about-disclosure > summary > span:first-child {
+  margin-left: 5px;
+  font-weight: 600;
+}
+.about-summary-hint {
+  margin-left: 10px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 400;
+}
+.about-disclosure[open] > summary {
+  border-bottom: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+}
+.about-disclosure-body {
+  padding: 14px 16px 16px;
+}
+.about-sponsor {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+  background: var(--accent-soft);
+}
+.album-info-dialog .about-sponsor-message {
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.9;
+  margin: 0 auto 14px;
+  text-align: center;
+}
+.about-qr-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 500px;
+  margin-inline: auto;
+  align-items: start;
+}
+.about-qr-card {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #e6e6ec;
+  border-radius: 14px;
+  background: #fff;
+  color: #303143;
+  text-align: center;
+  min-width: 0;
+}
+.about-qr-card figcaption {
+  font-size: 14px;
+  font-weight: 650;
+  margin-bottom: 12px;
+}
+.about-qr-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 300px;
+  object-fit: contain;
+  background: #fff;
+}
+.about-qr-card > span {
+  display: block;
+  color: #606078;
+  font-size: 11px;
+  line-height: 1.6;
+  margin-top: 12px;
+}
+.about-author-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 21px 0 10px;
+}
+.about-author-heading > span {
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 400;
+}
+.about-author-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.album-info-dialog .about-author-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 74px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--surface);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+.album-info-dialog .about-author-card:hover {
+  text-decoration: none;
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+.about-author-card > img {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+.about-author-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.about-author-text strong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.about-platform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: var(--soft);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.about-account {
+  font-size: 10px;
+}
+.about-author-card svg.about-platform-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.about-author-card svg.about-github-icon {
+  fill: currentColor;
+  stroke: none;
+}
+.about-author-card svg.about-bilibili-icon {
+  stroke-width: 1.8;
+}
+.about-author-card > svg {
+  width: 13px;
+  height: 13px;
+  color: var(--soft);
+}
+.album-info-dialog .about-credit-group h3 {
+  margin: 4px 0 10px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+.about-credit-group + .about-credit-group {
+  margin-top: 20px;
+}
+.about-credits-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.about-credits-list li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.about-credits-list li:first-child {
+  padding-top: 0;
+}
+.about-credits-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.about-credit-summary {
+  display: list-item;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 5px;
+  line-height: 1.8;
+}
+.about-credit-summary strong {
+  font-weight: 500;
+  margin-right: 10px;
+}
+.about-credit-summary::marker {
+  color: var(--accent);
+  font-size: 10px;
+}
+.about-credit-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.about-credit-summary:hover {
+  color: var(--accent);
+}
+.about-credit-version {
+  color: var(--soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.about-credit-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  margin-top: 4px;
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.album-info-dialog .about-license-note {
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.8;
+}
+.about-inline-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 2px 0;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.7;
+  text-align: left;
+}
+.about-inline-link svg {
+  width: 12px;
+  height: 12px;
+}
+button.about-inline-link:hover {
+  text-decoration: underline;
+}
+.album-info-dialog .about-note {
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.8;
+}
+.about-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 19px 0 13px;
+}
+.about-bangumi {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  min-width: 0;
+}
+.about-bangumi-label {
+  display: block;
+  flex-basis: 100%;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.about-bottom > button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  font-size: 11px;
+  padding: 9px 13px;
+}
+.about-bottom > button svg {
+  width: 14px;
+  height: 14px;
+}
+.album-info-dialog .about-local-error:empty {
+  display: none;
+}
+.album-info-dialog .about-local-error {
+  margin-bottom: 12px;
+}
+.about-copyright {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--soft);
+  font-size: 10px;
+  line-height: 1.8;
+  text-align: center;
+}
+
+.updates-intro {
+  display: flex;
+  gap: 13px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.updates-symbol {
+  display: grid;
+  place-items: center;
+  width: 47px;
+  height: 47px;
+  flex: 0 0 auto;
+  border-radius: 16px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.updates-symbol svg {
+  width: 23px;
+  height: 23px;
+}
+.album-info-dialog .updates-intro h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text);
+  font-weight: 600;
+}
+.album-info-dialog .updates-intro p {
+  color: var(--soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.album-info-dialog .updates-description {
+  margin-bottom: 22px;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.9;
+}
+.album-updates label {
+  font-size: 12px;
+  color: var(--text);
+}
+.album-updates .field-input {
+  min-width: 0;
+  font-size: 13px;
+}
+.album-updates .field-input[aria-invalid='true'] {
+  border-color: var(--red);
+}
+.album-updates .field-input:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.album-info-dialog .album-updates .field-help {
+  font-size: 11px !important;
+  color: var(--soft) !important;
+  margin-top: 8px;
+}
+.album-info-dialog .updates-error {
+  margin-top: 8px;
+  font-size: 12px !important;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+.updates-error:empty {
+  display: none;
+}
+.updates-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+.updates-form-actions .primary {
+  font-size: 12px;
+  min-height: 40px;
+  padding: 10px 16px;
+}
+.updates-form-actions .primary svg {
+  width: 15px;
+  height: 15px;
+}
+.updates-result {
+  margin-top: 20px;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.updates-result:empty {
+  margin-top: 0;
+}
+.updates-result-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 16px;
+}
+.updates-result-card > strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.album-info-dialog .updates-result-card > p {
+  margin-top: 7px;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.updates-result-card[data-update-status='available'] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--line));
+}
+.album-info-dialog .about-release-link {
+  display: inline-flex;
+  margin-top: 13px;
+  min-height: 36px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.about-release-link svg {
+  width: 14px;
+  height: 14px;
+}
+.album-info-dialog .updates-footnote {
+  margin-top: 19px;
+  color: var(--soft);
+  font-size: 10px;
+  line-height: 1.8;
+}
+
+@media (max-width: 600px) {
+  .modal.album-info-dialog {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 32px);
+    padding: 21px 18px 18px;
+    border-radius: 22px;
+  }
+  .about-author-grid {
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+  .about-author-card {
+    min-height: 66px;
+  }
+  .about-summary-hint {
+    display: block;
+    margin: 3px 0 0 16px;
+  }
+  .about-author-heading {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+  .about-bottom {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .about-bottom > button {
+    margin-left: auto;
+  }
+  .about-qr-grid {
+    gap: 10px;
+  }
+  .about-qr-card {
+    padding: 12px;
+  }
+  .about-qr-card > span {
+    font-size: 10px;
+  }
+  .about-identity {
+    gap: 12px;
+  }
+  .about-app-icon {
+    width: 54px;
+    height: 54px;
+    border-radius: 17px;
+  }
+  .album-info-dialog .about-app-name {
+    font-size: 21px;
+  }
+}
+@media (max-width: 400px) {
+  .about-qr-grid {
+    grid-template-columns: 1fr;
+    max-width: 245px;
+  }
+  .updates-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .updates-form-actions > a {
+    align-self: flex-start;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .album-info-dialog *,
+  .album-info-dialog *::before,
+  .album-info-dialog *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

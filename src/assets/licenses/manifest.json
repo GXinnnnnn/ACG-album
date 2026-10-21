@@ -1,0 +1,477 @@
+{
+  "format": 1,
+  "scope": "Windows x64 runtime; original upstream license artifacts retained verbatim",
+  "nativeBinaries": [
+    {
+      "file": "libvips-42.dll",
+      "bytes": 19112960,
+      "sha256": "f8d356def73941668252347b825055310e99023ff77c7d3036e592d0771e1529"
+    },
+    {
+      "file": "libvips-cpp-8.17.3.dll",
+      "bytes": 327168,
+      "sha256": "f1b3c3eeea1b6a8292a69d78dd2cd1debacb9951cabdd9217a57e34137570cd1"
+    },
+    {
+      "file": "sharp-win32-x64.node",
+      "bytes": 433152,
+      "sha256": "afc813593f255968ddae8f1d66557e0f96484bb374606e4eb2267a7dbc7cb25a"
+    }
+  ],
+  "chromium": {
+    "source": "node_modules/electron/dist/LICENSES.chromium.html",
+    "distribution": "LICENSES.chromium.html beside the executable",
+    "bytes": 15997529,
+    "sha256": "1145a9faaadf10f97ab6a1d0c5b7f74c6a2eae46b532f168a233b9a5cd7d52cf"
+  },
+  "artifacts": [
+    {
+      "package": "@img/sharp-win32-x64",
+      "version": "0.34.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "source": "node_modules/@img/sharp-win32-x64/LICENSE",
+      "file": "npm/@img__sharp-win32-x64/LICENSE",
+      "bytes": 10464,
+      "sha256": "dc1f5d2d43c5531dfe0acaf4e950ea5dbe3e61e1850cf0e983bda7efc10d6693"
+    },
+    {
+      "package": "exifr",
+      "version": "7.1.3",
+      "license": "MIT",
+      "source": "node_modules/exifr/LICENSE",
+      "file": "npm/exifr/LICENSE",
+      "bytes": 1081,
+      "sha256": "e32a745bc4816c774d8e26bb9f04acde451b54669079e8b728d22fe9805c1225"
+    },
+    {
+      "package": "sharp",
+      "version": "0.34.5",
+      "license": "Apache-2.0",
+      "source": "node_modules/sharp/LICENSE",
+      "file": "npm/sharp/LICENSE",
+      "bytes": 10273,
+      "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+    },
+    {
+      "package": "@img/colour",
+      "version": "1.1.0",
+      "license": "MIT",
+      "source": "node_modules/@img/colour/LICENSE.md",
+      "file": "npm/@img__colour/LICENSE.md",
+      "bytes": 4433,
+      "sha256": "e2eaa4603c14cb26f301e88648c12a853fa3f0f5da6d4b0972958c666e7f2ab8"
+    },
+    {
+      "package": "detect-libc",
+      "version": "2.1.2",
+      "license": "Apache-2.0",
+      "source": "node_modules/detect-libc/LICENSE",
+      "file": "npm/detect-libc/LICENSE",
+      "bytes": 11357,
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+    },
+    {
+      "package": "semver",
+      "version": "7.8.5",
+      "license": "ISC",
+      "source": "node_modules/semver/LICENSE",
+      "file": "npm/semver/LICENSE",
+      "bytes": 765,
+      "sha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b"
+    },
+    {
+      "package": "prettier",
+      "version": "3.6.2",
+      "license": "MIT",
+      "development": true,
+      "source": "node_modules/prettier/LICENSE",
+      "file": "development/prettier/LICENSE",
+      "bytes": 1065,
+      "sha256": "b0f2417199889f1c0d28ec4e0244eacf1a15de5819d61f641dd7d8f45153ac9c"
+    },
+    {
+      "package": "electron-builder",
+      "version": "26.8.1",
+      "license": "MIT",
+      "development": true,
+      "source": "node_modules/electron-builder/LICENSE",
+      "file": "development/electron-builder/LICENSE",
+      "bytes": 1084,
+      "sha256": "bed8d0ab3e6031817f775a641ff37313b0f5591bc8ba0ed79b978dafbd4231ce"
+    },
+    {
+      "package": "@playwright/test",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/@playwright/test/LICENSE",
+      "file": "development/@playwright__test/LICENSE",
+      "bytes": 11601,
+      "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+    },
+    {
+      "package": "@playwright/test",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/@playwright/test/NOTICE",
+      "file": "development/@playwright__test/NOTICE",
+      "bytes": 254,
+      "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+    },
+    {
+      "package": "playwright",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright/LICENSE",
+      "file": "development/playwright/LICENSE",
+      "bytes": 11601,
+      "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+    },
+    {
+      "package": "playwright",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright/NOTICE",
+      "file": "development/playwright/NOTICE",
+      "bytes": 254,
+      "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+    },
+    {
+      "package": "playwright",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright/ThirdPartyNotices.txt",
+      "file": "development/playwright/ThirdPartyNotices.txt",
+      "bytes": 262774,
+      "sha256": "18941cd3a3ec2b1a1620de589f4cafeff4135a74cab18c79a0008eadfcb3ddcd"
+    },
+    {
+      "package": "playwright-core",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright-core/LICENSE",
+      "file": "development/playwright-core/LICENSE",
+      "bytes": 11601,
+      "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+    },
+    {
+      "package": "playwright-core",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright-core/NOTICE",
+      "file": "development/playwright-core/NOTICE",
+      "bytes": 254,
+      "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+    },
+    {
+      "package": "playwright-core",
+      "version": "1.58.2",
+      "license": "Apache-2.0",
+      "development": true,
+      "source": "node_modules/playwright-core/ThirdPartyNotices.txt",
+      "file": "development/playwright-core/ThirdPartyNotices.txt",
+      "bytes": 198280,
+      "sha256": "36aa7e5d56f9a7d4cdb85e570500e0dcdd36799c0e937199dd6cb9813a8fdce9"
+    },
+    {
+      "source": "node_modules/@img/sharp-win32-x64/README.md",
+      "file": "libvips/SHARP-README.md",
+      "bytes": 4899,
+      "sha256": "c416cd0af88256407c36a0613f189ac4257221c7206d0324f7ef5563c66f1125"
+    },
+    {
+      "source": "node_modules/@img/sharp-win32-x64/versions.json",
+      "file": "libvips/SHARP-versions.json",
+      "bytes": 594,
+      "sha256": "e823074bfa33ed7b1861b797dd3c60d7ef8c34cd2faa9a7d22ec32dd6d6ad8ad"
+    },
+    {
+      "source": "node_modules/@img/sharp-win32-x64/package.json",
+      "file": "libvips/SHARP-package.json",
+      "bytes": 908,
+      "sha256": "3421485756b0a25573ee62e147a62908608e3014a2bfed64381473a22e9351d2"
+    },
+    {
+      "source": "node_modules/electron/dist/LICENSE",
+      "file": "electron/LICENSE",
+      "bytes": 1096,
+      "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libvips/libvips/v8.17.3/LICENSE",
+      "file": "libvips/LICENSE",
+      "bytes": 26530,
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libvips/libvips/v8.17.3/README.md",
+      "file": "libvips/UPSTREAM-README.md",
+      "bytes": 10018,
+      "sha256": "a7ab7f61a21a5fba5e3611e56352d8b650c495a0897aabf8f8249eec0b506529"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libvips/libvips/v8.17.3/libvips/foreign/libnsgif/COPYING",
+      "file": "libvips/native/libnsgif-COPYING",
+      "bytes": 1133,
+      "sha256": "1469b759cf18e43c6e1b4ff892307d3962cbbb337ac497620d6690a219fad10c"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/mozilla/mozjpeg/08265790774cd0714832c9e675522acbe5581437/README.ijg",
+      "file": "libvips/native/mozjpeg-README.ijg",
+      "bytes": 12715,
+      "sha256": "f4a85f8677ca4e41b185c0a9f7c31a30ddb9ce43c561483ee92ef12db37c2a10"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lovell/sharp-libvips/v1.2.4/THIRD-PARTY-NOTICES.md",
+      "file": "libvips/SHARP-THIRD-PARTY-NOTICES.md",
+      "bytes": 4230,
+      "sha256": "3f416978dd2448ddab0d413d333c45fb208acdc066c280b95ebcb2f8b9f34ab9"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lovell/sharp-libvips/v1.2.4/build/win.sh",
+      "file": "libvips/BUILD-SOURCE.sh",
+      "bytes": 1178,
+      "sha256": "0c9a42a08b8e8b13e0e2adcff48b5891a2e0a1b9911bda4125523cef90684fac"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libvips/build-win64-mxe/v8.17.3/README.md",
+      "file": "libvips/BUILD-README.md",
+      "bytes": 11580,
+      "sha256": "4cf859f65fc26cb4755716f002fbfb8a1b9d1793794cfd5ddde6112495c5ef13"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING3",
+      "file": "libvips/GPL-3.0.txt",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING3.LIB",
+      "file": "libvips/LGPL-3.0.txt",
+      "bytes": 7639,
+      "sha256": "a853c2ffec17057872340eee242ae4d96cbf2b520ae27d903e1b2fef1a5f9d1c"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libsdl-org/aom/v3.13.1/LICENSE",
+      "file": "libvips/native/aom-LICENSE",
+      "bytes": 1316,
+      "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libsdl-org/aom/v3.13.1/PATENTS",
+      "file": "libvips/native/aom-PATENTS",
+      "bytes": 5701,
+      "sha256": "661fb8e504744e95587b556b94a58343448300606a41bea8c7a9b97125696e61"
+    },
+    {
+      "source": "https://gitlab.freedesktop.org/cairo/cairo/-/raw/1.18.4/COPYING",
+      "file": "libvips/native/cairo-COPYING",
+      "bytes": 1576,
+      "sha256": "67228a9f7c5f9b67c58f556f1be178f62da4d9e2e6285318d8c74d567255abdf"
+    },
+    {
+      "source": "https://gitlab.freedesktop.org/cairo/cairo/-/raw/1.18.4/COPYING-MPL-1.1",
+      "file": "libvips/native/cairo-COPYING-MPL-1.1",
+      "bytes": 25755,
+      "sha256": "53692a2ed6c6a2c6ec9b32dd0b820dfae91e0a1fcdf625ca9ed0bdf8705fcc4f"
+    },
+    {
+      "source": "https://www.mozilla.org/media/MPL/2.0/index.815ca599c9df.txt",
+      "file": "libvips/native/MPL-2.0.txt",
+      "bytes": 16726,
+      "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/dloebl/cgif/v0.5.0/LICENSE",
+      "file": "libvips/native/cgif-LICENSE",
+      "bytes": 1099,
+      "sha256": "7264dede477abab4ac3fe8236beb8153845c04ccd33b18f281085087e219fc6d"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libexpat/libexpat/R_2_7_3/expat/COPYING",
+      "file": "libvips/native/expat-COPYING",
+      "bytes": 1144,
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/fontconfig/fontconfig/2.17.1/COPYING",
+      "file": "libvips/native/fontconfig-COPYING",
+      "bytes": 8616,
+      "sha256": "51a51aa9823704fd90bccc616cdd17ebabb5b2b3e9cbde886ca02c7002288067"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/freetype/freetype/VER-2-14-1/docs/FTL.TXT",
+      "file": "libvips/native/freetype-FTL.TXT",
+      "bytes": 6743,
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/fribidi/fribidi/v1.0.16/COPYING",
+      "file": "libvips/native/fribidi-COPYING",
+      "bytes": 26440,
+      "sha256": "32434afcc8666ba060e111d715bfdb6c2d5dd8a35fa4d3ab8ad67d8f850d2f2b"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/GNOME/glib/2.86.1/COPYING",
+      "file": "libvips/native/glib-COPYING",
+      "bytes": 30,
+      "sha256": "65986a89240f59896ce42a3779bbe5ed486a0bca7df636a8eef030fd2e1a0984"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/harfbuzz/harfbuzz/12.1.0/COPYING",
+      "file": "libvips/native/harfbuzz-COPYING",
+      "bytes": 1971,
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/google/highway/1.3.0/LICENSE",
+      "file": "libvips/native/highway-LICENSE",
+      "bytes": 11356,
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/google/highway/1.3.0/LICENSE-BSD3",
+      "file": "libvips/native/highway-LICENSE-BSD3",
+      "bytes": 1515,
+      "sha256": "d25e82e26acd42ca3ccc9993622631163425b869b9e16284226d534cff6470f2"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/mm2/Little-CMS/lcms2.17/LICENSE",
+      "file": "libvips/native/lcms-LICENSE",
+      "bytes": 1080,
+      "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libarchive/libarchive/v3.8.2/COPYING",
+      "file": "libvips/native/libarchive-COPYING",
+      "bytes": 3089,
+      "sha256": "30e556b3959e3985d66efefec5eaac51d4995053caa1d3cffe6eb916f146f229"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libexif/libexif/v0.6.25/COPYING",
+      "file": "libvips/native/libexif-COPYING",
+      "bytes": 26434,
+      "sha256": "36b6d3fa47916943fd5fec313c584784946047ec1337a78b440e5992cb595f89"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libffi/libffi/v3.5.2/LICENSE",
+      "file": "libvips/native/libffi-LICENSE",
+      "bytes": 1132,
+      "sha256": "d5699fa516968e3a1550e6c902b7441c78856f2603d61bedd0b0662a26655366"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/strukturag/libheif/v1.20.2/COPYING",
+      "file": "libvips/native/libheif-COPYING",
+      "bytes": 44366,
+      "sha256": "fa81ce652315b013359d6e8e4744335f31a50c7c192907176d3632f78a3b4596"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lovell/libimagequant/main/COPYRIGHT",
+      "file": "libvips/native/libimagequant-COPYRIGHT",
+      "bytes": 1851,
+      "sha256": "7391bfbcde4404cefb9849553362c3ab436f929f5cc1abb57071ec045590ee99"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.50/LICENSE",
+      "file": "libvips/native/libpng-LICENSE",
+      "bytes": 5345,
+      "sha256": "16d9daaafbf63a31a5bdc91d4600972548fef5aaa1244202393288dbd079c49a"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/GNOME/librsvg/2.61.2/COPYING.LIB",
+      "file": "libvips/native/librsvg-COPYING.LIB",
+      "bytes": 26530,
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/randy408/libspng/v0.7.4/LICENSE",
+      "file": "libvips/native/libspng-LICENSE",
+      "bytes": 1341,
+      "sha256": "0622b0794d0fecde47d743f1bb70a03e6fdf082be8e71f39de672ed995d96ff9"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/libsdl-org/libtiff/v4.7.1/LICENSE.md",
+      "file": "libvips/native/libtiff-LICENSE.md",
+      "bytes": 2416,
+      "sha256": "0e27c2382d7b8147972bbb746e04059a1152c8d0fda9d03ef1399d1a433c4ade"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/webmproject/libwebp/v1.6.0/COPYING",
+      "file": "libvips/native/libwebp-COPYING",
+      "bytes": 1496,
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/webmproject/libwebp/v1.6.0/PATENTS",
+      "file": "libvips/native/libwebp-PATENTS",
+      "bytes": 1436,
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/GNOME/libxml2/v2.15.1/Copyright",
+      "file": "libvips/native/libxml2-Copyright",
+      "bytes": 1314,
+      "sha256": "5d4873884a890122a4b9b20ad56ac6f7da1d796a5bfcf04a427970ac96217626"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/mozilla/mozjpeg/08265790774cd0714832c9e675522acbe5581437/LICENSE.md",
+      "file": "libvips/native/mozjpeg-LICENSE.md",
+      "bytes": 5620,
+      "sha256": "96f5b328adbb78eeaaec6980d73fd558cb1e4d62560ed615646bc3cf5e532430"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/GNOME/pango/1.57.0/COPYING",
+      "file": "libvips/native/pango-COPYING",
+      "bytes": 25292,
+      "sha256": "d245807f90032872d1438d741ed21e2490e1175dc8aa3afa5ddb6c8e529b58e5"
+    },
+    {
+      "source": "https://gitlab.freedesktop.org/pixman/pixman/-/raw/pixman-0.46.4/COPYING",
+      "file": "libvips/native/pixman-COPYING",
+      "bytes": 2087,
+      "sha256": "fac9270f0987b96ff4533fca3548c633e02083cbba4a0172a3b149b2e4019793"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/frida/proxy-libintl/0.5/COPYING",
+      "file": "libvips/native/proxy-libintl-COPYING",
+      "bytes": 25292,
+      "sha256": "d245807f90032872d1438d741ed21e2490e1175dc8aa3afa5ddb6c8e529b58e5"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/zlib-ng/zlib-ng/2.2.5/LICENSE.md",
+      "file": "libvips/native/zlib-ng-LICENSE.md",
+      "bytes": 867,
+      "sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/feathericons/feather/v4.29.2/LICENSE",
+      "file": "lucide/FEATHER-LICENSE",
+      "bytes": 1082,
+      "sha256": "308028e93fcf84972523cdf6e616f73168546b4953895f516d01287f16fe7bee"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/0.468.0/LICENSE",
+      "file": "lucide/LICENSE",
+      "bytes": 880,
+      "sha256": "1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/0.468.0/icons/plus.svg",
+      "file": "lucide/plus.svg",
+      "bytes": 256,
+      "sha256": "7f6af73bf1ff6c4bca3f18351c8d1bdec6749c0c2530c4de5da85d520c21df17"
+    },
+    {
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/0.468.0/icons/x.svg",
+      "file": "lucide/x.svg",
+      "bytes": 260,
+      "sha256": "4a9cdab38fbb96162e7dace28e33f4ca0e49d8963a6162abc3d4691b7d675117"
+    }
+  ]
+}
