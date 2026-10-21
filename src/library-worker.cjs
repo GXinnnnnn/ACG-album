@@ -23,6 +23,11 @@ const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
 const {
+  exactAutomaticIdentitySql,
+  exactAutomaticSql,
+  pendingReviewSql
+} = require('./review-state.cjs');
+const {
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
   rankSubjects,
@@ -220,6 +225,11 @@ const characters = createCharacterLibrary({
   paused: onlinePause,
   tokenPresent: () => !!normalizeAccessToken(workerData.token)
 });
+// Repair persisted exact automatic assignments from versions where a later
+// cover refresh could reopen review. Run after character schema migration.
+run(
+  `UPDATE nodes SET confirmed=1,match_review=0 WHERE ${exactAutomaticSql()} AND (confirmed<>1 OR match_review<>0)`
+);
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
   path.join(home, 'library.sqlite')
@@ -279,22 +289,16 @@ function hydrate(n) {
 function roots() {
   return q('SELECT * FROM nodes WHERE parent IS NULL AND missing=0 ORDER BY sortkey');
 }
-function list({
+function browseWhere({
   parent = null,
   search = '',
   scope = null,
-  sort = 'name',
-  direction = 'asc',
-  offset = 0,
-  limit = 180,
   filter = 'all',
   favorites = false,
   timeline = false,
   month = '',
   place = ''
 } = {}) {
-  limit = Math.min(Math.max(Number(limit) || 180, 1), 500);
-  offset = Math.max(Number(offset) || 0, 0);
   const where = ['n.missing=0'],
     args = [];
   if (search.trim()) {
@@ -312,10 +316,7 @@ function list({
       args.push(scope);
     }
   } else if (favorites) where.push('n.favorite=1');
-  else if (filter === 'pending')
-    where.push(
-      "n.kind='folder' AND (n.match_review=1 OR (n.confirmed=0 AND n.cover_source IN ('fallback','bangumi')))"
-    );
+  else if (filter === 'pending') where.push(pendingReviewSql('n'));
   else if (parent && timeline) {
     const folder = getNode(parent);
     where.push("n.path LIKE ? ESCAPE '\\'");
@@ -327,10 +328,7 @@ function list({
   if (filter === 'images' || timeline) where.push("n.kind IN ('image','video')");
   else if (filter === 'folders') where.push("n.kind='folder'");
   if (search.trim() && favorites) where.push('n.favorite=1');
-  if (search.trim() && filter === 'pending')
-    where.push(
-      "n.kind='folder' AND (n.match_review=1 OR (n.confirmed=0 AND n.cover_source IN ('fallback','bangumi')))"
-    );
+  if (search.trim() && filter === 'pending') where.push(pendingReviewSql('n'));
   if (timeline && /^\d{4}-\d{2}$/.test(month)) {
     const [y, m] = month.split('-').map(Number);
     if (m >= 1 && m <= 12) {
@@ -349,6 +347,13 @@ function list({
         '%'
     );
   }
+  return { where, args };
+}
+function list(options = {}) {
+  const { sort = 'name', direction = 'asc', filter = 'all', timeline = false } = options;
+  const limit = Math.min(Math.max(Number(options.limit) || 180, 1), 500);
+  const offset = Math.max(Number(options.offset) || 0, 0);
+  const { where, args } = browseWhere(options);
   const col = timeline
     ? 'm.taken'
     : {
@@ -421,6 +426,71 @@ function list({
   }));
   return { items, total: count, folders };
 }
+function confirmReview({ query, previewIds = [] } = {}) {
+  if (
+    !query ||
+    typeof query !== 'object' ||
+    Array.isArray(query) ||
+    !['parent', 'search', 'favorites', 'filter', 'timeline'].some((key) =>
+      Object.hasOwn(query, key)
+    )
+  )
+    throw new Error('请提供当前页面的浏览条件。');
+  for (const key of ['parent', 'scope'])
+    if (query[key] !== undefined && query[key] !== null && typeof query[key] !== 'string')
+      throw new Error('浏览条件无效。');
+  for (const key of ['search', 'month', 'place'])
+    if (query[key] !== undefined && typeof query[key] !== 'string')
+      throw new Error('浏览条件无效。');
+  for (const key of ['favorites', 'timeline'])
+    if (query[key] !== undefined && typeof query[key] !== 'boolean')
+      throw new Error('浏览条件无效。');
+  if (query.filter !== undefined && !['all', 'folders', 'images', 'pending'].includes(query.filter))
+    throw new Error('浏览条件无效。');
+  if (
+    !Array.isArray(previewIds) ||
+    previewIds.length > 10000 ||
+    previewIds.some((id) => typeof id !== 'string' || !id.length || id.length > 512)
+  )
+    throw new Error('预览卡片列表无效。');
+  if (
+    previewIds.length &&
+    (query.parent != null ||
+      (query.search || '').trim() ||
+      query.favorites ||
+      query.timeline ||
+      !['all', 'folders'].includes(query.filter || 'all'))
+  )
+    throw new Error('预览卡片仅适用于首页浏览条件。');
+  const { where, args } = browseWhere(query);
+  const from = where.some((w) => w.startsWith('m.'))
+    ? 'media m JOIN nodes n ON n.id=m.id'
+    : 'nodes n';
+  // One bound SQL operation selects every browse result, including unloaded
+  // pages, plus explicitly rendered overview previews. Preview IDs may only
+  // select live direct children of live roots in that same home browse result.
+  db.exec('BEGIN IMMEDIATE');
+  let updated;
+  try {
+    updated = run(
+      `WITH browse AS (SELECT n.id FROM ${from} WHERE ${where.join(' AND ')})
+       UPDATE nodes AS n SET confirmed=1,match_review=0
+       WHERE n.missing=0 AND ${pendingReviewSql('n')} AND
+       (n.id IN (SELECT id FROM browse) OR
+        (n.id IN (SELECT value FROM json_each(?)) AND n.root=n.parent AND
+         n.parent IN (SELECT r.id FROM browse b JOIN nodes r ON r.id=b.id
+                      WHERE r.parent IS NULL AND r.kind='folder' AND r.missing=0)))`,
+      ...args,
+      JSON.stringify([...new Set(previewIds)])
+    ).changes;
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  if (updated) send('changed', { review: true });
+  return { updated };
+}
 function emitProgress(force = false) {
   const now = Date.now();
   if (force || now - (progress.last || 0) >= 250) {
@@ -447,7 +517,7 @@ function coverFor(folder, choice) {
   )
     return;
   run(
-    'UPDATE nodes SET cover=?,cover_source=?,confirmed=CASE WHEN cover=? THEN confirmed ELSE 0 END WHERE id=? AND manual_cover=0',
+    `UPDATE nodes SET cover=?,cover_source=?,confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 WHEN cover=? THEN confirmed ELSE 0 END WHERE id=? AND manual_cover=0`,
     choice?.id || null,
     choice ? 'fallback' : null,
     choice?.id || null,
@@ -1110,12 +1180,16 @@ async function saveSubjectContents(
         );
       else if (Number.isFinite(matchConfidence))
         run(
-          'UPDATE nodes SET match_confidence=?,match_review=?,confirmed=CASE WHEN ?=1 THEN 1 ELSE confirmed END WHERE id=?',
+          'UPDATE nodes SET match_confidence=?,match_review=?,confirmed=CASE WHEN ?=1 AND manual_cover=0 THEN 1 ELSE confirmed END WHERE id=?',
           matchConfidence,
           matchConfidence < 1 ? 1 : 0,
           matchConfidence === 1 ? 1 : 0,
           folder.id
         );
+      run(
+        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${exactAutomaticSql()}`,
+        folder.id
+      );
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -1390,7 +1464,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
         assertMatchLive(guard);
         if (!explicit && local.complete && local.selected) {
           const saved = await saveSubject(local.selected, folder, false, guard, types, {
-            ...(importMatching ? { matchConfidence: local.selectedMatch } : {})
+            matchConfidence: local.selectedMatch
           });
           return saved && incompleteResources(saved)
             ? { ...saved, localIdentitySaved: true }
@@ -1568,7 +1642,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
         if (subject && ranked.selected?.id === subject.id) {
           if (!explicit)
             return saveSubject(subject, folder, false, guard, types, {
-              ...(importMatching ? { matchConfidence: ranked.selectedMatch } : {})
+              matchConfidence: ranked.selectedMatch
             });
           break;
         }
@@ -2376,6 +2450,7 @@ const methods = {
     dataDir: home
   }),
   list,
+  confirmReview,
   get: ({ id }) => hydrate(getNode(id)),
   ancestors: ({ id }) =>
     q(
@@ -2431,8 +2506,14 @@ const methods = {
         v > allowed[k][1]
       )
         throw new Error('无效设置');
-      run(`UPDATE nodes SET ${k}=? WHERE id=?`, v, id);
     }
+    const entries = Object.entries(changes);
+    if (entries.length)
+      run(
+        `UPDATE nodes SET ${entries.map(([key]) => key + '=?').join(',')} WHERE id=?`,
+        ...entries.map(([, value]) => value),
+        id
+      );
     send('changed', {
       id,
       cover: Object.keys(changes).every((k) =>
@@ -2444,7 +2525,7 @@ const methods = {
   resetCover: async ({ id }) => {
     const n = getNode(id);
     run(
-      'UPDATE nodes SET manual_cover=0,crop_x=50,crop_y=50,crop_zoom=1,cover_revision=NULL,cover_source=NULL,cover=NULL,confirmed=0 WHERE id=?',
+      `UPDATE nodes SET manual_cover=0,crop_x=50,crop_y=50,crop_zoom=1,cover_revision=NULL,cover_source=NULL,cover=NULL,confirmed=CASE WHEN ${exactAutomaticIdentitySql()} THEN 1 ELSE 0 END WHERE id=?`,
       id
     );
     await refreshLocalCover(id);
@@ -2456,7 +2537,7 @@ const methods = {
       fs.existsSync(characters.coverFile(current.character_id))
     )
       run(
-        "UPDATE nodes SET cover=?,cover_source='bangumi-character',confirmed=0 WHERE id=?",
+        `UPDATE nodes SET cover=?,cover_source='bangumi-character',confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
         'character:' + current.character_id,
         id
       );
@@ -2468,7 +2549,7 @@ const methods = {
       const m = one('SELECT json FROM metadata WHERE id=?', current.subject_id);
       if (m && JSON.parse(m.json).local_cover)
         run(
-          "UPDATE nodes SET cover=?,cover_source='bangumi',confirmed=0 WHERE id=?",
+          `UPDATE nodes SET cover=?,cover_source='bangumi',confirmed=CASE WHEN ${exactAutomaticSql()} THEN 1 ELSE 0 END WHERE id=?`,
           'subject:' + current.subject_id,
           id
         );

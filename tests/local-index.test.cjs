@@ -448,6 +448,34 @@ test('worker import saves exact local identity, confidence and review under deni
   assert.equal(node.confirmed, 1);
   assert.equal(node.metadata.source, 'local-index');
 });
+test('fresh legacy-root local-index selection stores exact and fuzzy evidence under denied HTTP', async (t) => {
+  for (const exact of [true, false])
+    await t.test(exact ? 'exact' : 'fuzzy', async (t) => {
+      const chars = Array.from({ length: 210 }, (_, i) => String.fromCodePoint(0x5000 + i));
+      const album = chars.slice(0, 25).join('');
+      const name = exact ? album : chars.slice(0, 23).join('') + chars[200];
+      const f = await scanned(t, { album, subjects: [{ id: 420, name }], network: 'forbidden' });
+      await f.call('settings', { key: 'autoMatch', value: false });
+      await f.call('scan', { path: f.source });
+      await f.call('setAlbumKind', { id: idFor(f.source), kind: 'work' });
+      const db = new DatabaseSync(path.join(f.root, 'private-fixture-data', 'library.sqlite'), {
+        readOnly: true
+      });
+      assert.equal(db.prepare('SELECT count(*) AS count FROM root_match_policy').get().count, 0);
+      db.close();
+      await f.call('settings', { key: 'autoMatch', value: true });
+      f.events.length = 0;
+      await f.call('scan', { path: f.source });
+      await f.idle();
+      const node = await f.call('get', { id: f.id });
+      assert.equal(node.subject_id, 420);
+      assert.equal(node.match_confidence, exact ? 1 : 44 / 47);
+      assert.equal(node.match_review, exact ? 0 : 1);
+      assert.equal(node.confirmed, exact ? 1 : 0);
+      assert.equal(node.metadata.source, 'local-index');
+    });
+});
+
 test('worker lite import retains aliases and collection without requesting missing summary', async (t) => {
   const f = await scanned(t, { subjects, lite: true, detailNone: true });
   await f.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [4] });

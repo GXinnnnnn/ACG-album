@@ -18,6 +18,7 @@ const allowed = new Set([
   'get',
   'ancestors',
   'patch',
+  'confirmReview',
   'setCover',
   'resetCover',
   'match',

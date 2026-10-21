@@ -267,6 +267,9 @@ test('local-first role import uses natural first image, independent local metada
   assert.equal(n.metadata.kind, 'character');
   assert.equal(n.metadata.summary, '本地角色简介');
   assert.equal(n.effective_album_kind, 'character');
+  assert.equal(n.match_confidence, 1);
+  assert.equal(n.match_review, 0);
+  assert.equal(n.confirmed, 1);
   assert.equal(c.requests.length, 0);
   await fs.writeFile(path.join(f.folder, '0.png'), f.png);
   await c.call('scan', { path: f.source });
@@ -274,6 +277,11 @@ test('local-first role import uses natural first image, independent local metada
   n = await c.call('get', { id: f.id });
   assert.equal(n.cover, idFor(path.join(f.folder, '0.png')));
   assert.equal(n.character_id, 7);
+  assert.equal(n.confirmed, 1);
+  assert.equal(n.match_confidence, 1);
+  await c.call('resetCover', { id: f.id });
+  assert.equal((await c.call('get', { id: f.id })).confirmed, 1);
+  assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   const listed = await c.call('list', { parent: idFor(f.source) });
   assert.equal(listed.items.find((item) => item.id === f.id).metadata.kind, 'character');
 });
@@ -305,6 +313,8 @@ test('same-name characters stay unbound and manual ID reader selects role even w
   });
   assert.equal(bound.character_id, 9);
   assert.equal(bound.manual_character, 1);
+  assert.equal(bound.match_confidence, null);
+  assert.equal(bound.match_review, 0);
   assert.equal(bound.subject_id, null);
   assert.equal(bound.metadata.name, '綾波レイ');
   await c.call('scan', { path: f.source });
@@ -339,6 +349,15 @@ test('Bangumi role portrait uses separate files, shared token API and credential
   let n = await c.call('get', { id: f.id });
   assert.equal(n.character_id, 7);
   assert.equal(n.cover, 'character:7');
+  assert.equal(n.match_confidence, 1);
+  assert.equal(n.match_review, 0);
+  assert.equal(n.confirmed, 1);
+  await c.call('resetCover', { id: f.id });
+  await c.call('refreshMetadata', { id: f.id });
+  n = await c.call('get', { id: f.id });
+  assert.equal(n.confirmed, 1);
+  assert.equal(n.match_confidence, 1);
+  assert.ok(!(await c.call('list', { filter: 'pending' })).items.some((item) => item.id === f.id));
   assert.equal(n.metadata.summary, '在线角色介绍');
   const image = c.requests.find((request) => request.url.includes('lain.bgm.tv'));
   assert.equal(image.authorization, null);
@@ -352,9 +371,11 @@ test('Bangumi role portrait uses separate files, shared token API and credential
   assert.equal((await fs.stat(path.join(f.data, 'metadata', 'character-7.md'))).isFile(), true);
   await c.call('patch', { id: f.id, changes: { crop_x: 32, crop_zoom: 1.5 } });
   await c.call('setCover', { id: f.id, imageId: f.second });
-  await c.call('patch', { id: f.id, changes: { crop_x: 32, crop_zoom: 1.5 } });
+  await c.call('patch', { id: f.id, changes: { crop_x: 32, crop_zoom: 1.5, confirmed: 0 } });
   await c.call('refreshMetadata', { id: f.id });
   n = await c.call('get', { id: f.id });
+  assert.equal(n.confirmed, 0);
+  assert.equal(n.match_review, 0);
   assert.equal(n.cover, f.second);
   assert.equal(n.crop_x, 32);
   assert.equal(n.crop_zoom, 1.5);
@@ -413,6 +434,8 @@ test('portrait absence falls back locally and custom role survives rescans and a
   assert.equal(n.manual_character, 1);
   assert.equal(n.metadata.name, '我的角色');
   assert.equal(n.metadata.summary, '手动简介');
+  assert.equal(n.match_confidence, null);
+  assert.equal(n.match_review, 0);
   assert.equal(n.crop_x, 27);
   assert.equal(n.crop_zoom, 1.3);
   assert.equal(n.cover, f.first);

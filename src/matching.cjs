@@ -227,7 +227,11 @@ function rankSubjects(
     match: item.match,
     collection_total: item.total
   }));
-  return { candidates: candidates.slice(0, 10), selected: chosen?.subject || null };
+  return {
+    candidates: candidates.slice(0, 10),
+    selected: chosen?.subject || null,
+    selectedMatch: chosen?.match ?? null
+  };
 }
 
 // Import has its own admission threshold and tie policy. Reuse the same identity

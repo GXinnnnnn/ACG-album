@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const sharp = require('sharp');
+const { exactAutomaticSql } = require('./review-state.cjs');
 const {
   safeCharacter,
   rankCharacters,
@@ -105,7 +106,7 @@ function createCharacterLibrary(e) {
     folder,
     manual,
     live,
-    { refresh = false, onIdentitySaved } = {}
+    { refresh = false, onIdentitySaved, matchConfidence } = {}
   ) {
     assertLive(live);
     if (!safeCharacter(character)) throw new Error('Bangumi 角色数据无效。');
@@ -229,7 +230,25 @@ function createCharacterLibrary(e) {
         else if (current.cover?.startsWith('subject:') || current.cover?.startsWith('character:'))
           run('UPDATE nodes SET cover=NULL,cover_source=NULL,confirmed=0 WHERE id=?', folder.id);
       }
-      if (manual) run('DELETE FROM match_pending WHERE id=?', folder.id);
+      if (manual) {
+        run('DELETE FROM match_pending WHERE id=?', folder.id);
+        run(
+          'UPDATE nodes SET match_confidence=NULL,match_review=0,confirmed=CASE WHEN ?=1 THEN 1 ELSE confirmed END WHERE id=?',
+          current.match_review,
+          folder.id
+        );
+      } else if (Number.isFinite(matchConfidence))
+        run(
+          'UPDATE nodes SET match_confidence=?,match_review=?,confirmed=CASE WHEN ?=1 AND manual_cover=0 THEN 1 ELSE confirmed END WHERE id=?',
+          matchConfidence,
+          matchConfidence < 1 ? 1 : 0,
+          matchConfidence === 1 ? 1 : 0,
+          folder.id
+        );
+      run(
+        `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${exactAutomaticSql()}`,
+        folder.id
+      );
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -298,8 +317,12 @@ function createCharacterLibrary(e) {
       chosen = result.selected;
     }
     if (!chosen) return hydrate(getNode(folder.id));
+    // Only a newly selected, unique exact result supplies matching evidence.
+    // Enriching an existing identity never invents confidence for legacy rows.
+    const matchConfidence = !folder.character_id ? result.selectedMatch : undefined;
     if (!folder.character_id && chosen.source === 'local-index') {
       await save(chosen, folder, false, live, {
+        matchConfidence,
         onIdentitySaved: (current) => {
           live = continuation(current, job, false);
         }
@@ -311,7 +334,7 @@ function createCharacterLibrary(e) {
     if (e.paused()) return { ...hydrate(getNode(folder.id)), networkDeferred: true };
     const detail = await api('/v0/characters/' + chosen.id, undefined, live);
     if (!safeCharacter(detail, chosen.id)) throw new Error('Bangumi 角色 ID 与检索结果不一致。');
-    return save(detail, folder, false, live);
+    return save(detail, folder, false, live, { matchConfidence });
   }
   async function bind(folder, { url, custom }) {
     if (custom) {
@@ -328,7 +351,7 @@ function createCharacterLibrary(e) {
         cached_at: Date.now()
       };
       run(
-        "UPDATE nodes SET character_id=NULL,manual_character=1,custom_character=?,subject_id=NULL,manual_subject=0,album_kind='character',intro=1 WHERE id=?",
+        "UPDATE nodes SET character_id=NULL,manual_character=1,custom_character=?,subject_id=NULL,manual_subject=0,album_kind='character',intro=1,match_confidence=NULL,match_review=0,confirmed=CASE WHEN match_review=1 THEN 1 ELSE confirmed END WHERE id=?",
         JSON.stringify(data),
         folder.id
       );

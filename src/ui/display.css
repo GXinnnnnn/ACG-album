@@ -135,6 +135,23 @@
   line-height: 1.8;
   color: var(--muted);
 }
+.page-review-setting {
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.page-review-setting > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.page-review-setting button {
+  min-height: 40px;
+  flex-shrink: 0;
+}
+.page-review-status {
+  min-height: 1.8em;
+  margin-bottom: 0;
+}
 @media (max-width: 1250px) {
   .toolbar-right {
     gap: 7px;
