@@ -144,6 +144,17 @@ function createLocalIndex({ localIndexPath, resourcesPath = process.resourcesPat
       return null;
     }
   }
+  function readCharacter(id) {
+    if (!db || !Number.isSafeInteger(id) || id <= 0) return null;
+    try {
+      return hydrate(
+        db.prepare(`SELECT ${ENTITY_COLUMNS} FROM entities WHERE kind='character' AND id=?`).get(id)
+      );
+    } catch (error) {
+      fail(error);
+      return null;
+    }
+  }
   function staffFor(subjectId) {
     if (!db) return [];
     try {
@@ -190,6 +201,7 @@ function createLocalIndex({ localIndexPath, resourcesPath = process.resourcesPat
     status,
     search,
     readSubject,
+    readCharacter,
     staffFor,
     close() {
       try {

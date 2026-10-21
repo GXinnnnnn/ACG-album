@@ -75,7 +75,7 @@ async function bounds(page, selector) {
 }
 (async () => {
   assert.equal(process.argv.length, 2, 'Usage: node scripts/check-standard.cjs');
-  assert.equal(metadata.version, '0.6.0');
+  assert.match(metadata.version, /^\d+\.\d+\.\d+$/, 'A stable release version is required');
   await fsp.mkdir(isolated, { recursive: true });
   console.log('ISOLATED ' + isolated);
   const build = JSON.parse(await fsp.readFile(path.join(out, 'build-report.json'), 'utf8'));
@@ -141,7 +141,7 @@ async function bounds(page, selector) {
       };
     });
     assert.equal(report.environment.packaged, true);
-    assert.equal(report.environment.version, '0.6.0');
+    assert.equal(report.environment.version, metadata.version);
     assert.equal(report.environment.searchEdition, 'standard');
     assert.equal(path.resolve(report.environment.userData), path.join(profile, 'chromium-profile'));
     assert.equal(path.resolve(report.environment.dataDir), profile);
@@ -165,7 +165,7 @@ async function bounds(page, selector) {
       report.searches.push(result);
     }
     report.checks.push(
-      'packaged Standard 0.6.0 metadata, isolated profile, missing optional index and empty/nonempty search return without throwing'
+      `packaged Standard ${metadata.version} metadata, isolated profile, missing optional index and empty/nonempty search return without throwing`
     );
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0].setContentSize(980, 680)

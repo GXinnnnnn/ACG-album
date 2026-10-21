@@ -391,7 +391,15 @@ test('access pause keeps newly saved local identity pending, sweeps remaining lo
     respond: (r, context) => (allowed ? detailsOnly(r, context) : { status: 403 })
   });
   const ids = f.folders.map(idFor);
-  const policy = JSON.stringify({ explicit: true, enabled: true, types: [4], revision: 1 });
+  const policy = JSON.stringify({
+    explicit: true,
+    kind: 'work',
+    characterCover: 'local-first',
+    networkEnabled: true,
+    enabled: true,
+    types: [4],
+    revision: 1
+  });
   f.sql((db) => {
     for (const id of ids)
       db.prepare('INSERT INTO match_pending VALUES(?,?,?)').run(

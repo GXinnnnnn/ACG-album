@@ -18,6 +18,7 @@ function createVirtualGrid() {
     stamp = '',
     dirty = true,
     pageVersion = 0,
+    refreshVersion = 0,
     firstMedia = 0,
     lastPage = -1,
     mediaTop = 0,
@@ -152,15 +153,28 @@ function createVirtualGrid() {
         offset: Number(offset) || 0
       });
     },
-    refreshVisible() {
-      if (!this.active) return Promise.resolve([]);
-      const pages = visiblePages(measure());
-      return Promise.all(
+    async refreshVisible() {
+      if (!this.active) return [];
+      const pages = visiblePages(measure()),
+        results = new Map(),
+        version = this.version,
+        navigation = pageVersion,
+        refresh = ++refreshVersion;
+      const values = await Promise.all(
         [...pages].map((page) => {
           failed.delete(page);
-          return this.fetchPage(page, true);
+          return this.fetchPage(page, true, results);
         })
       );
+      if (
+        this.active &&
+        version === this.version &&
+        navigation === S.loadVersion &&
+        refresh === refreshVersion &&
+        results.size === pages.size
+      )
+        applyPages(results);
+      return values;
     },
     async refreshGrowing() {
       if (!this.active || !this.args) return this.total;
@@ -222,6 +236,7 @@ function createVirtualGrid() {
           if (n) previousCards.set(String(n.id), { b, n });
           else b.remove();
         }
+        refreshVersion++;
         for (const request of this.loading.values()) request.controller.abort();
         this.loading.clear();
         this.items.clear();
@@ -285,7 +300,7 @@ function createVirtualGrid() {
         if (this.growing === task) this.growing = null;
       }
     },
-    fetchPage(page, refresh = false) {
+    fetchPage(page, refresh = false, results = null) {
       page = Math.trunc(Number(page));
       if (
         !this.active ||
@@ -320,26 +335,8 @@ function createVirtualGrid() {
             cancelled
           ]);
           if (!result || !current()) return;
-          const m = measure(),
-            anchor = this.total ? anchorAt(m, 0) : null;
-          if (!this.total) {
-            this.total = Math.max(0, Number(result.total) || 0);
-            this.folders = Math.min(this.total, Math.max(0, Number(result.folders) || 0));
-          }
-          for (const [index, b] of this.cards)
-            if (Math.floor(index / PAGE) === page) {
-              b.remove();
-              this.cards.delete(index);
-            }
-          for (let i = page * PAGE; i < Math.min(this.total, (page + 1) * PAGE); i++)
-            this.items.delete(i);
-          (result.items || []).slice(0, PAGE).forEach((n, i) => {
-            if (page * PAGE + i < this.total) this.items.set(page * PAGE + i, n);
-          });
-          loaded.add(page);
-          failed.delete(page);
-          dirty = true;
-          draw(anchor, m);
+          if (results) results.set(page, result);
+          else applyPages(new Map([[page, result]]));
         } catch (error) {
           if (current()) {
             failed.add(page);
@@ -356,6 +353,55 @@ function createVirtualGrid() {
       return request.promise;
     }
   };
+  function applyPages(results) {
+    if (!results.size) return;
+    const m = measure(),
+      anchor = grid.total ? anchorAt(m, 0) : null,
+      anchorNode = anchor && grid.items.get(anchor.index),
+      previousCards = new Map();
+    if (!grid.total) {
+      const first = results.values().next().value;
+      grid.total = Math.max(0, Number(first.total) || 0);
+      grid.folders = Math.min(grid.total, Math.max(0, Number(first.folders) || 0));
+    }
+    // Reconcile the refreshed window together so IDs moving across a page
+    // boundary retain their attached card, decoded cover and keyboard focus.
+    for (const [index, b] of grid.cards)
+      if (results.has(Math.floor(index / PAGE))) {
+        const n = grid.items.get(index);
+        if (n) previousCards.set(String(n.id), { b, n, index });
+        else b.remove();
+        grid.cards.delete(index);
+      }
+    for (const page of results.keys())
+      for (let i = page * PAGE; i < Math.min(grid.total, (page + 1) * PAGE); i++)
+        grid.items.delete(i);
+    for (const [page, result] of results) {
+      (result.items || []).slice(0, PAGE).forEach((n, i) => {
+        const index = page * PAGE + i;
+        if (index >= grid.total) return;
+        grid.items.set(index, n);
+        if (anchorNode?.id === n.id) anchor.index = index;
+        const previous = previousCards.get(String(n.id));
+        if (!previous || JSON.stringify(previous.n) !== JSON.stringify(n)) return;
+        const b = previous.b;
+        if (previous.index !== index) {
+          b.dataset.index = b.dataset.gridIndex = String(index);
+          b.onclick = () =>
+            attempt(() =>
+              n.kind === 'folder' ? navigate({ parent: n.id }) : openViewer(n, index)
+            );
+        }
+        grid.cards.set(index, b);
+        previousCards.delete(String(n.id));
+      });
+      loaded.add(page);
+      failed.delete(page);
+    }
+    for (const { b } of previousCards.values()) b.remove();
+    dirty = true;
+    draw(anchor, m);
+  }
   function measure() {
     const el = $('#virtual-grid'),
       vp = $('#viewport'),
@@ -596,7 +642,8 @@ function createVirtualGrid() {
         if (p.top + p.height > start && p.top < end) visible.push(i);
       }
     }
-    const keep = new Set(visible);
+    const keep = new Set(visible),
+      moved = new Set();
     let cacheFirst = Infinity,
       cacheLast = -1;
     for (const page of pages) {
@@ -654,9 +701,29 @@ function createVirtualGrid() {
         infoHeight = media ? detail : 70;
       let previous = cardLayouts.get(b);
       if (!previous) {
-        previous = { shell: b.querySelector('.cover-shell'), info: b.querySelector('.card-info') };
+        previous = {
+          shell: b.querySelector('.cover-shell'),
+          info: b.querySelector('.card-info'),
+          image: b.querySelector('img')
+        };
         cardLayouts.set(b, previous);
         b.dataset.gridIndex = String(index);
+      }
+      if (previous.index !== index) moved.add(b);
+      previous.index = index;
+      if (n && previous.image) {
+        const src = thumb(n),
+          tier = /[?&]size=(\d+)/.exec(src)?.[1],
+          currentTier =
+            /[?&]size=(\d+)/.exec(previous.image.getAttribute('src') || '')?.[1] ||
+            previous.thumbTier;
+        // Revision changes alone must not restart all visible thumbnail requests.
+        // Remember the tier for video fallbacks whose generated URL has no size query.
+        if (currentTier && tier && currentTier !== tier) {
+          previous.image.style.display = '';
+          previous.image.src = src;
+        }
+        previous.thumbTier = tier;
       }
       if (
         previous.width !== p.width ||
@@ -692,6 +759,24 @@ function createVirtualGrid() {
           infoHeight
         });
       }
+    }
+    // Stable cards already have the right relative DOM order. Move only new or
+    // reindexed cards so keyboard/reading order follows the visual item order.
+    let before = null;
+    for (let i = visible.length - 1; i >= 0; i--) {
+      const b = grid.cards.get(visible[i]);
+      if (!b) continue;
+      if (moved.has(b) && b.nextElementSibling !== before) {
+        if (typeof m.el.moveBefore === 'function') m.el.moveBefore(b, before);
+        else {
+          const focused = document.activeElement,
+            restoreFocus = focused && b.contains(focused);
+          m.el.insertBefore(b, before);
+          if (restoreFocus && document.activeElement !== focused)
+            focused.focus({ preventScroll: true });
+        }
+      }
+      before = b;
     }
     for (const page of pages)
       if (!loaded.has(page) && !failed.has(page) && !grid.loading.has(page)) grid.fetchPage(page);

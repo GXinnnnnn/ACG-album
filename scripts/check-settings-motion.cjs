@@ -9,9 +9,10 @@ const crypto = require('node:crypto');
 const metadata = require('../package.json');
 const root = path.resolve(__dirname, '..');
 const packaged = process.argv.includes('--packaged');
+const artifactRoot = require('node:fs').realpathSync(path.join(root, 'artifacts'));
 const run = path.join(
-  root,
-  'artifacts/settings-motion',
+  artifactRoot,
+  'settings-motion',
   `${packaged ? 'packaged' : 'source'}-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`
 );
 const profile = path.join(run, 'generated-profile');
@@ -197,7 +198,7 @@ async function geometry() {
   await fs.mkdir(profile, { recursive: true });
   assert.equal(path.dirname(profile), run);
   assert.ok(
-    path.resolve(profile).startsWith(path.join(root, 'artifacts/settings-motion') + path.sep)
+    path.resolve(profile).startsWith(path.join(artifactRoot, 'settings-motion') + path.sep)
   );
   const env = { ...process.env, ACG_DATA_DIR: profile, ACG_TEST: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -205,7 +206,9 @@ async function geometry() {
     app = await _electron.launch({
       executablePath: packaged
         ? path.join(
-            require('./distribution-paths.cjs').runtimeDirectory(),
+            process.env.ACG_PACKAGED_RUNTIME
+              ? path.resolve(process.env.ACG_PACKAGED_RUNTIME)
+              : require('./distribution-paths.cjs').runtimeDirectory(),
             `${metadata.build.productName}.exe`
           )
         : require('electron'),
