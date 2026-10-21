@@ -174,6 +174,44 @@ test(
   }
 );
 
+test('nested subtree pruning yields after at most 128 missing nodes', async (t) => {
+  const { db, maintenance } = fixture(t, true);
+  seed(db, 1024);
+  db.exec("UPDATE nodes SET parent='removed-folder'");
+  const indexing = createIndexing(db, maintenance);
+  indexing.upsert(
+    {
+      id: 'removed-folder',
+      root: 'root',
+      parent: 'root',
+      path: 'C:\\fixture-only\\album',
+      name: 'album',
+      sortkey: 'album',
+      kind: 'folder',
+      depth: 1
+    },
+    { size: 0, mtimeMs: 1700000000000, birthtimeMs: 1700000000000 },
+    1
+  );
+  const removedCount = db.prepare('SELECT COUNT(*) n FROM nodes WHERE missing=1');
+  let previous = 0;
+  const batches = [];
+  await indexing.prune('root', 2, async () => {
+    const current = removedCount.get().n;
+    if (current > previous) batches.push(current - previous);
+    previous = current;
+    await yieldNow();
+  });
+  assert.equal(previous, 1025);
+  assert.ok(
+    batches.every((size) => size <= 128),
+    `synchronous removal batches: ${batches}`
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM media WHERE status='missing'").get().n, 1024);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM search_index').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM scan_prune').get().n, 0);
+});
+
 test('prune restores the original pragma and propagates callback and maintenance errors', async (t) => {
   const { db } = fixture(t, true);
   seed(db, 3);
