@@ -7,6 +7,10 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 const version = require('../package.json').version;
+const nextVersion = version
+  .split('.')
+  .map((part, index) => Number(part) + (index === 2 ? 1 : 0))
+  .join('.');
 const official = 'GXinnnnnn/ACG-album';
 const executable = process.env.ACG_EXECUTABLE ? path.resolve(process.env.ACG_EXECUTABLE) : null;
 const online = process.env.ACG_RELEASE_ONLINE === '1';
@@ -95,7 +99,7 @@ async function screenshot(name) {
       await app.evaluate(({ app }) => ({ version: app.getVersion(), isPackaged: app.isPackaged }))
     );
     assert.equal(report.runtime.version, version);
-    await app.evaluate(({ net, shell, BrowserWindow }) => {
+    await app.evaluate(({ net, shell, BrowserWindow }, nextVersion) => {
       global.__releaseIntegration = {
         mode: 'available',
         requests: [],
@@ -120,23 +124,23 @@ async function screenshot(name) {
           return {
             status: 200,
             ok: true,
-            url: 'https://github.com/' + repository + '/releases/tag/v1.1.2'
+            url: 'https://github.com/' + repository + '/releases/tag/v' + nextVersion
           };
         return {
           status: 200,
           ok: true,
           json: async () => ({
-            tag_name: 'v1.1.2',
+            tag_name: 'v' + nextVersion,
             draft: false,
             prerelease: false,
-            html_url: 'https://github.com/' + repository + '/releases/tag/v1.1.2'
+            html_url: 'https://github.com/' + repository + '/releases/tag/v' + nextVersion
           })
         };
       };
       const win = BrowserWindow.getAllWindows()[0];
       if (win.isMaximized()) win.unmaximize();
       win.setContentSize(980, 680);
-    });
+    }, nextVersion);
     await page.waitForFunction(() => innerWidth === 980);
     const expectedDownload = (edition) =>
       'https://github.com/' +
@@ -180,7 +184,7 @@ async function screenshot(name) {
       );
       await page.locator('.updates-result-card .about-release-link').click();
       assert.deepEqual((await state()).external, [
-        'https://github.com/' + official + '/releases/tag/v1.1.2'
+        'https://github.com/' + official + '/releases/tag/v' + nextVersion
       ]);
     });
     await check(
