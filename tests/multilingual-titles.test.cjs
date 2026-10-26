@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { searchPlan, searchTerms, normalize } = require('../src/model.cjs');
+const { searchPlan, searchTerms, searchStages, normalize } = require('../src/model.cjs');
 const { rankSubjects } = require('../src/matching.cjs');
 
 const chinese = '天选庶民的真命之选';
@@ -21,13 +21,22 @@ test('unseparated, reversed and delimited bilingual names yield independent boun
     chinese + ' / ' + japanese,
     '[1080p] ' + chinese + '_' + japanese + ' [CG]'
   ]) {
-    const plan = searchPlan(input);
+    const stages = searchStages(input);
+    const whole =
+      input === '[1080p] ' + chinese + '_' + japanese + ' [CG]'
+        ? '[1080p] ' + chinese + '_' + japanese
+        : input;
+    assert.deepEqual(stages[0], { terms: [whole], titleGroups: [] });
+    assert.equal(rankSubjects(stages[0].terms, [game], [4]).selected, null);
+    const plan = stages.find((stage) =>
+      stage.titleGroups.some(
+        (group) => group.parts.includes(chinese) && group.parts.includes(japanese)
+      )
+    );
+    assert.ok(plan, input);
     assert.ok(plan.terms.includes(chinese), JSON.stringify(plan));
     assert.ok(plan.terms.includes(japanese), JSON.stringify(plan));
     assert.ok(plan.terms.length <= 6 && plan.terms.every((t) => t.length <= 160));
-    assert.ok(
-      plan.titleGroups.some((g) => g.parts.includes(chinese) && g.parts.includes(japanese))
-    );
     assert.equal(
       rankSubjects(plan.terms, [game], [4], {
         titleGroups: plan.titleGroups,

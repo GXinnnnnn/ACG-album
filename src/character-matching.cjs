@@ -121,11 +121,7 @@ function parseCharacterId(value) {
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('请输入 Bangumi 角色链接或角色 ID。');
   return id;
 }
-const naturalKey = (name) =>
-  String(name || '')
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/\d+/g, (digits) => digits.padStart(14, '0'));
+const { sortKey: naturalKey } = require('./natural-sort.cjs');
 function firstImage(a, b) {
   if (
     !b ||

@@ -268,6 +268,35 @@ async function screenshot(name) {
           report.onlineUpdate = result;
         }
       );
+    if (online)
+      await check(
+        'published release fallback follows the real Electron public redirect after a forced API rate limit',
+        async () => {
+          await app.evaluate(({ net }, official) => {
+            const original = global.__releaseIntegration.originalFetch;
+            net.fetch = (url, options) =>
+              String(url) === `https://api.github.com/repos/${official}/releases/latest`
+                ? Promise.resolve(new Response('', { status: 403 }))
+                : original(url, options);
+          }, official);
+          try {
+            const result = await rpc('checkUpdate');
+            assert.equal(result.repository, official);
+            assert.equal(result.currentVersion, version);
+            assert.equal(result.latestVersion, version);
+            assert.equal(result.status, 'current');
+            assert.equal(
+              result.url,
+              'https://github.com/' + official + '/releases/tag/v' + version
+            );
+            report.onlineFallback = result;
+          } finally {
+            await app.evaluate(({ net }) => {
+              net.fetch = global.__releaseIntegration.originalFetch;
+            });
+          }
+        }
+      );
     assert.deepEqual(report.errors, []);
     report.passed = true;
   } catch (error) {

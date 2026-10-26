@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/ui/masonry.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(__dirname, '../src/ui/app.js'), 'utf8');
 const thumbSource = appSource.slice(
-  appSource.indexOf('function thumb(n)'),
+  appSource.indexOf('function thumb('),
   appSource.indexOf('function applySettings()')
 );
 
@@ -214,7 +214,7 @@ test('mixed folder/image cards share the final partial row across density and ab
     }
 });
 
-test('unloaded boundary placeholders remain beside folders and natural media survives ratio/detail changes', async () => {
+test('boundary placeholders stay beside folders and media respects folder-height limits across settings', async () => {
   const f = await fixture(181, 500),
     { grid, settings } = f;
   // Page 1 is initially unloaded because the viewport is near folder 0.
@@ -226,15 +226,18 @@ test('unloaded boundary placeholders remain beside folders and natural media sur
   grid.layout(false);
   const tall = grid.getPosition(181),
     originalFolder = grid.getPosition(180);
-  assert.equal(tall.height - 48, tall.width * 6);
-  assert.ok(tall.height > originalFolder.height);
+  assert.equal(tall.height, originalFolder.height * 2);
+  const natural = grid.getPosition(182);
+  assert.ok(Math.abs(natural.height - 48 - natural.width / 2) < 0.001);
   settings.ratio = 'square';
   grid.layout(false);
-  assert.equal(grid.getPosition(181).height, tall.height);
+  assert.equal(grid.getPosition(181).height, grid.getPosition(180).height * 2);
   assert.notEqual(grid.getPosition(180).height, originalFolder.height);
+  assert.equal(grid.getPosition(182).height, natural.height);
   settings.details = false;
   grid.layout(false);
-  assert.equal(grid.getPosition(181).height, tall.height - 48);
+  assert.equal(grid.getPosition(181).height, grid.getPosition(180).height * 2);
+  assert.ok(Math.abs(grid.getPosition(182).height - (natural.height - 48)) < 0.001);
   assert.equal(grid.getPosition(180).height, grid.width + 70);
   grid.reset();
 });
@@ -330,7 +333,7 @@ test('changed cards alone are replaced and dimensions rebuild non-overlapping ge
   assert.equal(oldCards.get(2).removals, 1);
   assert.equal(grid.cards.get(1), unchanged);
   const current = grid.getPosition(0);
-  assert.equal(current.height, (222 * 150) / 300 + 48);
+  assert.equal(current.height, (grid.width * 150) / 300 + 48);
   assert.notEqual(current.height, original.height);
   assert.equal(Number.parseFloat(grid.cards.get(0).style.height), current.height);
   const rectangles = Array.from({ length: 180 }, (_, index) => grid.getPosition(index));
@@ -569,7 +572,7 @@ test('existing thumbnails change size tiers at DPR 1/2 thresholds without replac
     [180, 2]
   ]) {
     const f = await fixture(folders, 180 - folders, 1400, 158, dpr),
-      { grid, settings, context, viewport } = f,
+      { grid, settings, context, viewport, wall } = f,
       b = grid.cards.get(0),
       img = b.querySelector('img'),
       anchor = grid.captureAnchor();
@@ -584,6 +587,9 @@ test('existing thumbnails change size tiers at DPR 1/2 thresholds without replac
       [158, 512]
     ]) {
       settings.density = density;
+      // Exact fitted widths isolate the tier thresholds from remainder sharing.
+      const gap = folders ? 19 : 8;
+      wall.clientWidth = density * 5 + gap * 4;
       context.S.rev++;
       grid.render();
       if (expected !== tier) writes++;
@@ -606,6 +612,97 @@ test('existing thumbnails change size tiers at DPR 1/2 thresholds without replac
     }
     grid.reset();
   }
+});
+
+test('preset column counts share all available width at 4K and narrow widths', async () => {
+  for (const width of [120, 700, 1180, 3448, 3840])
+    for (const density of [158, 222])
+      for (const [folders, media] of [
+        [90, 0],
+        [0, 90],
+        [1, 90]
+      ]) {
+        const f = await fixture(folders, media, width, density),
+          { grid } = f,
+          gap = media ? 8 : 19,
+          columns = Math.max(1, Math.floor((width + gap) / (density + gap)));
+        assert.equal(grid.cols, columns);
+        assert.equal(grid.gap, gap);
+        for (let column = 0; column < columns; column++) {
+          const p = grid.getPosition(column);
+          assert.ok(Math.abs(p.width - grid.width) < 0.001);
+          assert.ok(Math.abs(p.left - column * (grid.width + gap)) < 0.001);
+          assert.ok(p.left + p.width <= width + 0.001);
+          if (column === columns - 1)
+            assert.ok(Math.abs(p.left + p.width - width) < 0.001, 'No unused trailing card space');
+        }
+        grid.reset();
+      }
+});
+
+test('extreme images and videos cap total height at twice a same-width folder for every ratio and detail mode', async () => {
+  const mediaStyles = fs.readFileSync(path.join(__dirname, '../src/ui/media.css'), 'utf8');
+  assert.match(
+    mediaStyles,
+    /\.media-card\[data-media-clamped='true'\] \.cover-shell img:not\(\.icon-cover\)\s*\{\s*object-fit: cover;\s*object-position: top !important;/,
+    'Clamped media must override the inline centered position written by applyCoverCrop'
+  );
+  for (const width of [700, 3448])
+    for (const density of [158, 222]) {
+      const f = await fixture(1, 360, width, density),
+        { grid, nodes, settings, wall } = f;
+      nodes.set(1, { ...f.make(1), width: 1, height: 100000000 });
+      nodes.set(2, { ...f.make(2), kind: 'video', width: 200, height: 1000000 });
+      nodes.set(3, { ...f.make(3), width: 0, height: 0 });
+      await grid.refreshVisible();
+      for (const ratio of ['poster', 'tall', 'square'])
+        for (const details of [true, false]) {
+          settings.ratio = ratio;
+          settings.details = details;
+          grid.render();
+          await f.settle();
+          const folder = grid.getPosition(0);
+          for (const index of [1, 2]) {
+            const p = grid.getPosition(index);
+            assert.equal(p.width, folder.width);
+            assert.equal(p.height, folder.height * 2);
+            const b = grid.cards.get(index);
+            assert.equal(b.dataset.mediaClamped, 'true');
+            assert.equal(Number.parseFloat(b.style.height), p.height);
+            assert.equal(
+              Number.parseFloat(b.querySelector('.cover-shell').style.height) + (details ? 48 : 0),
+              p.height
+            );
+          }
+          assert.equal(grid.cards.get(0).dataset.mediaClamped, 'false');
+          assert.equal(grid.cards.get(3).dataset.mediaClamped, 'false');
+          assert.equal(grid.cards.get(5).dataset.mediaClamped, 'false');
+          const missing = grid.getPosition(3);
+          assert.ok(Number.isFinite(missing.height) && missing.height <= folder.height * 2);
+          assert.ok(Number.parseFloat(wall.style.height) >= grid.getPosition(1).height);
+        }
+      grid.reset();
+    }
+});
+
+test('fitted column width crosses a DPR thumbnail tier without density changes or DOM replacement', async () => {
+  const f = await fixture(0, 180, 1180, 158, 2),
+    { grid, wall, viewport } = f,
+    b = grid.cards.get(0),
+    image = b.querySelector('img'),
+    anchor = grid.captureAnchor();
+  assert.match(image.src, /size=512/);
+  wall.clientWidth = 820;
+  grid.render();
+  await f.settle();
+  assert.ok(grid.width > 512 / (2 * 1.3));
+  assert.equal(grid.cards.get(0), b);
+  assert.match(image.src, /size=768/);
+  assert.equal(image.writes.length, 2);
+  assert.equal(grid.getPosition(anchor.index).top - viewport.scrollTop, anchor.offset);
+  grid.render();
+  assert.equal(image.writes.length, 2);
+  grid.reset();
 });
 
 test('a DPR change alone upgrades the retained thumbnail and video fallback URLs do not restart repeatedly', async () => {

@@ -265,7 +265,7 @@ async function fixture(count = 1, { repeated = false, images = false } = {}) {
   const folders = [];
   for (let i = 0; i < count; i++) {
     const folder = repeated
-      ? path.join(source, '新建文件夹 (' + i + ')', '月色真美')
+      ? path.join(source, '月色真美 (' + i + ')')
       : path.join(source, 'Artwork' + String(i).padStart(4, '0'));
     await fs.mkdir(folder, { recursive: true });
     if (png) await fs.writeFile(path.join(folder, 'local.png'), png);
@@ -735,7 +735,7 @@ test(
         assert.equal(rows.length, 3);
         assert.ok(rows.every((r) => r.ttl === 7 * 86400000));
       });
-      const extra = path.join(f.source, '新建文件夹 (99)', '月色真美');
+      const extra = path.join(f.source, '月色真美 (99)');
       await fs.mkdir(extra, { recursive: true });
       await fs.writeFile(path.join(extra, 'local.png'), f.png);
       c = await client(f.data, metadataResponder(f.png), { now });
@@ -767,7 +767,7 @@ test(
       await checkManual();
       const expiredNow = await c.clock(7 * 86400000 + 1);
       await c.close();
-      const expiredExtra = path.join(f.source, '新建文件夹 (100)', '月色真美');
+      const expiredExtra = path.join(f.source, '月色真美 (100)');
       await fs.mkdir(expiredExtra, { recursive: true });
       c = await client(f.data, metadataResponder(f.png), {
         now: expiredNow,
@@ -852,7 +852,7 @@ test(
 );
 
 test(
-  'targeted scans discover new descendant albums without revisiting unrelated cached siblings',
+  'targeted root scans discover new first-level albums without scheduling descendants or revisiting cached siblings',
   { timeout: TIMEOUT },
   async () => {
     const f = await fixture(3);
@@ -864,18 +864,32 @@ test(
       assert.equal(before.length, 3);
       const now = await c.clock();
       await c.close();
-      const first = path.join(f.folders[0], '目标新作一');
+      const first = path.join(f.source, '目标新作一');
       const nested = path.join(first, '目标新作二');
       await fs.mkdir(nested, { recursive: true });
       c = await client(f.data, empty, { now });
       const after = c.events.length;
-      await c.call('scan', { path: f.source, target: f.folders[0] });
+      await c.call('scan', { path: f.source, target: f.source });
       await c.done(after);
       assert.deepEqual(
         new Set(searches(c).map((r) => r.body.keyword)),
         new Set(['目标新作一', '目标新作二'])
       );
-      assert.ok(await c.call('get', { id: idFor(nested) }));
+      const descendant = await c.call('get', { id: idFor(nested) });
+      assert.ok(descendant);
+      assert.equal(descendant.subject_id, null);
+      assert.deepEqual(
+        [
+          ...new Set(
+            c.events
+              .slice(after)
+              .filter((event) => event.event === 'online' && event.data.active)
+              .map((event) => event.data.id)
+          )
+        ],
+        [idFor(first)],
+        'only the new first-level album owns an automatic job; its child name is a bounded parent fallback'
+      );
       const current = database(f, (db) =>
         db.prepare('SELECT key,used_at FROM bangumi_cache').all()
       );

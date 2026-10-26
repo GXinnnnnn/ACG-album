@@ -45,7 +45,7 @@ async function client(dataDir) {
     }
   };
 }
-async function fixture(t, seed) {
+async function fixture(t, seed, { legacyReview = false } = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-review-worker-'));
   let c = await client(tmp);
   await c.close();
@@ -99,6 +99,9 @@ async function fixture(t, seed) {
     );
   };
   seed({ db, add });
+  // Schema bootstrap has already migrated its empty database. Fixtures that
+  // inject pre-upgrade review state must also restore the missing old marker.
+  if (legacyReview) db.prepare('DELETE FROM settings WHERE key=?').run('matchReviewVersion');
   db.exec(
     'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
   );
@@ -124,48 +127,52 @@ async function fixture(t, seed) {
 // Real worker startup executes the compatibility migration and reads persisted
 // rows; this is deliberately not a unit test of a copied UI predicate.
 test('startup confirms every matched identity and clears obsolete folder review without overriding manual covers', async (t) => {
-  const c = await fixture(t, ({ add }) => {
-    add('exact-subject', {
-      subject_id: 42,
-      match_confidence: 1,
-      match_review: 1,
-      cover_source: 'bangumi'
-    });
-    add('exact-local', { subject_id: 43, match_confidence: 1 });
-    add('exact-character', {
-      character_id: 7,
-      match_confidence: 1,
-      match_review: 1,
-      cover_source: 'bangumi-character'
-    });
-    add('nonexact', { subject_id: 44, match_confidence: 40 / 47, match_review: 1 });
-    add('manual-subject', { subject_id: 42, manual_subject: 1 });
-    add('manual-character', { character_id: 7, manual_character: 1 });
-    add('unknown-character', { character_id: 8, cover_source: 'fallback' });
-    add('unknown-subject', { subject_id: 45, cover_source: 'bangumi' });
-    add('manual-cover', {
-      subject_id: 42,
-      manual_cover: 1,
-      cover_source: 'manual',
-      match_review: 1
-    });
-    add('manual-confirmed', {
-      manual_cover: 1,
-      cover_source: 'manual',
-      confirmed: 1,
-      match_review: 1
-    });
-    add('unassociated', { match_confidence: 1, match_review: 1 });
-    add('zero-subject', { subject_id: 0, match_review: 1 });
-    add('negative-character', { character_id: -1, match_review: 1 });
-    add('unmatched-online', { cover_source: 'bangumi', match_review: 1 });
-    add('unmatched-portrait', { cover_source: 'bangumi-character', match_review: 1 });
-    add('unmatched-icon', { cover_source: 'local-icon', match_review: 1 });
-    add('unmatched-empty', { cover: null, cover_source: null, match_review: 1 });
-    add('manual-unmatched', { manual_cover: 1, cover_source: 'manual', match_review: 1 });
-    add('confirmed-fallback', { confirmed: 1, match_review: 1 });
-    add('image', { kind: 'image', match_review: 1 });
-  });
+  const c = await fixture(
+    t,
+    ({ add }) => {
+      add('exact-subject', {
+        subject_id: 42,
+        match_confidence: 1,
+        match_review: 1,
+        cover_source: 'bangumi'
+      });
+      add('exact-local', { subject_id: 43, match_confidence: 1 });
+      add('exact-character', {
+        character_id: 7,
+        match_confidence: 1,
+        match_review: 1,
+        cover_source: 'bangumi-character'
+      });
+      add('nonexact', { subject_id: 44, match_confidence: 40 / 47, match_review: 1 });
+      add('manual-subject', { subject_id: 42, manual_subject: 1 });
+      add('manual-character', { character_id: 7, manual_character: 1 });
+      add('unknown-character', { character_id: 8, cover_source: 'fallback' });
+      add('unknown-subject', { subject_id: 45, cover_source: 'bangumi' });
+      add('manual-cover', {
+        subject_id: 42,
+        manual_cover: 1,
+        cover_source: 'manual',
+        match_review: 1
+      });
+      add('manual-confirmed', {
+        manual_cover: 1,
+        cover_source: 'manual',
+        confirmed: 1,
+        match_review: 1
+      });
+      add('unassociated', { match_confidence: 1, match_review: 1 });
+      add('zero-subject', { subject_id: 0, match_review: 1 });
+      add('negative-character', { character_id: -1, match_review: 1 });
+      add('unmatched-online', { cover_source: 'bangumi', match_review: 1 });
+      add('unmatched-portrait', { cover_source: 'bangumi-character', match_review: 1 });
+      add('unmatched-icon', { cover_source: 'local-icon', match_review: 1 });
+      add('unmatched-empty', { cover: null, cover_source: null, match_review: 1 });
+      add('manual-unmatched', { manual_cover: 1, cover_source: 'manual', match_review: 1 });
+      add('confirmed-fallback', { confirmed: 1, match_review: 1 });
+      add('image', { kind: 'image', match_review: 1 });
+    },
+    { legacyReview: true }
+  );
   async function check() {
     for (const id of [
       'exact-subject',
@@ -211,13 +218,45 @@ test('startup confirms every matched identity and clears obsolete folder review 
   await check();
 });
 
-test('older nodes schema missing review columns opens with unknown evidence preserved', async (t) => {
+test('completed review migration is not repeated for later injected rows or worker restarts', async (t) => {
   const c = await fixture(t, ({ add, db }) => {
-    add('legacy', { subject_id: 42 });
-    db.exec(
-      'ALTER TABLE nodes DROP COLUMN match_confidence; ALTER TABLE nodes DROP COLUMN match_review'
-    );
+    const marker = db.prepare('SELECT value FROM settings WHERE key=?').get('matchReviewVersion');
+    assert.equal(JSON.parse(marker.value), 1);
+    // Deliberately inject after migration, retaining its marker to prove startup
+    // does not rescan nodes. Normal identity saves confirm their rows immediately.
+    add('post-migration', { subject_id: 42, match_confidence: 40 / 47, match_review: 1 });
+    add('manual-cover', {
+      subject_id: 43,
+      manual_cover: 1,
+      cover_source: 'manual',
+      match_review: 1
+    });
   });
+  async function check() {
+    for (const id of ['post-migration', 'manual-cover']) {
+      const n = await c.call('get', { id });
+      assert.equal(n.confirmed, 0, id);
+      assert.equal(n.match_review, 1, id);
+    }
+    assert.equal((await c.call('get', { id: 'post-migration' })).match_confidence, 40 / 47);
+    assert.equal((await c.call('list', { filter: 'pending' })).total, 0);
+  }
+  await check();
+  await c.restart();
+  await check();
+});
+
+test('older nodes schema missing review columns opens with unknown evidence preserved', async (t) => {
+  const c = await fixture(
+    t,
+    ({ add, db }) => {
+      add('legacy', { subject_id: 42 });
+      db.exec(
+        'ALTER TABLE nodes DROP COLUMN match_confidence; ALTER TABLE nodes DROP COLUMN match_review'
+      );
+    },
+    { legacyReview: true }
+  );
   const n = await c.call('get', { id: 'legacy' });
   assert.equal(n.match_confidence, null);
   assert.equal(n.match_review, 0);
@@ -333,12 +372,16 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
 });
 
 test('invalid patch cannot partially confirm and failed bulk update rolls back every confirmation', async (t) => {
-  const c = await fixture(t, ({ add, db }) => {
-    add('a', { match_review: 1, manual_cover: 1, cover_source: 'manual' });
-    add('z', { match_review: 1 });
-    db.exec(`CREATE TRIGGER reject_review BEFORE UPDATE OF confirmed ON nodes
+  const c = await fixture(
+    t,
+    ({ add, db }) => {
+      add('a', { match_review: 1, manual_cover: 1, cover_source: 'manual' });
+      add('z', { match_review: 1 });
+      db.exec(`CREATE TRIGGER reject_review BEFORE UPDATE OF confirmed ON nodes
       WHEN NEW.id='z' AND NEW.confirmed=1 BEGIN SELECT RAISE(ABORT,'test atomic review'); END`);
-  });
+    },
+    { legacyReview: true }
+  );
   await assert.rejects(
     c.call('patch', { id: 'a', changes: { confirmed: 1, match_review: 0, crop_zoom: 99 } }),
     /无效设置/
@@ -423,10 +466,14 @@ test('home confirms only explicitly rendered previews under live roots, leaving 
 });
 
 test('invalid preview payloads and nonoverview queries reject before any root or preview confirmation', async (t) => {
-  const c = await fixture(t, ({ add }) => {
-    add('root-a', { parent: null, match_review: 1 });
-    add('child', { match_review: 1 });
-  });
+  const c = await fixture(
+    t,
+    ({ add }) => {
+      add('root-a', { parent: null, match_review: 1 });
+      add('child', { match_review: 1 });
+    },
+    { legacyReview: true }
+  );
   for (const previewIds of [
     null,
     'child',
@@ -470,14 +517,18 @@ test('invalid preview payloads and nonoverview queries reject before any root or
 });
 
 test('overview roots and rendered previews roll back together when any preview confirmation fails', async (t) => {
-  const c = await fixture(t, ({ add, db }) => {
-    add('root-a', { parent: null, match_review: 1 });
-    add('a', { match_review: 1 });
-    add('z', { match_review: 1 });
-    add('unshown', { match_review: 1 });
-    db.exec(`CREATE TRIGGER reject_preview BEFORE UPDATE OF confirmed ON nodes
+  const c = await fixture(
+    t,
+    ({ add, db }) => {
+      add('root-a', { parent: null, match_review: 1 });
+      add('a', { match_review: 1 });
+      add('z', { match_review: 1 });
+      add('unshown', { match_review: 1 });
+      db.exec(`CREATE TRIGGER reject_preview BEFORE UPDATE OF confirmed ON nodes
       WHEN NEW.id='z' AND NEW.confirmed=1 BEGIN SELECT RAISE(ABORT,'test atomic preview'); END`);
-  });
+    },
+    { legacyReview: true }
+  );
   await assert.rejects(
     c.call('confirmReview', { query: { parent: null }, previewIds: ['a', 'z'] }),
     /test atomic preview/

@@ -4,7 +4,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { searchPlan, searchTerms, scoreSubject, newestImage } = require('../src/model.cjs');
+const {
+  searchPlan,
+  searchTerms,
+  searchStages,
+  scoreSubject,
+  newestImage
+} = require('../src/model.cjs');
 const { importOptions, SUBJECT_TYPES } = require('../src/matching-policy.cjs');
 const {
   installment,
@@ -46,7 +52,8 @@ test('import input is whitelisted, explicit and limited to the four supported ca
 
 test('complete title pairs survive noise while bracketed names remain deferred fallbacks', () => {
   const plan = searchPlan('[1080p] [白色相簿2] WHITE ALBUM 2 / ホワイトアルバム2 CG');
-  const { terms } = plan;
+  assert.deepEqual(plan.terms, ['[1080p] [白色相簿2] WHITE ALBUM 2 / ホワイトアルバム2 CG']);
+  const { terms } = plan.fallbacks[0];
   assert.ok(!terms.includes('白色相簿2'), JSON.stringify(plan));
   assert.ok(plan.fallbacks.some((fallback) => fallback.terms.includes('白色相簿2')));
   assert.ok(terms.includes('WHITE ALBUM 2'), JSON.stringify(terms));
@@ -66,8 +73,8 @@ test('numeric title prefixes survive cleanup without admitting truncated unrelat
   for (const title of ['16bit Sensation', '16bit的感动', '3D Kanojo']) {
     const correct = subject(901, title);
     for (const input of [title, `[1080p] [10bit] ${title} [HDR10] [4K] [壁纸]`]) {
-      const terms = searchTerms(input);
-      assert.ok(terms.includes(title), JSON.stringify({ input, terms }));
+      const terms = searchStages(input).find((stage) => stage.terms.includes(title))?.terms;
+      assert.ok(terms?.includes(title), JSON.stringify({ input, terms }));
       assert.equal(
         rankSubjects(terms, [...unrelated, correct], [2]).selected?.id,
         correct.id,
@@ -81,7 +88,7 @@ test('numeric title prefixes survive cleanup without admitting truncated unrelat
 
 test('complete slash titles retain exact matching evidence without admitting generic folder combinations', () => {
   const canonical = subject(91, 'Fate/stay night');
-  const terms = searchTerms('[1080p] Fate/stay night CG');
+  const terms = searchStages('[1080p] Fate/stay night CG').at(-1).terms;
   assert.ok(terms.includes('Fate/stay night'), JSON.stringify(terms));
   assert.equal(scoreSubject(terms, canonical), 1);
   assert.equal(rankSubjects(terms, [canonical], [2]).selected.id, canonical.id);
@@ -156,7 +163,7 @@ test('confidence precedes collections; equal credible titles prefer collection p
   );
 });
 
-test('only a credible same-type generic series uses earliest valid release date', () => {
+test('a numbered sequel cannot displace the full unnumbered title on its date alone', () => {
   const latest = subject(1, 'Test Saga II', { date: '2020-01-01', collection: { collect: 10000 } });
   const earliest = subject(2, 'Test Saga', { date: '2001-02-03', collection: { collect: 1 } });
   const unknown = subject(3, 'Test Saga III', { date: '', collection: { collect: 20000 } });
@@ -164,7 +171,7 @@ test('only a credible same-type generic series uses earliest valid release date'
   const knownSequel = subject(4, 'Test Saga II', { date: '2004-01-01' });
   assert.equal(
     rankSubjects(['Test Saga'], [subject(5, 'Test Saga'), knownSequel], [2]).selected.id,
-    4
+    5
   );
   const differentMedium = subject(6, 'Test Saga', {
     type: 4,

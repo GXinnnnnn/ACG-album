@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { normalize, searchPlan, similarity } = require('./model.cjs');
+const { normalize, searchPlan, searchStages, similarity } = require('./model.cjs');
 const {
   rankSubjects,
   rankImportSubjects,
@@ -260,10 +260,15 @@ function searchSubjects(db, { query, types, limit }, importing) {
     }
   }
   const rerank = () =>
-    rank(terms, [...subjects.values()], types, { complete, titleGroups, queryHits: hits });
+    rank(terms, [...subjects.values()], types, {
+      complete,
+      titleGroups,
+      queryHits: hits,
+      series: plan.series
+    });
   const credible = () =>
     ranked.candidates.some((x) => (importing ? x.match > threshold : x.match >= threshold));
-  for (const phase of [plan, ...(plan.fallbacks || [])]) {
+  for (const phase of searchStages(plan)) {
     if (!phase.terms.length) continue;
     // Notes are independent fallback hypotheses, just as in the production worker.
     terms = phase.terms;
@@ -304,7 +309,13 @@ function searchSubjects(db, { query, types, limit }, importing) {
       );
     }
     ranked = rerank();
-    stages.push({ terms, titleGroups, complete, retrievedRows });
+    stages.push({
+      terms,
+      titleGroups,
+      complete,
+      retrievedRows,
+      ...(phase.series ? { series: true } : {})
+    });
     if (credible() || !complete) break;
   }
   // Production import permits verified API exact names in bounded pages. A local

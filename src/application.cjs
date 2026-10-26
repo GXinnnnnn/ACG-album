@@ -47,6 +47,50 @@ function releaseVersion(tag) {
     : null;
 }
 
+function publicReleaseHead(url) {
+  return new Promise((resolve, reject) => {
+    let request,
+      timer,
+      finalUrl = url,
+      settled = false;
+    const finish = (error, page) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        try {
+          request?.abort();
+        } catch {}
+        reject(error);
+      } else resolve(page);
+    };
+    const fail = (error) => finish(error);
+    try {
+      request = net.request({
+        url,
+        method: 'HEAD',
+        redirect: 'follow',
+        credentials: 'omit',
+        useSessionCookies: false
+      });
+      request.on('redirect', (_status, _method, target) => {
+        finalUrl = target;
+      });
+      request.on('error', fail);
+      request.on('abort', () => fail(new Error('Release request aborted')));
+      request.on('response', (message) => {
+        message.on('error', fail);
+        const status = message.statusCode;
+        finish(null, { status, ok: status >= 200 && status < 300, url: finalUrl });
+      });
+      timer = setTimeout(() => fail(new Error('Release request timed out')), 10000);
+      request.end();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
 function registerApplicationHandlers({ call, getWindow }) {
   Menu.setApplicationMenu(null);
   let popup = null;
@@ -96,11 +140,15 @@ function registerApplicationHandlers({ call, getWindow }) {
       // rate limited. Follow redirects for Electron and trust only this repo's
       // final stable release tag, never a login page or an unrelated location.
       try {
-        const page = await net.fetch(`${releasesUrl}/latest`, {
+        let page = await net.fetch(`${releasesUrl}/latest`, {
           method: 'HEAD',
           redirect: 'follow',
+          credentials: 'omit',
           signal: AbortSignal.timeout(10000)
         });
+        // Electron can leave fetch Response.url empty even after following a
+        // redirect. Native request events expose the final location instead.
+        if (page.ok && !page.url) page = await publicReleaseHead(`${releasesUrl}/latest`);
         const url = new URL(page.url);
         const prefix = `/${repo}/releases/tag/`;
         if (

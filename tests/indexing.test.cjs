@@ -443,11 +443,17 @@ test('prune starts from the bounded frontier', { timeout: 30000 }, async (t) => 
     const plan = db
       .prepare(
         `EXPLAIN QUERY PLAN SELECT p.id,n.rowid FROM scan_prune p
-      CROSS JOIN nodes n ON n.id=p.id LIMIT 128`
+      CROSS JOIN nodes n ON n.id=p.id ORDER BY p.rowid LIMIT 128`
       )
       .all();
     assert.ok(plan[0].detail.startsWith('SCAN p'));
     assert.ok(plan[1].detail.startsWith('SEARCH n'));
+    assert.ok(plan.every((step) => !step.detail.includes('TEMP B-TREE')));
+    db.exec(`CREATE TEMP TABLE prune_order(sequence INTEGER PRIMARY KEY,node_rowid INTEGER);
+      CREATE TEMP TRIGGER capture_prune_order AFTER UPDATE OF missing ON main.nodes
+      WHEN NEW.missing=1 AND OLD.missing=0 BEGIN
+        INSERT INTO prune_order(node_rowid) VALUES(NEW.rowid);
+      END;`);
     const read = db.prepare('SELECT id FROM nodes WHERE id=?');
     const reads = [];
     const pruneStarted = performance.now();
@@ -470,6 +476,16 @@ test('prune starts from the bounded frontier', { timeout: 30000 }, async (t) => 
     );
     assert.ok(pruneMs < 10000, 'pruning must not repeatedly scan the whole library');
     assert.ok(reads.length >= count / 128, 'cleanup yields between bounded pages');
+    const removedRowids = db
+      .prepare('SELECT node_rowid FROM prune_order ORDER BY sequence')
+      .all()
+      .map((row) => row.node_rowid);
+    assert.equal(removedRowids.length, count + 1);
+    assert.deepEqual(
+      removedRowids,
+      [...removedRowids].sort((a, b) => a - b),
+      'the flat subtree drains in physical-table order instead of hashed-id order'
+    );
     assert.equal(
       db.prepare('SELECT COUNT(*) total FROM nodes WHERE missing=1').get().total,
       count + 1

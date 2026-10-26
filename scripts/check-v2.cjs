@@ -424,9 +424,9 @@ async function manifest(root) {
     await page.locator('#theme-button').click();
     await page.locator('#profile-button').click();
     await page.waitForSelector('#profile-name');
-    await page.locator('#profile-name').fill('ACG-album · 测试');
+    await page.locator('#profile-name').fill('测试朋友 · 测试');
     await page.locator('#profile-save').click();
-    await page.waitForFunction(() => S.settings.nickname === 'ACG-album · 测试');
+    await page.waitForFunction(() => S.settings.nickname === '测试朋友 · 测试');
     await app.evaluate(({ dialog }, file) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
     }, path.resolve('新建文件夹/996-1.jpg'));
@@ -452,7 +452,7 @@ async function manifest(root) {
     assert.equal(report.profilePersistence.nickname, true);
     assert.equal(report.profilePersistence.avatar, true);
     await page.evaluate(async (old) => {
-      await saveSetting('nickname', old.nickname || 'ACG-album');
+      await saveSetting('nickname', old.nickname || '新朋友');
       await saveSetting('avatar', old.avatar || '');
       await saveSetting('sidebarMode', 'auto');
     }, originalSettings);

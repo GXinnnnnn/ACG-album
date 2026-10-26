@@ -90,8 +90,9 @@ test('persisted HTTP access pause still drains reliable local work and preserves
     }
   });
   // First create a paused durable HTTP task, before introducing the local work.
-  const empty = path.join(root, 'NetworkOnly');
-  fs.mkdirSync(empty);
+  const networkSource = path.join(root, 'network-source');
+  const empty = path.join(networkSource, 'NetworkOnly');
+  fs.mkdirSync(empty, { recursive: true });
   const paused = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('pause timeout')), 12000);
     const check = (m) => {
@@ -103,7 +104,7 @@ test('persisted HTTP access pause still drains reliable local work and preserves
     };
     worker.on('message', check);
   });
-  await call('scan', { path: empty, onlineMatch: true, subjectTypes: [4] });
+  await call('scan', { path: networkSource, onlineMatch: true, subjectTypes: [4] });
   await paused;
   assert.ok(events.some((e) => e.event === 'fixtureHTTP'));
   const drained = new Promise((resolve, reject) => {

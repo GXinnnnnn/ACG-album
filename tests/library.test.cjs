@@ -98,16 +98,16 @@ test(
       assert.equal(children.folders, 3);
       assert.deepEqual(
         children.items.slice(0, 2).map((x) => x.name),
-        ['Album 2', 'Album 10']
+        ['星际牛仔 Cowboy Bebop', 'Album 2']
       );
       assert.equal(children.items.at(-1).name, 'loose.png');
       assert.deepEqual(
         (await c.call('list', { parent: root.id, offset: 2, limit: 2 })).items.map((n) => n.name),
-        ['星际牛仔 Cowboy Bebop', 'loose.png']
+        ['Album 10', 'loose.png']
       );
       assert.deepEqual(
         (await c.call('list', { parent: root.id, direction: 'desc' })).items.map((n) => n.name),
-        ['星际牛仔 Cowboy Bebop', 'Album 10', 'Album 2', 'loose.png']
+        ['Album 10', 'Album 2', '星际牛仔 Cowboy Bebop', 'loose.png']
       );
       const album = children.items.find((x) => x.name.startsWith('星际'));
       assert.equal(album.cover_source, 'fallback');

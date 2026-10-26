@@ -105,8 +105,8 @@ async function attempt(action) {
     return null;
   }
 }
-function thumb(n) {
-  const desired = Number(S.settings.density || 222) * (window.devicePixelRatio || 1) * 1.3;
+function thumb(n, width = Number(S.settings.density || 222)) {
+  const desired = width * (window.devicePixelRatio || 1) * 1.3;
   const size = desired <= 512 ? 512 : desired <= 768 ? 768 : 1024;
   const source = n.kind === 'folder' && /^[a-f0-9]{24}$/.test(n.cover) ? n.cover : n.id;
   return `acg-image://thumb/${source}?v=${S.rev}&size=${size}${n.manual_cover ? '&p=1' : ''}${n.cover_revision ? '&r=' + encodeURIComponent(n.cover_revision) : ''}`;
@@ -123,6 +123,9 @@ function applySettings() {
   $('#theme-button').setAttribute('aria-label', $('#theme-button').title);
   if ($('#theme-select')) $('#theme-select').value = S.settings.theme;
   window.applyNavigationSettings?.();
+  window.albumEffects?.apply(S.settings);
+  if ($('#liquid-glass')) $('#liquid-glass').checked = S.settings.liquidGlass !== false;
+  if ($('#motion-level')) $('#motion-level').value = S.settings.motionLevel || 'medium';
   applyDisplaySettings();
 }
 async function saveSetting(key, value) {
@@ -409,11 +412,22 @@ async function renderOverview(version) {
   target.className = 'category-overview';
   let roots = [...S.roots];
   const k = { name: 'name', date: 'birth', modified: 'mtime', size: 'total_bytes' }[S.sort];
+  const compareName = (a, b) => {
+    if (typeof a.sortkey === 'string' && typeof b.sortkey === 'string')
+      return a.sortkey < b.sortkey ? -1 : a.sortkey > b.sortkey ? 1 : 0;
+    return a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
+  };
+  const value = (n) =>
+    k === 'birth'
+      ? Number(n.birth) > 0
+        ? Number(n.birth)
+        : Number(n.mtime) || 0
+      : Number(n[k]) || 0;
   roots.sort(
     (a, b) =>
-      (k === 'name'
-        ? a.name.localeCompare(b.name, 'zh-CN', { numeric: true })
-        : (a[k] || 0) - (b[k] || 0)) * (S.direction === 'desc' ? -1 : 1)
+      ((k === 'name' ? compareName(a, b) : value(a) - value(b)) ||
+        compareName(a, b) ||
+        String(a.id).localeCompare(String(b.id))) * (S.direction === 'desc' ? -1 : 1)
   );
   const existing = new Map([...target.children].map((tile) => [tile.dataset.id, tile]));
   let cursor = target.firstElementChild;
@@ -961,10 +975,6 @@ function confirmModal(title, message, onConfirm, label = '确认') {
 }
 function showContext(e, n) {
   e.preventDefault();
-  const menu = $('#context-menu');
-  const host = $('#modal').open ? $('#modal') : $('#viewer').open ? $('#viewer') : document.body;
-  host.append(menu);
-  menu.replaceChildren();
   const actions = [];
   const action = (label, icon, fn, extra = {}) => actions.push({ label, icon, fn, ...extra });
   if (n.kind === 'folder') {
@@ -1060,17 +1070,37 @@ function showContext(e, n) {
       { danger: true }
     );
   }
+  showActionMenu(e, actions, '项目操作');
+}
+let contextReturnFocus = null;
+function showActionMenu(e, actions, label) {
+  e.preventDefault();
+  const menu = $('#context-menu');
+  const host = $('#modal').open ? $('#modal') : $('#viewer').open ? $('#viewer') : document.body;
+  host.append(menu);
+  menu.replaceChildren();
+  menu.setAttribute('aria-label', label);
+  contextReturnFocus =
+    e.target?.closest?.('[tabindex],button,a,input,select') || document.activeElement;
   for (const a of actions) {
     if (a.rule) {
       const hr = document.createElement('div');
       hr.className = 'menu-rule';
+      hr.setAttribute('role', 'separator');
       menu.append(hr);
       continue;
     }
     const b = document.createElement('button');
-    b.setAttribute('role', 'menuitem');
+    b.setAttribute('role', a.checked == null ? 'menuitem' : 'menuitemradio');
+    if (a.checked != null) b.setAttribute('aria-checked', String(a.checked));
+    b.disabled = !!a.disabled;
     if (a.danger) b.className = 'danger';
-    b.innerHTML = svg(a.icon) + '<span>' + esc(a.label) + '</span>';
+    b.innerHTML =
+      svg(a.icon) +
+      '<span>' +
+      esc(a.label) +
+      '</span>' +
+      (a.checked ? '<span class="menu-check">' + svg('check') + '</span>' : '');
     b.onclick = () => {
       hideContext();
       attempt(a.fn);
@@ -1081,28 +1111,38 @@ function showContext(e, n) {
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - r.width - 8)) + 'px';
   menu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - r.height - 8)) + 'px';
-  menu.querySelector('button')?.focus({ preventScroll: true });
+  menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
 }
 function hideContext() {
-  $('#context-menu').hidden = true;
+  const menu = $('#context-menu'),
+    restore = !menu.hidden && menu.contains(document.activeElement);
+  menu.hidden = true;
+  if (restore && contextReturnFocus?.isConnected) contextReturnFocus.focus({ preventScroll: true });
 }
 document.addEventListener('pointerdown', (e) => {
   if (!$('#context-menu').contains(e.target)) hideContext();
 });
 document.addEventListener('keydown', (e) => {
   if (!$('#context-menu').hidden) {
-    const bs = [...$('#context-menu').querySelectorAll('button')],
+    const bs = [...$('#context-menu').querySelectorAll('button:not(:disabled)')],
       i = bs.indexOf(document.activeElement);
     if (e.key === 'Escape') {
       hideContext();
       e.preventDefault();
       e.stopImmediatePropagation();
     }
-    if (['ArrowDown', 'ArrowUp'].includes(e.key)) {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      bs[(i + (e.key === 'ArrowDown' ? 1 : -1) + bs.length) % bs.length]?.focus();
+      const index =
+        e.key === 'Home'
+          ? 0
+          : e.key === 'End'
+            ? bs.length - 1
+            : (i + (e.key === 'ArrowDown' ? 1 : -1) + bs.length) % bs.length;
+      bs[index]?.focus();
     }
+    if (e.key === 'Tab') hideContext();
   }
 });
 let pendingImport = null,
@@ -1112,6 +1152,10 @@ let pendingImport = null,
   growingDirty = false,
   growingLast = 0,
   overviewLast = 0;
+const matchRefreshBatch = createMatchRefreshBatch(() => {
+  window.invalidateFolderTree?.();
+  scheduleGrowingRefresh();
+});
 function updateImportBusy() {
   for (const b of $$('#import-sidebar,#empty-import,#demo-import')) {
     b.disabled = !!pendingImport || scanActive;
@@ -1215,7 +1259,7 @@ function importFolder() {
   ];
   const dialog = openModal(
     '导入文件夹',
-    `<div id="import-options" class="import-options"><p class="import-options-intro">保留文件夹层级，原始文件留在原处。本次选择应用到整个导入目录，重扫时继续使用。</p><div class="import-select-row"><label for="import-directory-kind">文件夹按什么命名</label><select id="import-directory-kind"><option value="work">作品名称</option><option value="character">角色名称</option><option value="photo">普通图片 / 相册</option></select></div><div id="import-character-options" class="import-select-row" hidden><label for="import-character-cover">角色封面来源</label><select id="import-character-cover" aria-describedby="import-character-help"><option value="local-first">本地图片 · 自然名称顺序第一张</option><option value="bangumi">Bangumi 角色立绘 · 找不到用本地首图</option></select><p id="import-character-help">仅唯一精确名称自动关联；同名角色请右键手动绑定。封面选择不影响角色简介；立绘下载需要开启联网匹配。</p></div><label class="import-match-row" for="import-online-match"><span><strong id="import-match-label">联网匹配 Bangumi 作品</strong><span id="import-match-help">按文件夹的中、英、日文名称查找作品封面与简介。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先较早发行的作品。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p id="import-options-note" class="import-options-note">手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
+    `<div id="import-options" class="import-options"><p class="import-options-intro">保留文件夹层级，原始文件留在原处。本次选择应用到整个导入目录，重扫时继续使用。</p><div class="import-select-row"><label for="import-directory-kind">文件夹按什么命名</label><select id="import-directory-kind"><option value="work">作品名称</option><option value="character">角色名称</option><option value="photo">普通图片 / 相册</option></select></div><div id="import-character-options" class="import-select-row" hidden><label for="import-character-cover">角色封面来源</label><select id="import-character-cover" aria-describedby="import-character-help"><option value="local-first">本地图片 · 自然名称顺序第一张</option><option value="bangumi">Bangumi 角色立绘 · 找不到用本地首图</option></select><p id="import-character-help">仅唯一精确名称自动关联；同名角色请右键手动绑定。封面选择不影响角色简介；立绘下载需要开启联网匹配。</p></div><label class="import-match-row" for="import-online-match"><span><strong id="import-match-label">联网匹配 Bangumi 作品</strong><span id="import-match-help">优先按文件夹原名检索作品，忽略末尾括号附注与「系列」；无高匹配时再尝试分词和少量直接子目录名称。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先最新发行的作品。仅自动关联导入分类下的一级作品文件夹，未匹配时使用本地首图。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p id="import-options-note" class="import-options-note">手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
     560
   );
   dialog.setAttribute('aria-labelledby', 'modal-title');
@@ -1246,7 +1290,7 @@ function importFolder() {
     $('#import-match-help').textContent =
       kind === 'character'
         ? '先查本地角色索引；开启后可联网补全角色简介和所选立绘。'
-        : '按文件夹的中、英、日文名称查找作品封面与简介。';
+        : '优先按文件夹原名检索作品，忽略末尾括号附注与「系列」；无高匹配时再尝试分词和少量直接子目录名称。';
     $('#import-options-note').textContent =
       kind === 'character'
         ? '角色只按唯一精确名称自动关联，同名或未找到时保留本地首图，可右键手动绑定。自然顺序如 1、2、10；手动关联、封面和裁切会保留。'
@@ -1459,8 +1503,21 @@ async function settingsModal(tab = 'appearance') {
     disposed = false;
   const alive = () =>
     !disposed && dialog.open && shell.isConnected && generation === modalGeneration;
+  async function persistEffectSetting(key, value, control) {
+    control.disabled = true;
+    try {
+      await saveSetting(key, value);
+      if (alive()) status.textContent = '外观设置已保存';
+    } catch (error) {
+      applySettings();
+      if (alive()) status.textContent = `保存失败：${error.message || String(error)}`;
+      toast(error.message || '外观设置保存失败，请重试。', true);
+    } finally {
+      if (control.isConnected) control.disabled = false;
+    }
+  }
   const animate = (element, frames, duration) => {
-    if (motion.matches) return null;
+    if (motion.matches || S.settings.motionLevel === 'low') return null;
     return element.animate(frames, { duration, easing: 'cubic-bezier(.2,.7,.2,1)' });
   };
   const settle = () => {
@@ -1489,6 +1546,7 @@ async function settingsModal(tab = 'appearance') {
     observer.disconnect();
     resize.disconnect();
     motion.removeEventListener('change', reduceMotion);
+    window.removeEventListener('album-effects-change', reduceMotion);
     dialog.removeEventListener('close', closed);
     dialog.removeEventListener('cancel', cancel);
     shell.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
@@ -1509,7 +1567,7 @@ async function settingsModal(tab = 'appearance') {
     event.preventDefault();
   };
   const reduceMotion = () => {
-    if (motion.matches) {
+    if (motion.matches || S.settings.motionLevel === 'low') {
       shell.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
       settle();
     }
@@ -1521,6 +1579,7 @@ async function settingsModal(tab = 'appearance') {
   const resize = new ResizeObserver(placeIndicator);
   resize.observe(shell.querySelector('.settings-tabs'));
   motion.addEventListener('change', reduceMotion);
+  window.addEventListener('album-effects-change', reduceMotion);
   dialog.addEventListener('close', closed);
   dialog.addEventListener('cancel', cancel);
   async function prepare(name) {
@@ -1588,13 +1647,19 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>卡片尺寸与比例</strong><p>可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><strong>轻量动效</strong><p>轻微的卡片悬浮反馈，并遵循 Windows 的「减少动态效果」偏好。</p></div>${svg('sparkles')}</div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
+        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>卡片尺寸与比例</strong><p>可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
         $('#sidebar-mode').value = S.settings.sidebarMode || 'auto';
         $('#sidebar-mode').onchange = (e) =>
           attempt(() => saveSetting('sidebarMode', e.target.value));
         $('#theme-select').value = S.settings.theme;
         $('#theme-select').onchange = (e) => attempt(() => changeTheme(e.target.value));
         $('#settings-density').onclick = densityModal;
+        $('#liquid-glass').checked = S.settings.liquidGlass !== false;
+        $('#liquid-glass').onchange = (event) =>
+          persistEffectSetting('liquidGlass', event.target.checked, event.target);
+        $('#motion-level').value = S.settings.motionLevel || 'medium';
+        $('#motion-level').onchange = (event) =>
+          persistEffectSetting('motionLevel', event.target.value, event.target);
         try {
           const info = await api('appInfo');
           if (content.isConnected)
@@ -2015,6 +2080,17 @@ function showOnlineStatus(data) {
   if (hasOnlineWork(data) || wasWorking) renderOnlineProgress(data);
 }
 window.album.onEvent((event) => {
+  if (event.type === 'sortMigration') {
+    const active = event.data.active !== false;
+    paintProgress({
+      title: active ? '正在整理文件名称排序' : '文件名称排序已更新',
+      detail: `已整理 ${fmt(event.data.processed)} 项 · 本次升级仅需处理一次`,
+      current: '保留作品关联、手动封面与个人资料，整理完成后载入相册。',
+      active,
+      label: active ? '整理中…' : '完成'
+    });
+    $('#footer-status').textContent = active ? '正在升级名称排序索引…' : '正在载入相册…';
+  }
   if (event.type === 'progress') {
     const wasActive = scanActive;
     showProgress(event.data);
@@ -2024,7 +2100,9 @@ window.album.onEvent((event) => {
       scheduleGrowingRefresh();
     }
   }
-  if (event.type === 'changed' && event.data.cover) {
+  if (event.type === 'changed' && event.data.matching) {
+    matchRefreshBatch.changed(event.data.id);
+  } else if (event.type === 'changed' && event.data.cover) {
     attempt(async () => updateCoverNode(await api('get', { id: event.data.id })));
   } else if (event.type === 'changed') {
     window.invalidateFolderTree?.();
@@ -2051,6 +2129,7 @@ window.album.onEvent((event) => {
   }
   if (event.type === 'online') {
     showOnlineStatus(event.data);
+    if (!hasOnlineWork(event.data) || event.data.paused) matchRefreshBatch.flush();
     if (event.data.error && Date.now() - onlineToast > 30000) {
       onlineToast = Date.now();
       toast('简介检索暂未完成：' + event.data.error, true);
@@ -2210,6 +2289,8 @@ document.addEventListener(
       if (init.progress.active) showProgress(init.progress);
       if (init.online) showOnlineStatus(init.online);
       await loadPage();
+      if (!scanActive && !hasOnlineWork(latestOnlineProgress))
+        $('#footer-status').textContent = '就绪';
     }),
   { once: true }
 );

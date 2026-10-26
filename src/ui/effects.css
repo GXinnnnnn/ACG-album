@@ -1,0 +1,170 @@
+@charset "UTF-8";
+/* Only these small floating surfaces sample the backdrop. Static material is
+   unchanged when disabled or when backdrop-filter is unavailable. */
+:root {
+  --liquid-tint: rgba(251, 250, 255, 0.68);
+  --liquid-edge: rgba(255, 255, 255, 0.8);
+  --liquid-shade: rgba(87, 68, 119, 0.13);
+  --effect-duration: 220ms;
+}
+:root[data-theme='dark'] {
+  --liquid-tint: rgba(30, 28, 43, 0.74);
+  --liquid-edge: rgba(237, 225, 255, 0.2);
+  --liquid-shade: rgba(3, 2, 12, 0.3);
+}
+@supports (backdrop-filter: blur(1px)) {
+  :root[data-liquid-glass='on']
+    :is(
+      .sidebar-shell,
+      .topbar > .brand,
+      .topbar > .navigation,
+      .topbar > .search-wrap,
+      .topbar > .header-actions,
+      .toolbar-left,
+      .toolbar-right,
+      .back-to-top
+    ) {
+    background:
+      linear-gradient(125deg, rgba(255, 255, 255, 0.13), transparent 44%),
+      linear-gradient(175deg, rgba(255, 255, 255, 0.06), transparent 55%), var(--liquid-tint);
+    border-color: var(--liquid-edge);
+    box-shadow:
+      inset 0 1px 0 var(--liquid-edge),
+      inset 1px 0 0 rgba(255, 255, 255, 0.08),
+      0 8px 26px var(--liquid-shade);
+    backdrop-filter: blur(12px) saturate(1.16);
+  }
+}
+
+/* Tighter card corners; capsule navigation keeps its own silhouette. */
+:root .album-card {
+  border-radius: 16px;
+}
+:root[data-card-size] .cover-shell {
+  border-radius: 12px;
+}
+:root .collection-preview .cover-shell {
+  border-radius: 8px;
+}
+:root .collection-tile,
+:root .intro-panel {
+  border-radius: 18px;
+}
+:root .collection-image {
+  border-radius: 17px 17px 0 0;
+}
+:root .collection-preview {
+  border-radius: 0 0 18px 18px;
+}
+:root .media-card,
+:root .media-card .cover-shell {
+  border-radius: 6px;
+}
+:root .media-hover {
+  border-radius: 0 0 6px 6px;
+}
+:root .album-card:not(.media-card) .card-bottom-overlay {
+  left: 4px;
+  bottom: 4px;
+}
+:root .media-card .card-bottom-overlay {
+  left: 8px;
+  bottom: 8px;
+}
+
+/* Badges keep their static tint instead of adding a backdrop surface per card. */
+:root :is(.card-favorite, .collection-path) {
+  backdrop-filter: none;
+}
+
+/* Animate the card as a single surface; retain saved folder crop zoom without
+   stacking a second hover zoom on the image. No idle card gets will-change. */
+:root :is(.album-card, .collection-tile) {
+  transform: none;
+  transform-origin: center;
+  transition: transform var(--effect-duration) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+:root .album-card:is(:hover, :focus-visible) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+:root .collection-tile:hover {
+  box-shadow: var(--float-shadow);
+}
+:root .album-card:hover .cover-shell img:not(.icon-cover) {
+  transform: scale(var(--crop-zoom, 1));
+}
+:root .media-card:hover .cover-shell img:not(.icon-cover) {
+  transform: none;
+}
+:root[data-motion='low'] {
+  --effect-duration: 120ms;
+}
+:root[data-motion='high'] {
+  --effect-duration: 260ms;
+}
+/* Low removes decorative navigation/dialog motion, not functional loading
+   indicators. Card scale feedback keeps its own short transform transition. */
+:root[data-motion='low']
+  :is(
+    .sidebar-shell,
+    .sidebar-label,
+    .sidebar-details,
+    .brand,
+    .brand-text small,
+    .tree-toggle svg,
+    .modal,
+    .toast,
+    .settings-panel,
+    .settings-tab-indicator,
+    .settings-tabs button,
+    .album-select-button,
+    .cover-shell img
+  ),
+:root[data-motion='low'] .modal::backdrop,
+:root[data-motion='low'] .switch,
+:root[data-motion='low'] .switch::after {
+  animation: none;
+  transition: none;
+}
+:root[data-motion='low'] .brand:is(:hover, :focus-visible) {
+  transform: none;
+}
+:root[data-motion='low'] .album-card:focus-visible,
+:root[data-motion='low'] .collection-tile:not(.expanded):focus-within {
+  transform: scale(1.008);
+}
+:root:is([data-motion='medium'], [data-motion='high']) .album-card:focus-visible,
+:root:is([data-motion='medium'], [data-motion='high'])
+  .collection-tile:not(.expanded):focus-within {
+  transform: translateY(-2px) scale(1.018);
+}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-motion='low']
+    :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)):hover {
+    transform: scale(1.008);
+  }
+  :root:is([data-motion='medium'], [data-motion='high'])
+    :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)):hover {
+    transform: translateY(-2px) scale(1.018);
+  }
+}
+:root[data-motion='high']
+  :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)).effects-active {
+  transform: perspective(900px) translateY(-2px) rotateX(var(--effect-rx, 0deg))
+    rotateY(var(--effect-ry, 0deg)) scale(1.04);
+  transition-duration: 140ms;
+  will-change: transform;
+}
+:root .collection-tile.expanded {
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root :is(.album-card, .collection-tile),
+  :root :is(.album-card, .collection-tile):is(:hover, :focus-visible, :focus-within) {
+    transform: none !important;
+    transition: none !important;
+    will-change: auto !important;
+  }
+}

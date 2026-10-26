@@ -5,6 +5,7 @@ const fs = require('node:fs'),
   path = require('node:path'),
   vm = require('node:vm');
 const { createRequire } = require('node:module');
+const { EventEmitter } = require('node:events');
 const { validRepository } = require('../src/repository.cjs');
 const entry = path.resolve(__dirname, '../src/application.cjs'),
   localRequire = createRequire(entry);
@@ -12,7 +13,12 @@ function harness({
   repository = '',
   fetch = async () => {
     throw new Error('unexpected network');
-  }
+  },
+  request = () => {
+    throw new Error('unexpected native network');
+  },
+  schedule = setTimeout,
+  cancel = clearTimeout
 } = {}) {
   const handlers = new Map(),
     sent = [],
@@ -41,7 +47,7 @@ function harness({
         };
       }
     },
-    net: { fetch },
+    net: { fetch, request },
     shell: {
       openExternal: (url) => {
         external.push(url);
@@ -58,6 +64,8 @@ function harness({
       exports: module.exports,
       URL,
       AbortSignal,
+      setTimeout: schedule,
+      clearTimeout: cancel,
       Set,
       Promise,
       Number,
@@ -238,6 +246,139 @@ test('rate-limited API falls back to a public HEAD redirect for stable versions'
       assert.equal(result.latestVersion, tag.slice(1));
       assert.equal(requests.length, 2);
     }
+  }
+});
+
+function nativeHead(run) {
+  const calls = [];
+  return {
+    calls,
+    request: (options) => {
+      const request = new EventEmitter();
+      request.aborted = false;
+      request.abort = () => {
+        request.aborted = true;
+        request.emit('abort');
+      };
+      request.end = () => queueMicrotask(() => run(request));
+      calls.push({ options, request });
+      return request;
+    }
+  };
+}
+function nativeResponse(request, statusCode = 200) {
+  const message = new EventEmitter();
+  message.statusCode = statusCode;
+  request.emit('response', message);
+}
+
+test('empty Electron fetch URLs use native HEAD redirects with no credentials', async () => {
+  for (const emptyUrl of ['', undefined, null]) {
+    for (const status of [403, 429]) {
+      const target = 'https://github.com/a/b/releases/tag/v0.3.1';
+      const native = nativeHead((request) => {
+        request.emit('redirect', 302, 'HEAD', 'https://github.com/a/b/releases', {});
+        request.emit('redirect', 302, 'HEAD', target, {});
+        nativeResponse(request);
+      });
+      const h = harness({
+        repository: 'a/b',
+        request: native.request,
+        fetch: async (url, options) => {
+          if (url.startsWith('https://api.')) return response(status);
+          assert.equal(options.method, 'HEAD');
+          assert.equal(options.credentials, 'omit');
+          return { ok: true, status: 200, url: emptyUrl };
+        }
+      });
+      const result = await h.check();
+      assert.equal(result.status, 'available');
+      assert.equal(result.latestVersion, '0.3.1');
+      assert.equal(result.url, target);
+      assert.equal(native.calls.length, 1);
+      const { options, request } = native.calls[0];
+      assert.equal(options.url, 'https://github.com/a/b/releases/latest');
+      assert.equal(options.method, 'HEAD');
+      assert.equal(options.redirect, 'follow');
+      assert.equal(options.credentials, 'omit');
+      assert.equal(options.useSessionCookies, false);
+      assert.equal(options.headers, undefined);
+      assert.equal(request.aborted, false);
+    }
+  }
+});
+
+test('native HEAD still rejects foreign, invalid, prerelease and unsuccessful destinations', async () => {
+  for (const [target, status] of [
+    ['https://evil.invalid/a/b/releases/tag/v9.0.0', 200],
+    ['https://github.com/other/b/releases/tag/v9.0.0', 200],
+    ['http://github.com/a/b/releases/tag/v9.0.0', 200],
+    ['https://user@github.com/a/b/releases/tag/v9.0.0', 200],
+    ['https://github.com:444/a/b/releases/tag/v9.0.0', 200],
+    ['https://github.com/a/b/releases/tag/v9.0.0?fake=1', 200],
+    ['https://github.com/a/b/releases/tag/v9.0.0#fake', 200],
+    ['https://github.com/a/b/releases/tag/v9.0.0-beta.1', 200],
+    ['https://github.com/a/b/releases/tag/v9.0.0/extra', 200],
+    ['https://github.com/a/b/releases/tag/v9.0.0', 503],
+    [null, 200]
+  ]) {
+    const native = nativeHead((request) => {
+      if (target) request.emit('redirect', 302, 'HEAD', target, {});
+      nativeResponse(request, status);
+    });
+    await assert.rejects(
+      harness({
+        repository: 'a/b',
+        request: native.request,
+        fetch: async (url) =>
+          url.startsWith('https://api.') ? response(429) : { ok: true, status: 200, url: '' }
+      }).check(),
+      /频率受限/
+    );
+  }
+});
+
+test('native HEAD times out or fails with abort and clears its injected ten-second timer', async () => {
+  for (const failure of ['timeout', 'error', 'abort', 'end']) {
+    let expire,
+      delay,
+      cleared = 0;
+    const timer = {};
+    const native = nativeHead((request) => {
+      if (failure === 'timeout') expire();
+      else request.emit(failure, new Error('network failure'));
+      // A transport error can arrive after cancellation; it must stay handled.
+      request.emit('error', new Error('late failure'));
+    });
+    const request = (options) => {
+      const result = native.request(options);
+      if (failure === 'end')
+        result.end = () => {
+          throw new Error('end failed');
+        };
+      return result;
+    };
+    await assert.rejects(
+      harness({
+        repository: 'a/b',
+        request,
+        schedule: (callback, ms) => {
+          expire = callback;
+          delay = ms;
+          return timer;
+        },
+        cancel: (handle) => {
+          assert.equal(handle, timer);
+          cleared++;
+        },
+        fetch: async (url) =>
+          url.startsWith('https://api.') ? response(403) : { ok: true, status: 200, url: '' }
+      }).check(),
+      /频率受限/
+    );
+    assert.equal(delay, 10000);
+    assert.equal(cleared, 1);
+    assert.equal(native.calls[0].request.aborted, true);
   }
 });
 

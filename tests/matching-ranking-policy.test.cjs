@@ -56,12 +56,12 @@ test('a score chain cannot extend the cohort beyond three points from its highes
   );
 });
 
-test('the oldest candidate in the inclusive ninety-percent band can beat the most popular exact', () => {
+test('the newest candidate in the inclusive ninety-percent band can beat the most popular exact', () => {
   selectAcrossOrders(
     [
-      candidate(1, 1, 1000, '2024-01-01'),
-      candidate(2, 0.98, 900, '2000-01-01'),
-      candidate(3, 0.97, 899, '1980-01-01')
+      candidate(1, 1, 1000, '2000-01-01'),
+      candidate(2, 0.98, 900, '2024-01-01'),
+      candidate(3, 0.97, 899, '2025-01-01')
     ],
     { complete: true },
     2,
@@ -70,12 +70,12 @@ test('the oldest candidate in the inclusive ninety-percent band can beat the mos
   );
 });
 
-test('a popularity chain cannot admit an old candidate below ninety percent of the maximum', () => {
+test('a popularity chain cannot admit a newer candidate below ninety percent of the maximum', () => {
   selectAcrossOrders(
     [
-      candidate(1, 1, 1000, '2024-01-01'),
-      candidate(2, 0.98, 900, '2000-01-01'),
-      candidate(3, 0.97, 810, '1980-01-01')
+      candidate(1, 1, 1000, '2000-01-01'),
+      candidate(2, 0.98, 900, '2024-01-01'),
+      candidate(3, 0.97, 810, '2025-01-01')
     ],
     { complete: true },
     2,
@@ -86,7 +86,7 @@ test('a popularity chain cannot admit an old candidate below ninety percent of t
 
 test('selectionReason describes the winning exact even when nearby fuzzy candidates compete', () => {
   selectAcrossOrders(
-    [candidate(1, 1, 900, '1980-01-01'), candidate(2, 0.98, 1000, '2000-01-01')],
+    [candidate(1, 1, 900, '2025-01-01'), candidate(2, 0.98, 1000, '2000-01-01')],
     { complete: true },
     1,
     1,
@@ -98,7 +98,7 @@ test('incomplete recall selects only verified exacts despite more popular nearby
   selectAcrossOrders(
     [
       candidate(1, 1, 1000, '2024-01-01'),
-      candidate(2, 1, 900, '2000-01-01'),
+      candidate(2, 1, 900, '2025-01-01'),
       candidate(3, 0.98, 1000000, '1980-01-01'),
       candidate(4, 0.97, 900000, '1970-01-01')
     ],

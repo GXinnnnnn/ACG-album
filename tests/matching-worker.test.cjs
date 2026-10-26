@@ -381,9 +381,9 @@ test('fresh legacy-root exact and fuzzy API matches persist their actual confide
     });
 });
 
-test('explicit opt-in works with global false at deep folders; all language parts and safe cover download are used', async () => {
+test('explicit opt-in works with global false for first-level folders; a credible original name stops broadening and downloads safe covers', async () => {
   const title = '白色相簿2 WHITE ALBUM 2 ホワイトアルバム2 [1080p] CG';
-  const f = await fixture(path.join('新建文件夹', '新建文件夹 (2)', title));
+  const f = await fixture(title);
   const gate = deferred();
   const subject = {
     id: 12,
@@ -417,9 +417,10 @@ test('explicit opt-in works with global false at deep folders; all language part
     assert.equal(node.subject_id, 12);
     assert.equal(node.cover_source, 'bangumi');
     const queries = c.requests.filter((r) => r.body);
-    assert.ok(queries.some((r) => r.body.keyword.trim() === '白色相簿2'));
-    assert.ok(queries.some((r) => r.body.keyword.trim() === 'WHITE ALBUM 2'));
-    assert.ok(queries.some((r) => r.body.keyword.trim() === 'ホワイトアルバム2'));
+    assert.deepEqual(
+      queries.map((r) => r.body.keyword.trim()),
+      [title]
+    );
     assert.ok(queries.every((r) => JSON.stringify(r.body.filter.type) === '[4]'));
     assert.ok(
       c.requests.filter((r) => r.url.startsWith('https://api.bgm.tv')).every((r) => r.authorized)
@@ -428,7 +429,7 @@ test('explicit opt-in works with global false at deep folders; all language part
     assert.equal((await c.call('init')).settings.autoMatch, false);
     await c.close();
     // A fresh eligible album demonstrates that persisted opt-in also survives refresh/restart.
-    const extra = path.join(f.source, '新建文件夹 (3)', '白色相簿2');
+    const extra = path.join(f.source, '白色相簿2');
     await fs.mkdir(extra, { recursive: true });
     await fs.writeFile(path.join(extra, 'image.png'), f.png);
     const restarted = await client(f.data, responder(subject, f.png));
@@ -446,7 +447,7 @@ test('explicit opt-in works with global false at deep folders; all language part
   }
 });
 
-test('wrong-type search and detail responses both retain the newest local cover', async (t) => {
+test('wrong-type search and detail responses both retain the natural first local cover', async (t) => {
   for (const wrongAt of ['search', 'detail'])
     await t.test(wrongAt, async () => {
       const f = await fixture();
@@ -624,9 +625,10 @@ test('removal, policy change, cancellation and shutdown invalidate a delayed det
     });
 });
 
-test('repeated folder queries are deduplicated but different selected categories get separate searches', async () => {
-  const f = await fixture(path.join('新建文件夹', '月色真美'));
-  const duplicate = path.join(f.source, '新建文件夹 (2)', '月色真美');
+test('repeated first-level folder queries are deduplicated but different selected categories get separate searches', async () => {
+  const f = await fixture('月色真美');
+  const duplicateRoot = path.join(f.tmp, 'duplicate', 'source');
+  const duplicate = path.join(duplicateRoot, '月色真美');
   await fs.mkdir(duplicate, { recursive: true });
   await fs.writeFile(path.join(duplicate, 'image.png'), f.png);
   const otherRoot = path.join(f.tmp, 'other', 'source'),
@@ -646,6 +648,9 @@ test('repeated folder queries are deduplicated but different selected categories
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle();
     assert.equal((await c.call('get', { id: f.id })).subject_id, 42);
+    const duplicateAfter = c.events.length;
+    await c.call('scan', { path: duplicateRoot, onlineMatch: true, subjectTypes: [2] });
+    await c.idle(duplicateAfter);
     assert.equal((await c.call('get', { id: idFor(duplicate) })).subject_id, 42);
     assert.equal(c.requests.filter((r) => r.body).length, 1);
     const after = c.events.length;
@@ -1011,8 +1016,10 @@ test('cached metadata aliases qualify a slim candidate without unrelated detail 
   }
 });
 
-test('opt-in skips inherited explicit photo but honors nearer explicit work override', async () => {
-  const f = await fixture(path.join('新建文件夹', '月色真美'));
+test('opt-in skips inherited explicit photo but honors nearer first-level explicit work override', async () => {
+  const f = await fixture();
+  const descendant = path.join(f.folder, '月色真美 CG');
+  await fs.mkdir(descendant);
   const c = await client(f.data, responder());
   try {
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2], offline: true });
@@ -1023,11 +1030,16 @@ test('opt-in skips inherited explicit photo but honors nearer explicit work over
     await c.idle(after);
     assert.equal(c.requests.length, 0);
     assert.equal((await c.call('get', { id: f.id })).subject_id, null);
-    await c.call('setAlbumKind', { id: idFor(path.dirname(f.folder)), kind: 'work' });
+    await c.call('setAlbumKind', { id: f.id, kind: 'work' });
     after = c.events.length;
     await c.call('scan', { path: f.source });
     await c.idle(after);
     assert.equal((await c.call('get', { id: f.id })).subject_id, 42);
+    assert.equal((await c.call('get', { id: idFor(descendant) })).subject_id, null);
+    assert.deepEqual(
+      albumSearches(c).map((request) => request.body.keyword),
+      ['月色真美']
+    );
   } finally {
     await c.close();
     await cleanup(f);
@@ -1645,7 +1657,7 @@ test('Token replacement never revives invalidated active or queued automatic job
     await t.test(action, async () => {
       const f = await fixture(),
         gate = deferred(),
-        queuedFolder = path.join(f.source, '新建文件夹', '月色真美');
+        queuedFolder = path.join(f.source, '月色真美 [1080p]');
       await fs.mkdir(queuedFolder, { recursive: true });
       await fs.writeFile(path.join(queuedFolder, 'image.png'), f.png);
       const ids = [f.id, idFor(queuedFolder)],
@@ -2084,7 +2096,9 @@ test('import resolves close primary candidates while manual matching keeps alter
   const subjects = [801, 803].map((id, index) => ({
     id,
     type: 2,
-    name: main + ['笺', '札'][index]
+    name: main.slice(0, -1) + ['笺', '札'][index],
+    collection: { collect: index === 0 ? 950 : 1000 },
+    date: index === 0 ? '2024-01-01' : '2020-01-01'
   }));
   const c = await client(
     f.data,
@@ -2315,7 +2329,18 @@ test('deduplicated and capped fallback queries preserve independent bilingual id
           assert.equal(result.node.subject_id, null);
           assert.equal(result.needs_selection, true);
           assert.ok(result.candidates.some((s) => s.id === subject.id));
-        } else assert.equal(subjectDetails(c).length, 6);
+        } else {
+          const details = subjectDetails(c);
+          assert.equal(
+            details.filter((request) => request.url.endsWith('/' + subject.id)).length,
+            1,
+            'the independently verified bilingual candidate is hydrated once across stages'
+          );
+          assert.ok(
+            details.some((request) => weak.some((row) => request.url.endsWith('/' + row.id))),
+            'the primary stage still hydrates its independent weak candidates before fallback'
+          );
+        }
       } finally {
         await c.close();
         await cleanup(f);

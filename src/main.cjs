@@ -151,6 +151,13 @@ function createWindow() {
   win.on('unmaximize', () =>
     win.webContents.send('library:event', { type: 'window', data: { maximized: false } })
   );
+  // Native Windows hide/minimize can leave the renderer visibility API unchanged.
+  // Tell transient pointer effects to release their frame and compositing layer.
+  for (const event of ['blur', 'hide', 'minimize'])
+    win.on(event, () => {
+      if (!win.isDestroyed())
+        win.webContents.send('library:event', { type: 'window', data: { inactive: true } });
+    });
   win.on('close', () => {
     try {
       const b = win.getNormalBounds();
@@ -421,10 +428,13 @@ if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
       });
       fs.mkdirSync(dataDir, { recursive: true });
       tokenPath = path.join(dataDir, 'bangumi-token.enc');
-      await bootWorker();
+      const ready = bootWorker();
       protocol.handle('acg-image', imageProtocol);
       handlers();
+      // Existing libraries may need a resumable sort-key migration. Show the
+      // window and its progress first; worker RPCs wait for migration internally.
       createWindow();
+      await ready;
     })
     .catch((e) => {
       log(e.stack);

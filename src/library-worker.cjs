@@ -15,6 +15,7 @@ const {
   newestImage,
   normalize,
   searchPlan,
+  searchStages,
   subjectNames,
   parseSubjectId,
   thumbnailKey
@@ -29,6 +30,8 @@ const {
   IMPORT_MIN_CONFIDENCE,
   rankSubjects,
   rankImportSubjects,
+  collections,
+  dateValue,
   createSearchCache
 } = require('./matching.cjs');
 const { searchSubjectPages } = require('./bangumi-search.cjs');
@@ -139,6 +142,8 @@ const defaults = {
   avatar: '',
   sidebarMode: 'auto',
   details: true,
+  liquidGlass: true,
+  motionLevel: 'medium',
   githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
@@ -187,18 +192,87 @@ async function changeCache(operation) {
     startOnline();
   }
 }
-const sortKey = (s) =>
-  s
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/\d+/g, (n) => n.padStart(14, '0'));
+// Startup repairs are migrations, not recurring maintenance. The marker commits
+// with the repair so an interrupted upgrade can safely retry on its next boot.
+function migrateOnce(key, version, migrate) {
+  if (setting(key) === version) return;
+  db.exec('BEGIN');
+  try {
+    migrate();
+    setSetting(key, version);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+const { sortKey, NATURAL_SORT_VERSION } = require('./natural-sort.cjs');
+async function migrateSortKeys() {
+  if (setting('naturalSortVersion') === NATURAL_SORT_VERSION) return;
+  const cursor = setting('naturalSortCursor');
+  let after = cursor?.version === NATURAL_SORT_VERSION ? cursor.after : null;
+  let processed = 0;
+  const update = db.prepare('UPDATE nodes SET sortkey=? WHERE rowid=?');
+  while (!stopping) {
+    const rows =
+      after === null
+        ? q('SELECT rowid,name FROM nodes ORDER BY rowid LIMIT 512')
+        : q('SELECT rowid,name FROM nodes WHERE rowid>? ORDER BY rowid LIMIT 512', after);
+    if (!rows.length) {
+      setSetting('naturalSortVersion', NATURAL_SORT_VERSION);
+      setSetting('naturalSortCursor', null);
+      if (processed) send('sortMigration', { processed, active: false });
+      return;
+    }
+    db.exec('BEGIN');
+    try {
+      for (const row of rows) update.run(sortKey(row.name), row.rowid);
+      after = rows.at(-1).rowid;
+      setSetting('naturalSortCursor', { version: NATURAL_SORT_VERSION, after });
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    processed += rows.length;
+    send('sortMigration', { processed, active: true });
+    await yieldNow();
+  }
+}
 if (setting('searchVersion') !== 1) {
   db.exec(
     'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
   );
   setSetting('searchVersion', 1);
 }
-db.exec('PRAGMA optimize=0x10002');
+// Preserve indexed pagination when equal dates/sizes need a natural-name tie.
+// Rebuild once for existing libraries; name ordering already has this shape.
+if (setting('browseOrderVersion') !== 1) {
+  db.exec('BEGIN');
+  try {
+    for (const [scope, prefix] of [
+      ['parent,', 'parent'],
+      ['', 'global']
+    ]) {
+      for (const [name, column] of [
+        ['date', 'birth'],
+        ['modified', 'mtime'],
+        ['size', "(CASE WHEN kind='folder' THEN total_bytes ELSE bytes END)"]
+      ]) {
+        db.exec(`DROP INDEX IF EXISTS nodes_${prefix}_${name};
+          CREATE INDEX nodes_${prefix}_${name} ON nodes(${scope}missing,kind,${column},sortkey,id)`);
+      }
+    }
+    setSetting('browseOrderVersion', 1);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+// Bump this migration alongside future browse-index schema changes. Do not
+// reconsider every large table on ordinary repeat startup.
+migrateOnce('browseOptimizeVersion', 1, () => db.exec('PRAGMA optimize=0x10002'));
 const getNode = (id) => one('SELECT * FROM nodes WHERE id=?', id);
 const characters = createCharacterLibrary({
   db,
@@ -225,9 +299,11 @@ const characters = createCharacterLibrary({
 // Repair prior versions that treated a successful nonexact match as unreviewed.
 // Only unmatched local fallback covers need review; stale confidence-review flags
 // must not survive an explicit confirmation or reopen a matched cover.
-run(
-  `UPDATE nodes SET confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE confirmed END,match_review=0
-   WHERE kind='folder' AND ((${matchedAutomaticSql()} AND confirmed<>1) OR match_review<>0)`
+migrateOnce('matchReviewVersion', 1, () =>
+  run(
+    `UPDATE nodes SET confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE confirmed END,match_review=0
+     WHERE kind='folder' AND ((${matchedAutomaticSql()} AND confirmed<>1) OR match_review<>0)`
+  )
 );
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
@@ -286,7 +362,11 @@ function hydrate(n) {
   };
 }
 function roots() {
-  return q('SELECT * FROM nodes WHERE parent IS NULL AND missing=0 ORDER BY sortkey');
+  // Roots are directories. Binding kind lets the existing parent/name index
+  // serve this tiny result without scanning the global name index after ANALYZE.
+  return q(
+    "SELECT * FROM nodes WHERE parent IS NULL AND missing=0 AND kind='folder' ORDER BY sortkey"
+  );
 }
 function browseWhere({
   parent = null,
@@ -375,7 +455,7 @@ function list(options = {}) {
           .total;
   const select =
     'n.*,m.width,m.height,m.frames,m.taken,m.date_source,m.place,m.latitude,m.longitude,m.hdr';
-  const tie = timeline ? 'm.id' : 'n.id';
+  const tie = timeline ? `m.id ${dir}` : `n.sortkey ${dir},n.id ${dir}`;
   // Limit narrow IDs before joining metadata; CROSS JOIN keeps date-index traversal first.
   const page = (kind, take, skip) => {
     // kind precedes the sort column in the existing indexes. A two-kind IN
@@ -383,14 +463,14 @@ function list(options = {}) {
     // lets SQLite stop at the requested page without adding eight more indexes.
     const mergeMedia = !timeline && kind === "n.kind IN ('image','video')";
     const ids = mergeMedia
-      ? `SELECT n.id,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='image'
+      ? `SELECT n.id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='image'
          UNION ALL
-         SELECT n.id,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='video'
-         ORDER BY page_order ${dir},id ${dir} LIMIT ? OFFSET ?`
-      : `SELECT n.id FROM ${from} WHERE ${clause} AND ${kind} ORDER BY ${col} ${dir},${tie} ${dir} LIMIT ? OFFSET ?`;
+         SELECT n.id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='video'
+         ORDER BY page_order ${dir},page_name ${dir},id ${dir} LIMIT ? OFFSET ?`
+      : `SELECT n.id FROM ${from} WHERE ${clause} AND ${kind} ORDER BY ${col} ${dir},${tie} LIMIT ? OFFSET ?`;
     return q(
       `SELECT ${select} FROM (${ids}) page JOIN nodes n ON n.id=page.id
-       LEFT JOIN media m ON m.id=n.id ORDER BY ${col} ${dir},${tie} ${dir}`,
+       LEFT JOIN media m ON m.id=n.id ORDER BY ${col} ${dir},${tie}`,
       ...args,
       ...(mergeMedia ? args : []),
       take,
@@ -525,9 +605,9 @@ function coverFor(folder, choice) {
     folder.id
   );
 }
-async function refreshLocalCover(id, direct, checkpoint = yieldNow) {
-  const character = albumKind(getNode(id)) === 'character';
-  if (character)
+async function refreshLocalCover(id, direct, checkpoint = yieldNow, deferWrite = false) {
+  const first = ['character', 'work'].includes(albumKind(getNode(id)));
+  if (first)
     direct = one(
       "SELECT id,name,sortkey,mtime FROM nodes WHERE parent=? AND missing=0 AND kind='image' ORDER BY sortkey,id LIMIT 1",
       id
@@ -557,17 +637,21 @@ async function refreshLocalCover(id, direct, checkpoint = yieldNow) {
         candidate = pointer ? getNode(pointer) : null;
       }
       if (candidate?.id)
-        newest = character ? firstImage(newest, candidate) : newestImage(newest, candidate);
+        newest = first ? firstImage(newest, candidate) : newestImage(newest, candidate);
     }
     after = page.at(-1).cursor;
     await checkpoint();
   }
   if (stopping) return;
-  // NULL means a legacy folder has not been initialized; '' caches no images.
-  run('UPDATE nodes SET local_newest=? WHERE id=?', newest?.id || '', id);
-  // A direct image takes precedence; only image-less folders inherit a descendant.
-  // Crops and all manual state remain untouched. New rows already default to 50/50/1.
-  coverFor(getNode(id), direct || newest);
+  const save = () => {
+    // NULL means a legacy folder has not been initialized; '' caches no images.
+    run('UPDATE nodes SET local_newest=? WHERE id=?', newest?.id || '', id);
+    // Read manual state at commit time: a patch may have arrived while totals
+    // yielded. A direct image still takes precedence over inherited descendants.
+    coverFor(getNode(id), direct || newest);
+  };
+  if (deferWrite) return save;
+  save();
 }
 function updateTotals(id) {
   const totals = one(
@@ -761,8 +845,24 @@ async function scanContents(rootPath, options = {}) {
       await checkpoint();
     }
     if (cancelled) return;
-    await refreshLocalCover(folder.id, candidates.newest || null, checkpoint);
-    await indexing.totals(folder.id, checkpoint);
+    const saveCover = await refreshLocalCover(
+      folder.id,
+      candidates.newest || null,
+      checkpoint,
+      true
+    );
+    const saveTotals = await indexing.totals(folder.id, checkpoint, true);
+    // One durable commit per completed directory, after all asynchronous reads.
+    // Keep this block synchronous so RPC edits cannot join the transaction.
+    db.exec('BEGIN');
+    try {
+      saveCover?.();
+      saveTotals();
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
     touched.delete(folder.id);
     progress.visited++;
     await checkpoint();
@@ -1011,7 +1111,7 @@ async function saveSubjectContents(
   folder,
   manual,
   guard,
-  { refresh = false, matchConfidence } = {}
+  { refresh = false, matchConfidence, immediate = false } = {}
 ) {
   assertMatchLive(guard);
   if (!Number.isSafeInteger(subject.id) || subject.id <= 0)
@@ -1201,7 +1301,7 @@ async function saveSubjectContents(
       (current.cover_source === 'bangumi' || current.cover?.startsWith('subject:'))
     )
       await refreshLocalCover(folder.id);
-    send('changed', { id: folder.id });
+    send('changed', { id: folder.id, ...(!manual && !immediate ? { matching: true } : {}) });
     return hydrate(getNode(folder.id));
   } finally {
     activeNetwork--;
@@ -1301,6 +1401,9 @@ function incompleteResources(folder) {
   );
 }
 function eligibleMatch(folder, policy = matchPolicy(folder)) {
+  // Imports describe a collection root. Only its direct work/character albums
+  // receive automatic identities; manual search remains available at any depth.
+  if (!folder || folder.depth !== 1 || folder.parent !== folder.root) return false;
   if (policy.kind === 'character') return characters.eligible(folder, policy);
   if (
     !folder ||
@@ -1316,14 +1419,17 @@ function eligibleMatch(folder, policy = matchPolicy(folder)) {
     return false;
   if (policy.explicit) {
     if (explicitAlbumKind(folder) === 'photo') return false;
-  } else if (
-    folder.depth < 1 ||
-    folder.depth > Math.min(2, Number(setting('subjectDepth')) || 1) ||
-    albumKind(folder) !== 'work'
-  )
-    return false;
+  } else if (albumKind(folder) !== 'work') return false;
   const { terms, fallbacks } = searchPlan(folder.name);
-  return terms.length > 0 || fallbacks.some((plan) => plan.terms.length > 0);
+  return (
+    terms.length > 0 ||
+    fallbacks.some((plan) => plan.terms.length > 0) ||
+    (policy.kind === 'work' &&
+      !!one(
+        "SELECT id FROM nodes WHERE parent=? AND missing=0 AND kind='folder' LIMIT 1",
+        folder.id
+      ))
+  );
 }
 function manualMatchTypes(folder) {
   // An explicit album choice overrides inheritance; otherwise use the same
@@ -1428,7 +1534,7 @@ function metadataAliases(subject, types) {
     aliases: [...new Set([...subjectNames(subject), ...subjectNames(cached)])].slice(0, 24)
   };
 }
-async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
+async function matchFolder(id, explicit = false, keyword = '', queuedJob, { probe = false } = {}) {
   const folder = getNode(id);
   if (!folder || folder.kind !== 'folder' || folder.missing) return null;
   if (matchPolicy(folder).kind === 'character')
@@ -1442,6 +1548,57 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
     const importMatching = !explicit && policy.explicit && policy.enabled;
     const rank = importMatching ? rankImportSubjects : rankSubjects;
     const types = explicit ? manualMatchTypes(folder) : policy.types;
+    // A series may have no searchable title of its own. Probe at most four
+    // immediate children, then bind one verified high-scoring work to the parent.
+    // Probes never mutate a child and cannot recursively enumerate descendants.
+    const seriesFallback = async (otherwise) => {
+      if (explicit || probe || folder.subject_id || !guard()) return otherwise;
+      const children = q(
+        "SELECT name FROM nodes WHERE parent=? AND missing=0 AND kind='folder' ORDER BY sortkey,id LIMIT 4",
+        folder.id
+      );
+      const subjects = new Map();
+      for (const child of children) {
+        if (!guard()) return null;
+        const result = await matchFolder(id, false, child.name, job, { probe: true });
+        if (result?.networkDeferred) continue;
+        if (result?.matchedSubject) {
+          const previous = subjects.get(result.matchedSubject.id);
+          if (!previous || result.matchConfidence > previous.match)
+            subjects.set(result.matchedSubject.id, {
+              subject: result.matchedSubject,
+              match: result.matchConfidence,
+              total: collections(result.matchedSubject),
+              date: dateValue(result.matchedSubject.date)
+            });
+        }
+      }
+      assertMatchLive(guard);
+      if (!subjects.size) return otherwise;
+      // Each child has its own title evidence (including installment numbers).
+      // Compare verified scores without treating distinct child names as aliases.
+      const verified = [...subjects.values()].filter((item) => item.match > IMPORT_MIN_CONFIDENCE);
+      const best = Math.max(...verified.map((item) => item.match));
+      const close = verified.filter((item) => best - item.match <= 0.03 + Number.EPSILON * 4);
+      const popular = Math.max(...close.map((item) => item.total));
+      const choices = close.filter((item) => !popular || item.total >= popular * 0.9);
+      choices.sort((a, b) => {
+        const date =
+          Number.isFinite(a.date) && Number.isFinite(b.date)
+            ? b.date - a.date
+            : Number.isFinite(a.date)
+              ? -1
+              : Number.isFinite(b.date)
+                ? 1
+                : 0;
+        return date || b.total - a.total || b.match - a.match || a.subject.id - b.subject.id;
+      });
+      if (!choices.length) return otherwise;
+      const saved = await saveSubject(choices[0].subject, folder, false, guard, types, {
+        matchConfidence: choices[0].match
+      });
+      return saved && incompleteResources(saved) ? { ...saved, localIdentitySaved: true } : saved;
+    };
     // The archive supplies independently stored names/aliases and full candidate
     // evidence to the current production ranker. Never hydrate through HTTP just
     // to verify a reliable local identity: restricted/offline APIs can omit it.
@@ -1462,6 +1619,8 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
       if (local.available && (credible || local.truncated)) {
         assertMatchLive(guard);
         if (!explicit && local.complete && local.selected) {
+          if (probe)
+            return { matchedSubject: local.selected, matchConfidence: local.selectedMatch };
           const saved = await saveSubject(local.selected, folder, false, guard, types, {
             matchConfidence: local.selectedMatch
           });
@@ -1487,7 +1646,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
     }
     // Paused HTTP work still gets a local-only pass; misses remain pending.
     if (!explicit && localIndex.status().available && onlinePause())
-      return { networkDeferred: true };
+      return await seriesFallback({ networkDeferred: true });
     if (
       !explicit &&
       folder.subject_id &&
@@ -1527,15 +1686,17 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
       folder.subject_id = job.subject = null;
       await refreshLocalCover(folder.id);
       if (!guard()) return null;
-      send('changed', { id: folder.id });
+      send('changed', { id: folder.id, ...(!explicit ? { matching: true } : {}) });
     }
     const plan = searchPlan(String(keyword || folder.name).slice(0, 240));
-    const plans = [plan, ...(plan.fallbacks || [])].filter((item) => item.terms.length);
+    const plans = searchStages(plan);
+    if (!plans.length && !explicit)
+      return await seriesFallback({ candidates: [], needs_selection: true });
     const details = new Map(),
-      allCandidates = new Map(),
-      queryHits = new Map();
-    for (const [index, { terms, titleGroups }] of plans.entries()) {
-      const rows = new Map();
+      allCandidates = new Map();
+    for (const [index, { terms, titleGroups, series }] of plans.entries()) {
+      const rows = new Map(),
+        queryHits = new Map();
       let complete = true;
       // Leave at least one independent detail check for each later note fallback.
       // The complete folder lookup still hydrates at most six unique subject IDs.
@@ -1581,7 +1742,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
             details.has(candidate.id) ? [details.get(candidate.id)].filter(Boolean) : [candidate]
           ),
           types,
-          { complete, titleGroups, queryHits }
+          { complete, titleGroups, queryHits, series }
         );
       let ranked = rankCurrent();
       async function detailFor(candidate) {
@@ -1639,10 +1800,12 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
         // Search aliases cannot manufacture identity evidence in a detail response.
         ranked = rankCurrent();
         if (subject && ranked.selected?.id === subject.id) {
-          if (!explicit)
+          if (!explicit) {
+            if (probe) return { matchedSubject: subject, matchConfidence: ranked.selectedMatch };
             return saveSubject(subject, folder, false, guard, types, {
               matchConfidence: ranked.selectedMatch
             });
+          }
           break;
         }
       }
@@ -1663,16 +1826,22 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob) {
         break;
     }
     if (!guard()) return null;
-    return {
+    const candidates = [...allCandidates.values()].sort((a, b) => b.match - a.match);
+    const result = {
       ...(explicit
         ? {
             node: hydrate(getNode(id)),
             searchAccess: { tokenPresent: !!workerData.token }
           }
         : {}),
-      candidates: [...allCandidates.values()].sort((a, b) => b.match - a.match).slice(0, 10),
+      candidates: candidates.slice(0, 10),
       needs_selection: true
     };
+    return candidates.some((candidate) =>
+      importMatching ? candidate.match > IMPORT_MIN_CONFIDENCE : candidate.match >= MIN_CONFIDENCE
+    )
+      ? result
+      : await seriesFallback(result);
   } catch (error) {
     if (error.code === 'MATCH_CANCELLED' || !guard()) return null;
     throw error;
@@ -1745,7 +1914,7 @@ async function fillOnlineQueue(deferred = null) {
       continue;
     }
     const page = q(
-      "SELECT * FROM nodes WHERE root=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
+      "SELECT * FROM nodes WHERE parent=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
       root.id,
       frontier.after_id
     );
@@ -2331,29 +2500,42 @@ async function selectCoverPath({ id, file }) {
   if (s.isSymbolicLink() || !s.isFile()) throw new Error('请选择普通图片文件。');
   const imageId = idFor(file);
   const indexed = getNode(imageId);
-  if (indexed && !indexed.missing && indexed.bytes === s.size && indexed.mtime === s.mtimeMs)
-    return setCover({ id, imageId });
-  run(
-    'INSERT INTO nodes(id,root,parent,path,name,sortkey,kind,depth,bytes,mtime,birth,indexed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET missing=0,bytes=excluded.bytes,mtime=excluded.mtime',
-    imageId,
-    n.root,
-    parent.id,
-    file,
-    path.basename(file),
-    sortKey(path.basename(file)),
-    'image',
-    parent.depth + 1,
-    s.size,
-    s.mtimeMs,
-    s.birthtimeMs,
-    Date.now()
-  );
-  run('DELETE FROM search_index WHERE id=?', imageId);
-  run(
-    'INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE id=?',
-    imageId
-  );
-  for (let p = parent; p; p = p.parent ? getNode(p.parent) : null) updateTotals(p.id);
+  const changed =
+    !indexed || indexed.missing || indexed.bytes !== s.size || indexed.mtime !== s.mtimeMs;
+  // Manual selection can discover/revive an image without a scan. Persist its
+  // media revision with the node; unchanged nodes may also need a missing row.
+  db.exec('BEGIN');
+  try {
+    if (changed) {
+      run(
+        'INSERT INTO nodes(id,root,parent,path,name,sortkey,kind,depth,bytes,mtime,birth,indexed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET missing=0,bytes=excluded.bytes,mtime=excluded.mtime',
+        imageId,
+        n.root,
+        parent.id,
+        file,
+        path.basename(file),
+        sortKey(path.basename(file)),
+        'image',
+        parent.depth + 1,
+        s.size,
+        s.mtimeMs,
+        s.birthtimeMs,
+        Date.now()
+      );
+      run('DELETE FROM search_index WHERE id=?', imageId);
+      run(
+        'INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE id=?',
+        imageId
+      );
+    }
+    media.sync(getNode(imageId));
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  if (changed) for (let p = parent; p; p = p.parent ? getNode(p.parent) : null) updateTotals(p.id);
+  if (!running && !stopping) media.start().catch((e) => send('error', { message: e.message }));
   return setCover({ id, imageId });
 }
 const watchers = new Map(),
@@ -2571,6 +2753,10 @@ const methods = {
       throw new Error('头像格式无效。');
     if (key === 'sidebarMode' && !['auto', 'expanded', 'compact'].includes(value))
       throw new Error('侧栏模式无效。');
+    if (key === 'liquidGlass' && typeof value !== 'boolean')
+      throw new Error('玻璃材质开关应为布尔值。');
+    if (key === 'motionLevel' && !['low', 'medium', 'high'].includes(value))
+      throw new Error('动效强度无效。');
     if (key === 'githubRepository') {
       value = effectiveRepository(value);
       if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');
@@ -2655,7 +2841,10 @@ const methods = {
     }
     if (!safeMatchSubject(subject, types) || subject.id !== n.subject_id)
       throw new Error('作品类型或条目 ID 不符合当前关联，请重新检索作品。');
-    return saveSubject(subject, n, !!n.manual_subject, guard, types, { refresh: true });
+    return saveSubject(subject, n, !!n.manual_subject, guard, types, {
+      refresh: true,
+      immediate: true
+    });
   },
   sync: async ({ id }) => {
     if (id) enqueueMatch([id]);
@@ -2746,14 +2935,12 @@ const methods = {
     return true;
   }
 };
-media.seed();
-const mediaStartupTimer = setTimeout(() => {
-  if (!running) media.start().catch((e) => send('error', { message: e.message }));
-}, 600);
-reconcileWatches();
+let mediaStartupTimer;
+const sortKeysReady = migrateSortKeys();
 parentPort.on('message', async ({ request, method, args }) => {
   let tracked = false;
   try {
+    await sortKeysReady;
     if (!Object.hasOwn(methods, method)) throw new Error('未知操作');
     if (cacheChanging && method !== 'shutdown' && !cacheReadMethods.has(method))
       throw new Error('正在管理缓存，请稍后再试。');
@@ -2769,6 +2956,25 @@ parentPort.on('message', async ({ request, method, args }) => {
     if (tracked) activeRequests--;
   }
 });
-parentPort.postMessage({ event: 'ready', data: {} });
-if (one('SELECT id FROM match_pending LIMIT 1') || one('SELECT root FROM match_frontier LIMIT 1'))
-  startOnline();
+sortKeysReady.then(
+  () => {
+    // Existing libraries need this reconciliation once. Scanner commits already
+    // seed/reset individual media rows atomically with each changed node.
+    migrateOnce('mediaSeedVersion', 1, () => media.seed());
+    mediaStartupTimer = setTimeout(() => {
+      if (!running) media.start().catch((e) => send('error', { message: e.message }));
+    }, 600);
+    reconcileWatches();
+    parentPort.postMessage({ event: 'ready', data: {} });
+    if (
+      one('SELECT id FROM match_pending LIMIT 1') ||
+      one('SELECT root FROM match_frontier LIMIT 1')
+    )
+      startOnline();
+  },
+  (error) => {
+    setImmediate(() => {
+      throw error;
+    });
+  }
+);

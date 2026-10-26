@@ -271,6 +271,16 @@ test('local-first role import uses natural first image, independent local metada
   assert.equal(n.match_review, 0);
   assert.equal(n.confirmed, 1);
   assert.equal(c.requests.length, 0);
+  assert.ok(
+    c.events.some(
+      (event) => event.event === 'changed' && event.data.id === f.id && event.data.matching === true
+    ),
+    'automatic character save completes and marks its browser update for batching'
+  );
+  assert.ok(
+    !c.events.some((event) => event.event === 'online' && event.data.error),
+    'automatic local metadata save must not fail after committing'
+  );
   await fs.writeFile(path.join(f.folder, '0.png'), f.png);
   await c.call('scan', { path: f.source });
   await c.idle();
@@ -368,7 +378,14 @@ test('Bangumi role portrait uses separate files, shared token API and credential
   assert.equal(n.match_review, 0);
   assert.equal(n.confirmed, 1);
   await c.call('resetCover', { id: f.id });
+  const refreshStart = c.events.length;
   await c.call('refreshMetadata', { id: f.id });
+  assert.ok(
+    c.events
+      .slice(refreshStart)
+      .some((event) => event.event === 'changed' && event.data.id === f.id && !event.data.matching),
+    'manual metadata refresh on an automatically associated character stays immediate'
+  );
   n = await c.call('get', { id: f.id });
   assert.equal(n.confirmed, 1);
   assert.equal(n.match_confidence, 1);

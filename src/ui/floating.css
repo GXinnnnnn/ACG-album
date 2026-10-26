@@ -49,6 +49,27 @@ body {
 }
 .context-menu {
   backdrop-filter: blur(10px);
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.context-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.context-menu .menu-check {
+  margin-left: auto;
+  display: inline-flex;
+  color: var(--accent);
+}
+.context-menu button[aria-checked='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+#viewport:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 .titlebar {
   height: 28px;

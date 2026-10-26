@@ -521,13 +521,90 @@ test('local imports preserve strict85 threshold, three-point cohort and90 percen
   );
   const exact = fixture(t, {
     subjects: [
-      { id: 1, name: 'AIR', date: '2020-01-01', collection: { collect: 1000 } },
-      { id: 2, name: 'AIR', date: '2000-09-08', collection: { collect: 900 } },
-      { id: 3, name: 'AIR', date: '1990-01-01', collection: { collect: 899 } }
+      { id: 1, name: 'AIR', date: '2000-09-08', collection: { collect: 1000 } },
+      { id: 2, name: 'AIR', date: '2020-01-01', collection: { collect: 900 } },
+      { id: 3, name: 'AIR', date: '2025-01-01', collection: { collect: 899 } }
     ]
   });
   assert.equal(exact.index.search({ query: 'AIR', types: [4], mode: 'import' }).selected.id, 2);
 });
+test('complete original local title wins before its translated fragments are queried', (t) => {
+  const full = '雾海来信 Silver Meadow';
+  const f = fixture(t, {
+    subjects: [
+      { id: 1, name: full, collection: { collect: 1 } },
+      { id: 2, name: 'Silver Meadow', name_cn: '雾海来信', collection: { collect: 1000000 } }
+    ]
+  });
+  const result = f.index.search({ query: full, types: [4], mode: 'import' });
+  assert.equal(result.selected?.id, 1);
+  assert.equal(result.stages.length, 1);
+  assert.deepEqual(result.stages[0].terms, [full]);
+});
+
+test('local title splitting is deferred until the complete name has no credible match', (t) => {
+  const full = '雾海来信 Silver Meadow';
+  const f = fixture(t, { subjects: [{ id: 2, name: 'Silver Meadow', name_cn: '雾海来信' }] });
+  const result = f.index.search({ query: full, types: [4], mode: 'import' });
+  assert.equal(result.selected?.id, 2);
+  assert.equal(result.stages.length, 2);
+  assert.deepEqual(result.stages[0].terms, [full]);
+  assert.ok(result.stages[1].terms.includes('雾海来信'));
+});
+
+test('local short Chinese game titles retain high confidence without accepting their sequels', (t) => {
+  const f = fixture(t, {
+    subjects: [
+      { id: 295364, name: 'ハミダシクリエイティブ', name_cn: '常轨脱离Creative' },
+      { id: 364247, name: 'ハミダシクリエイティブ凸', name_cn: '常轨脱离Creative凸' },
+      { id: 297264, name: 'ATRI -My Dear Moments-', name_cn: '亚托莉 -我挚爱的时光-' }
+    ]
+  });
+  for (const [query, id] of [
+    ['常轨脱离', 295364],
+    ['亚托莉', 297264]
+  ]) {
+    const result = f.index.search({ query, types: [4], mode: 'import' });
+    assert.equal(result.selected?.id, id);
+    assert.equal(result.selectedMatch, 0.97);
+    assert.equal(result.stages.length, 1);
+  }
+});
+
+test('an explicit translated sequel survives the staged bilingual identity check', (t) => {
+  const f = fixture(t, {
+    subjects: [
+      { id: 1, name: 'Series', name_cn: '系列名', collection: { collect: 90000 } },
+      { id: 2, name: 'Series 2', name_cn: '系列名第二季' }
+    ]
+  });
+  const result = f.index.search({ query: '系列名第二季 Series', types: [4], mode: 'import' });
+  assert.equal(result.selected?.id, 2);
+  assert.equal(result.selectedMatch, 1);
+  assert.deepEqual(result.stages[0].terms, ['系列名第二季 Series']);
+  assert.equal(result.stages.length, 2);
+});
+
+test('trailing series intent is preserved through local retrieval and ranking', (t) => {
+  const f = fixture(t, {
+    subjects: [
+      { id: 453293, name: 'Legend of Heroes', name_cn: '英雄传说', collection: { collect: 2 } },
+      {
+        id: 260,
+        name: '英雄伝説VI 空の軌跡',
+        name_cn: '英雄传说6：空之轨迹',
+        collection: { collect: 4000 }
+      }
+    ]
+  });
+  const ordinary = f.index.search({ query: '英雄传说', types: [4], mode: 'import' });
+  assert.equal(ordinary.selected?.id, 453293);
+  const series = f.index.search({ query: '英雄传说系列', types: [4], mode: 'import' });
+  assert.equal(series.selected?.id, 260);
+  assert.equal(series.selectedMatch, 0.97);
+  assert.equal(series.stages[0].series, true);
+});
+
 test('85.1 percent local import persists confidence and confirms the successfully matched identity', async (t) => {
   const chars = Array.from({ length: 230 }, (_, i) => String.fromCodePoint(0x5000 + i));
   const album = chars.slice(0, 25).join('');

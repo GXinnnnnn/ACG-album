@@ -47,7 +47,8 @@ function dateTaken(exif) {
   return { taken: new Date(y, mo - 1, d, h, mi, s).getTime(), date_source: 'exif-local' };
 }
 
-/** Worker-only service. seed(): sync SQL-only metadata sync, returns stats(); call after scans.
+/** Worker-only service. seed(): full SQL reconciliation, returns stats().
+ * sync(node): synchronous single-node revision/reset; caller owns any surrounding transaction.
  * start(): Promise<stats>, drains pending rows once (32-row batches, no polling/retry loop).
  * ensure(id): Promise<details> (ready/error), high priority and one shared job per id.
  * get(id): sync details|null with parsed delays; stats(): {rows:[{status,count}],queued,active,background}.
@@ -688,6 +689,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
   }
   return {
     seed,
+    sync,
     start,
     ensure,
     get,

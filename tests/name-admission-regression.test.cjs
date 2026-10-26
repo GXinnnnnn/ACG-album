@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { searchTerms } = require('../src/model.cjs');
+const { searchStages, normalize } = require('../src/model.cjs');
 const { rankSubjects } = require('../src/matching.cjs');
 
 const work = (id, name, fields = {}) => ({
@@ -10,6 +10,12 @@ const work = (id, name, fields = {}) => ({
   name,
   collection: { collect: 10 },
   ...fields
+});
+
+const sequelStages = () => searchStages('系列名第二季 Series');
+const stageOptions = (stage, subjects) => ({
+  titleGroups: stage.titleGroups,
+  queryHits: new Map(subjects.map((subject) => [subject.id, new Set(stage.terms.map(normalize))]))
 });
 
 test('identical names alone do not prove a franchise chronology', () => {
@@ -25,17 +31,44 @@ test('a bilingual base alias cannot erase an explicit sequel number', () => {
     date: '2001-01-01'
   });
   const second = work(22, 'Series 2', { name_cn: '系列名第二季', date: '2004-01-01' });
-  const terms = searchTerms('系列名第二季 Series');
-  assert.equal(rankSubjects(terms, [first, second], [2]).selected.id, second.id);
+  const [whole, split] = sequelStages();
+  assert.deepEqual(whole.terms, ['系列名第二季 Series']);
+  assert.equal(rankSubjects(whole.terms, [first, second], [2]).selected, null);
+  assert.equal(
+    rankSubjects(split.terms, [first, second], [2], stageOptions(split, [first, second])).selected
+      ?.id,
+    second.id
+  );
 });
 
 test('an unnumbered translated alias needs positive evidence for the explicit installment', () => {
   const first = work(31, 'Series', { collection: { collect: 90000 }, date: '2001-01-01' });
   const second = work(32, 'Series 2', { name_cn: '系列名第二季', date: '2004-01-01' });
-  const terms = searchTerms('系列名第二季 Series');
-  assert.equal(rankSubjects(terms, [first], [2]).selected, null);
-  assert.equal(rankSubjects(terms, [first, second], [2]).selected.id, second.id);
-  assert.equal(rankSubjects([...terms].reverse(), [second, first], [2]).selected.id, second.id);
+  const [whole, split] = sequelStages();
+  const { terms } = split;
+  const options = stageOptions(split, [first, second]);
+  assert.equal(rankSubjects(whole.terms, [first, second], [2]).selected, null);
+  assert.equal(rankSubjects(terms, [first], [2], options).selected, null);
+  assert.equal(rankSubjects(terms, [first, second], [2], options).selected?.id, second.id);
+  assert.equal(
+    rankSubjects([...terms].reverse(), [second, first], [2], options).selected?.id,
+    second.id
+  );
+  for (const missing of ['Series', '系列名第二季']) {
+    const queryHits = new Map([
+      [second.id, new Set(terms.filter((term) => term !== missing).map(normalize))]
+    ]);
+    assert.equal(rankSubjects(terms, [second], [2], { ...options, queryHits }).selected, null);
+  }
+  for (const candidate of [
+    { ...second, name: 'Series 3' },
+    { ...second, aliases: ['Series 3'] },
+    { ...second, name: 'Different Series 2' }
+  ])
+    assert.equal(
+      rankSubjects(terms, [candidate], [2], stageOptions(split, [candidate])).selected,
+      null
+    );
 });
 
 test('one exact sequel alias cannot hide a comparable contradictory installment alias', () => {

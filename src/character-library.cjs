@@ -255,7 +255,7 @@ function createCharacterLibrary(e) {
     onIdentitySaved?.(getNode(folder.id));
     if (!getNode(folder.id).manual_cover && !getNode(folder.id).cover)
       await e.refreshLocalCover(folder.id);
-    e.send('changed', { id: folder.id });
+    e.send('changed', { id: folder.id, ...(!manual && !refresh ? { matching: true } : {}) });
     return hydrate(getNode(folder.id));
   }
   function recall(query) {

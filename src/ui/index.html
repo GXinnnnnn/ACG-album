@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN" data-theme="light" data-liquid-glass="on" data-motion="medium">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -19,6 +19,7 @@
     <link rel="stylesheet" href="controls.css" />
     <link rel="stylesheet" href="local-search.css" />
     <link rel="stylesheet" href="cache-settings.css" />
+    <link rel="stylesheet" href="effects.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -284,7 +285,7 @@
         </div>
         <footer class="statusbar">
           <span id="footer-location">ACG-album · 本地相册</span
-          ><span id="footer-status">就绪 <span class="status-light"></span></span>
+          ><span id="footer-status" role="status">正在加载本地资料库…</span>
         </footer>
       </main>
     </div>
@@ -373,9 +374,11 @@
       <span data-icon="arrow-down"></span><span>回到顶部</span>
     </button>
     <script src="crop.js"></script>
+    <script src="effects.js"></script>
     <script src="theme.js"></script>
     <script src="display.js"></script>
     <script src="masonry.js"></script>
+    <script src="refresh-policy.js"></script>
     <script src="cache-settings.js"></script>
     <script src="app.js"></script>
     <script src="local-search.js"></script>

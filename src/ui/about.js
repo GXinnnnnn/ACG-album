@@ -5,7 +5,7 @@
   let activeContext = null;
   const officialRepository = 'GXinnnnnn/ACG-album';
   const authorLinks = {
-    github: `https://github.com/${officialRepository}`,
+    github: 'https://github.com/GXinnnnnn',
     bilibili: 'https://space.bilibili.com/396517775',
     bangumi: 'https://bgm.tv'
   };
@@ -166,7 +166,7 @@
       '关于ACG-album',
       `<div class="album-about" data-album-info>
       <div class="about-identity"><img class="about-app-icon" src="../assets/app.png" alt="" width="64" height="64"><div><span class="about-kicker">把喜欢的世界，留在身边</span><h3 class="about-app-name">ACG-album</h3><span class="about-version" data-about-version>正在读取版本…</span></div></div>
-      <div class="about-description"><p>ACG-album是一款个性化本地相册，主要为收藏动画、游戏画面的你而做。用多层嵌套相册整理喜欢的作品，通过 Bangumi 搜索并关联作品简介，让收藏也有自己的故事。</p><p>图片与视频，连同拍摄时间和回忆，都能在这里慢慢整理。原始媒体留在本地，隐私由自己掌握；作品资料检索与更新检查会连接相应的在线服务。</p></div>
+      <div class="about-description"><p>给 ACG 囤囤鼠的现代化本地相册。把游戏 CG、动画截图、角色插画与设定集所在的文件夹变成封面卡片，关联 Bangumi 作品与角色条目，让硬盘里的收藏成为随时想打开的作品陈列。</p><p>图片与视频，连同拍摄时间和回忆，都能在这里慢慢整理。原始媒体留在本地，隐私由自己掌握；作品资料检索与更新检查会连接相应的在线服务。</p></div>
       <details class="about-disclosure about-sponsor"><summary><span>投喂一点快乐</span><span class="about-summary-hint">感谢每一份心意</span></summary><div class="about-disclosure-body"><p class="about-sponsor-message">如果喜欢这个小相册，欢迎投喂一杯快乐水～(｡･ω･｡)ﾉ♡<br>谢谢老板，祝你喜欢的作品永不散场！</p><div class="about-qr-grid"><figure class="about-qr-card"><figcaption>支付宝</figcaption><img src="../assets/sponsor/alipay-qr.png" alt="支付宝赞助收款二维码" loading="lazy"><span>谢谢你的快乐水</span></figure><figure class="about-qr-card"><figcaption>微信支付</figcaption><img src="../assets/sponsor/wechat-qr.png" alt="微信支付赞助收款二维码" loading="lazy"><span>每一份支持都很珍贵</span></figure></div></div></details>
       <div class="about-author-heading">遇见作者<span>愿热爱一直有回响</span></div><div class="about-author-grid"><a class="about-author-card" href="${authorLinks.github}" data-about-external="${authorLinks.github}"><img src="../assets/author/github.webp" alt="" width="42" height="42"><span class="about-author-text"><span class="about-platform">${platformIcons.github}GitHub <span class="about-account">GXinnnnnn</span></span><strong>友利奈绪的胖次</strong></span>${svg('external')}</a><a class="about-author-card" href="${authorLinks.bilibili}" data-about-external="${authorLinks.bilibili}"><img src="../assets/author/bilibili.webp" alt="" width="42" height="42"><span class="about-author-text"><span class="about-platform">${platformIcons.bilibili}Bilibili</span><strong>友利奈绪の胖次</strong></span>${svg('external')}</a></div>
       <details class="about-disclosure about-credits"><summary><span>开源致谢</span><span class="about-summary-hint">感谢让小相册成为可能的项目</span></summary><div class="about-disclosure-body"><div data-about-credits aria-live="polite"><p class="about-note">正在读取项目与许可证信息…</p></div><p class="about-license-note">完整许可证与第三方声明随安装包附带，请参阅随附的开源许可文档。</p></div></details>

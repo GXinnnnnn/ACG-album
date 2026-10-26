@@ -63,8 +63,8 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $preserveExistingProfiles = $${preserveExistingProfiles ? 'true' : 'false'}
 $keys = @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*')
-$names = @('ACG-album', 'acg-album', 'ACG-album', 'ACG-album')
-$existing = @(Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'ACG-album|ACG-album|ACG-album' })
+$names = @('ACG-album', 'acg-album')
+$existing = @(Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'ACG-album' -or $_.AppId -eq 'local.acg.album' -or $_.PSChildName -eq 'local.acg.album' })
 if ($existing.Count -gt 0) { throw 'ALBUM_INSTALL_EXISTS' }
 foreach ($name in $names) {
   if (Get-Process -Name $name -ErrorAction SilentlyContinue) { throw 'ALBUM_PROCESS_RUNNING' }
@@ -76,6 +76,19 @@ foreach ($folder in $profileRoots) {
   foreach ($name in $names) {
     $profileCandidates += Join-Path $folder $name
     if (Test-Path -LiteralPath (Join-Path $folder ('Programs\\' + $name))) { throw 'ALBUM_INSTALL_DIRECTORY_EXISTS' }
+  }
+}
+# Discover first-level library markers conservatively without reading database contents.
+$documents = [Environment]::GetFolderPath('MyDocuments')
+if ($documents -and (Test-Path -LiteralPath $documents)) {
+  $documentRoot = Get-Item -LiteralPath $documents -Force
+  if ($documentRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'ALBUM_LINKED_DOCUMENTS' }
+  $entries = @(Get-ChildItem -LiteralPath $documents -Force -ErrorAction Stop | Select-Object -First 513)
+  if ($entries.Count -gt 512) { throw 'ALBUM_PROFILE_DISCOVERY_LIMIT' }
+  foreach ($entry in $entries) {
+    if (-not $entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+    $database = Join-Path $entry.FullName 'library.sqlite'
+    if (Test-Path -LiteralPath $database) { $profileCandidates += $entry.FullName }
   }
 }
 $installationRoots = @($env:ProgramFiles, ${'${env:ProgramFiles(x86)}'}, $env:ProgramW6432)
@@ -93,7 +106,7 @@ if (-not $preserveExistingProfiles) {
 $folders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'))
 foreach ($folder in $folders) {
   if (-not $folder) { continue }
-  foreach ($name in @('ACG-album.lnk', 'ACG-album', 'acg-album.lnk', 'acg-album', 'ACG-album.lnk', 'ACG-album', 'ACG-album.lnk', 'ACG-album')) {
+  foreach ($name in @('ACG-album.lnk', 'ACG-album', 'acg-album.lnk', 'acg-album')) {
     if (Test-Path -LiteralPath (Join-Path $folder $name)) { throw 'ALBUM_SHORTCUT_EXISTS' }
   }
 }

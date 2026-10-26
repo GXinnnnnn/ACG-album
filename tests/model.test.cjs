@@ -6,6 +6,7 @@ const {
   idFor,
   searchTerms,
   searchPlan,
+  searchStages,
   similarity,
   scoreSubject,
   parseSubjectId,
@@ -21,8 +22,10 @@ test('Chinese and multilingual names normalize and match conservatively', () => 
   assert.ok(scoreSubject(['星际牛仔'], { name_cn: '星界的纹章' }) < 0.88);
 });
 test('Chinese album suffixes preserve the actual work name', () => {
-  assert.ok(searchTerms('假面骑士图片').includes('假面骑士'));
-  assert.ok(searchTerms('崩坏3壁纸').includes('崩坏3'));
+  assert.deepEqual(searchTerms('假面骑士图片'), ['假面骑士图片']);
+  assert.deepEqual(searchStages('假面骑士图片').at(-1).terms, ['假面骑士']);
+  assert.deepEqual(searchTerms('崩坏3壁纸'), ['崩坏3壁纸']);
+  assert.deepEqual(searchStages('崩坏3壁纸').at(-1).terms, ['崩坏3']);
   assert.ok(searchTerms('喜羊羊与灰太狼').includes('喜羊羊与灰太狼'));
 });
 test('complete single-language and embedded-language titles never yield fragments', () => {
@@ -118,7 +121,7 @@ test('short, interleaved and ambiguous script fragments are not invented as titl
   }
 });
 
-test('bracket noise never becomes primary or fallback queries', () => {
+test('trailing bracket noise is removed and leading annotations remain in the original stage', () => {
   const title = '星际牛仔';
   for (const note of [
     '(CG)',
@@ -134,7 +137,13 @@ test('bracket noise never becomes primary or fallback queries', () => {
     for (const input of [note + ' ' + title, title + ' ' + note]) {
       assert.deepEqual(
         searchPlan(input),
-        { terms: [title], titleGroups: [], fallbacks: [] },
+        input.startsWith(title)
+          ? { terms: [title], titleGroups: [], fallbacks: [] }
+          : {
+              terms: [input.normalize('NFKC')],
+              titleGroups: [],
+              fallbacks: [{ terms: [title], titleGroups: [] }]
+            },
         input
       );
     }
@@ -169,9 +178,12 @@ test('meaningful bracket contents are exposed only as labeled-independent fallba
     fallbacks: [{ terms: ['カウボーイビバップ'], titleGroups: [] }]
   });
   assert.deepEqual(searchPlan('[白色相簿2] WHITE ALBUM 2'), {
-    terms: ['WHITE ALBUM 2'],
+    terms: ['[白色相簿2] WHITE ALBUM 2'],
     titleGroups: [],
-    fallbacks: [{ terms: ['白色相簿2'], titleGroups: [] }]
+    fallbacks: [
+      { terms: ['WHITE ALBUM 2'], titleGroups: [] },
+      { terms: ['白色相簿2'], titleGroups: [] }
+    ]
   });
 });
 
@@ -181,8 +193,7 @@ test('nested and malformed brackets retain useful fallbacks without leaking note
     '星际牛仔 (备注 [原名: Cowboy Bebop] [4K])',
     '星际牛仔 (备注: [原名: Cowboy Bebop] [4K])',
     '星际牛仔 (原名: Cowboy Bebop',
-    '星际牛仔 [原名: Cowboy Bebop (4K]',
-    '星际牛仔 ) [原名: Cowboy Bebop]'
+    '星际牛仔 [原名: Cowboy Bebop (4K]'
   ]) {
     assert.deepEqual(
       searchPlan(input),
@@ -221,6 +232,24 @@ test('fallback plans retain complete title constraints even when queries are ded
   ]);
 });
 
+test('bilingual fallback stages recover only previously queried evidence within the unique budget', () => {
+  const main = '雾海来信',
+    english = 'Silver Meadow',
+    whole = `${main} ${english}`;
+  const stages = searchStages(`${main} (${whole})`);
+  assert.deepEqual(
+    stages.map((stage) => stage.terms),
+    [[main], [whole], [whole, english, main]]
+  );
+  assert.deepEqual(stages[2].titleGroups, [{ whole, parts: [main, english] }]);
+  const capped = searchStages(`主作品名称 (Alpha) (Bravo) (Charlie) (Delta) (${whole})`);
+  const queries = new Set(capped.flatMap((stage) => stage.terms.map(normalize)));
+  assert.equal(queries.size, 6);
+  assert.equal(queries.has(normalize(main)), false);
+  assert.equal(queries.has(normalize(english)), false);
+  assert.deepEqual(capped.at(-1).titleGroups, [{ whole, parts: [main, english] }]);
+});
+
 test('all query stages share a six-query budget and normalized duplicate exclusion', () => {
   const plan = searchPlan(
     '星际牛仔 Cowboy Bebop (星际牛仔) (ＣＯＷＢＯＹ ＢＥＢＯＰ) (日文名: カウボーイビバップ) (Alpha) (Bravo) (Charlie)'
@@ -249,9 +278,27 @@ test('all query stages share a six-query budget and normalized duplicate exclusi
 
 test('canonical slash titles and numeric titles survive cleanup and generic combinations stay suppressed', () => {
   for (const title of ['Fate/stay night', '16bit Sensation', '16bit的感动', '3D Kanojo']) {
-    assert.deepEqual(searchTerms(`[1080p] [10bit] ${title} CG [HDR10] [4K] [壁纸]`), [title]);
+    const input = `[1080p] [10bit] ${title} CG [HDR10] [4K] [壁纸]`;
+    assert.deepEqual(searchTerms(input), [`[1080p] [10bit] ${title} CG`]);
+    assert.deepEqual(searchStages(input).at(-1).terms, [title]);
   }
   assert.deepEqual(searchTerms('新建文件夹 (2) / screenshots'), []);
+});
+
+test('complete original titles precede translation splits and cleaned fallbacks', () => {
+  const input = '雾海来信 Silver Meadow 2系列 (资源说明)';
+  const stages = searchStages(input);
+  assert.deepEqual(stages[0], {
+    terms: ['雾海来信 Silver Meadow 2'],
+    titleGroups: [],
+    series: true
+  });
+  assert.ok(stages.slice(1).some((stage) => stage.terms.includes('Silver Meadow 2')));
+  assert.deepEqual(searchTerms('CG World 游戏2'), ['CG World 游戏2']);
+  assert.deepEqual(searchTerms('作品(序)正文系列'), ['作品(序)正文']);
+  assert.deepEqual(searchTerms('系列中的故事'), ['系列中的故事']);
+  assert.deepEqual(searchTerms('作品2 (原名: 另一作品)'), ['作品2']);
+  assert.deepEqual(searchTerms('星际牛仔 ) [原名: Cowboy Bebop]'), ['星际牛仔 )']);
 });
 
 test('subject URLs use official HTTPS hosts and positive numeric ids', () => {

@@ -6,7 +6,7 @@ function createIndexing(db, maintenance = null) {
   db.exec(`CREATE INDEX IF NOT EXISTS nodes_parent_scan ON nodes(parent,missing,indexed);
     CREATE INDEX IF NOT EXISTS nodes_parent_id ON nodes(parent,missing,id);
     CREATE TEMP TABLE IF NOT EXISTS scan_new(id TEXT PRIMARY KEY);
-    CREATE TEMP TABLE IF NOT EXISTS scan_prune(id TEXT PRIMARY KEY);`);
+    CREATE TEMP TABLE IF NOT EXISTS scan_prune(node_rowid INTEGER PRIMARY KEY,id TEXT UNIQUE);`);
   // Read media state with the node so unchanged files need only a scan stamp.
   // SQLite formats fractional mtimes in revisions; keep that comparison in SQL.
   const previous = db.prepare(`SELECT n.rowid,n.missing,n.root,n.parent,n.name,n.sortkey,n.kind,
@@ -37,14 +37,18 @@ function createIndexing(db, maintenance = null) {
   const stale = db.prepare(
     'SELECT id FROM nodes WHERE parent=? AND missing=0 AND indexed<? LIMIT 128'
   );
-  const enqueue = db.prepare('INSERT OR IGNORE INTO scan_prune VALUES(?)');
+  const enqueue = db.prepare(
+    'INSERT OR IGNORE INTO scan_prune SELECT rowid,id FROM nodes WHERE id=?'
+  );
   // Keep the bounded frontier outermost; a regular JOIN can scan all nodes
   // again for every removal batch as this temporary queue drains. A bounded
   // 128-row write batch matches the direct-child page size. Descendant queues
   // can hold an entire removed subtree; larger batches block reads while FTS
   // and the missing-keyed browse indexes are updated and durably committed.
+  // Process queued rows in physical-table order rather than hashed-id order.
+  // This keeps FTS and browse-index writes local with a bounded SQLite cache.
   const pending = db.prepare(
-    'SELECT p.id,n.rowid FROM scan_prune p CROSS JOIN nodes n ON n.id=p.id LIMIT 128'
+    'SELECT p.id,n.rowid FROM scan_prune p CROSS JOIN nodes n ON n.id=p.id ORDER BY p.rowid LIMIT 128'
   );
   const children = db.prepare(
     'SELECT id FROM nodes WHERE parent=? AND missing=0 AND id>? ORDER BY id LIMIT 128'
@@ -56,9 +60,10 @@ function createIndexing(db, maintenance = null) {
   const dequeue = db.prepare('DELETE FROM scan_prune WHERE id=?');
   const totalPage = db.prepare(`SELECT id,kind,files,folders,bytes,total_bytes FROM nodes
     WHERE parent=? AND missing=0 AND id>? ORDER BY id LIMIT 256`);
-  const saveTotals = db.prepare('UPDATE nodes SET files=?,folders=?,total_bytes=? WHERE id=?');
+  const saveTotals = db.prepare(`UPDATE nodes SET files=?,folders=?,total_bytes=? WHERE id=?
+    AND (files IS NOT ? OR folders IS NOT ? OR total_bytes IS NOT ?)`);
   return {
-    async totals(parent, checkpoint) {
+    async totals(parent, checkpoint, deferWrite = false) {
       let after = '',
         files = 0,
         folders = 0,
@@ -75,7 +80,11 @@ function createIndexing(db, maintenance = null) {
         after = page.at(-1).id;
         await checkpoint();
       }
-      saveTotals.run(files, folders, bytes, parent);
+      // The scanner may combine this final write with its cover pointer after
+      // all paged reads have yielded. Never hold a transaction across an await.
+      const save = () => saveTotals.run(files, folders, bytes, parent, files, folders, bytes);
+      if (deferWrite) return save;
+      save();
     },
     reset() {
       db.exec('DELETE FROM scan_new; DELETE FROM scan_prune');
@@ -85,6 +94,7 @@ function createIndexing(db, maintenance = null) {
     },
     upsert(n, s, started) {
       const old = previous.get(n.id);
+      const birth = Number.isFinite(s.birthtimeMs) && s.birthtimeMs > 0 ? s.birthtimeMs : s.mtimeMs;
       const unchanged =
         old &&
         !old.missing &&
@@ -96,7 +106,7 @@ function createIndexing(db, maintenance = null) {
         old.depth === n.depth &&
         old.bytes === s.size &&
         old.mtime === s.mtimeMs &&
-        old.birth === s.birthtimeMs;
+        old.birth === birth;
       let rowid = old?.rowid;
       if (unchanged) protect.run(started, n.id);
       else {
@@ -111,7 +121,7 @@ function createIndexing(db, maintenance = null) {
           n.depth,
           s.size,
           s.mtimeMs,
-          s.birthtimeMs,
+          birth,
           started
         );
         rowid ??= result.lastInsertRowid;

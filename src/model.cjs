@@ -44,7 +44,7 @@ const genericTitle = (s) =>
   /^(?:(?:full|全)?cg|screenshots?|wallpapers?|pictures?|images?|photos?|albums?|collection|source|newfolder|acg|anime|animation|manga|comics?|games?|movies?|三次元|二次元|动画|動畫|动漫|漫画|游戏|遊戲|图片|截图|壁纸|图集|相册|设定集|素材|合集|新建文件夹|新建資料夾|新しいフォルダー|スクリーンショット|cg集)(?:\d+)?$/i.test(
     normalize(s)
   );
-function searchPlan(name) {
+function legacySearchPlan(name) {
   const noise =
     /^(?:\d{3,4}p?|[248]k|uhd|hdr\d*|\d+bit|blu[ -]?ray|web[ -]?(?:dl|rip)|png|jpe?g|webp|(?:full|全)?cg(?:集)?|(?:游戏)?(?:图片|截图|壁纸|图集)|screenshots?|wallpapers?|汉化(?:版|组)?|中文(?:版)?|完(?:整|全)版|备注|備註|说明|説明|notes?)$/i;
   const prepare = (s) => s.trim().replace(/\s+/g, ' ').slice(0, 160);
@@ -64,6 +64,7 @@ function searchPlan(name) {
         .replace(/(?:全CG|图片|截图|壁纸|图集|相册)(?=\s*$|[\s_\-])/gi, ' ')
         .replace(/(?:^|\s)(?:\d{3,4}p|[248]k|uhd|hdr\d*)(?=\s|$)/gi, ' ')
         .replace(/^[\s|/\\_—–-]+|[\s|/\\_—–-]+$/gu, '')
+        .replace(/系列\s*$/u, '')
     );
   };
 
@@ -81,21 +82,54 @@ function searchPlan(name) {
     ['《', '》']
   ]);
   const closers = new Set(brackets.values());
+  const input = String(name ?? '').normalize('NFKC');
   const root = { text: '', children: [] };
   const stack = [root];
-  for (const char of String(name ?? '').normalize('NFKC')) {
+  let position = 0;
+  for (const char of input) {
     const current = stack[stack.length - 1];
     if (brackets.has(char)) {
-      const note = { text: '', children: [], close: brackets.get(char) };
+      const note = { text: '', children: [], close: brackets.get(char), start: position };
       current.text += ' ';
       current.children.push(note);
       stack.push(note);
     } else if (closers.has(char)) {
       const index = stack.findLastIndex((node) => node.close === char);
-      if (index > 0) stack.length = index;
-      else current.text += ' ';
+      if (index > 0) {
+        stack[index].end = position + char.length;
+        stack.length = index;
+      } else current.text += ' ';
     } else current.text += char;
+    position += char.length;
   }
+  // Parentheses embedded in a title are title text. Only edge annotations are
+  // deferred; a bracket in the middle must not silently change the work name.
+  const outside = (start, end) => {
+    let text = '',
+      cursor = start;
+    for (const note of root.children) {
+      const finish = note.end ?? input.length;
+      if (note.start < start || finish > end) continue;
+      text += input.slice(cursor, note.start) + ' ';
+      cursor = finish;
+    }
+    return text + input.slice(cursor, end);
+  };
+  const parsedText = root.text;
+  let cursor = 0;
+  root.text = '';
+  for (const note of root.children) {
+    const end = note.end ?? input.length;
+    root.text += input.slice(cursor, note.start);
+    note.embedded =
+      meaningful(clean(outside(0, note.start))) &&
+      meaningful(clean(outside(end, input.length))) &&
+      !isNoise(note.text);
+    root.text += note.embedded ? input.slice(note.start, end) : ' ';
+    cursor = end;
+  }
+  root.text += input.slice(cursor);
+  if (!root.children.some((note) => note.embedded)) root.text = parsedText;
 
   const boundary = /\s*[|/\\_;；，,—–]\s*|\s+-\s+/u;
   const letters = (s) => (s.match(/\p{L}/gu) || []).length;
@@ -214,7 +248,7 @@ function searchPlan(name) {
   };
   const primary = planFor(root.text);
   const fallbacks = [];
-  const notes = [...root.children];
+  const notes = root.children.filter((note) => !note.embedded);
   for (let index = 0; index < notes.length && seen.size < 6; index++) {
     const note = notes[index];
     const value = note.text.replace(
@@ -227,8 +261,89 @@ function searchPlan(name) {
   }
   return { ...primary, fallbacks };
 }
+function searchPlan(name) {
+  const cleaned = legacySearchPlan(name);
+  if (!cleaned.terms.length && !cleaned.fallbacks.length) return cleaned;
+  let original = String(name ?? '')
+    .normalize('NFKC')
+    .trim();
+  const brackets = new Map([
+    ['(', ')'],
+    ['[', ']'],
+    ['【', '】'],
+    ['{', '}'],
+    ['「', '」'],
+    ['『', '』'],
+    ['〈', '〉'],
+    ['《', '》']
+  ]);
+  // Strip only trailing annotation blocks. Brackets inside the work's title
+  // and legal words such as CG stay in the first, complete-name hypothesis.
+  const stack = [],
+    spans = [];
+  for (let index = 0; index < original.length; index++) {
+    const char = original[index];
+    if (brackets.has(char)) stack.push({ start: index, close: brackets.get(char) });
+    else if (stack.length && char === stack.at(-1).close) {
+      const node = stack.pop();
+      if (!stack.length) spans.push({ start: node.start, end: index + 1 });
+    }
+  }
+  if (stack.length) spans.push({ start: stack[0].start, end: original.length });
+  for (const span of spans.reverse())
+    if (!original.slice(span.end).trim()) original = original.slice(0, span.start).trim();
+  const series = /系列\s*$/u.test(original);
+  original = original
+    .replace(/系列\s*$/u, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 160);
+  if (!original || genericTitle(original) || normalize(original).length < 2) return cleaned;
+  if (original === cleaned.terms[0]) return series ? { ...cleaned, series: true } : cleaned;
+  const alternatives = cleaned.terms.length
+    ? [{ terms: cleaned.terms, titleGroups: cleaned.titleGroups }, ...cleaned.fallbacks]
+    : cleaned.fallbacks;
+  const seen = new Set([normalize(original)]),
+    fallbacks = [];
+  for (const phase of alternatives) {
+    const terms = phase.terms.filter((term) => {
+      const key = normalize(term);
+      if (seen.has(key) || seen.size >= 6) return false;
+      seen.add(key);
+      return true;
+    });
+    if (terms.length) fallbacks.push({ terms, titleGroups: phase.titleGroups });
+  }
+  return { terms: [original], titleGroups: [], fallbacks, ...(series ? { series: true } : {}) };
+}
+// A complete folder title is one hypothesis. Query its translated fragments
+// only after the complete-title phase has produced no high-confidence result.
+// Keep the original plan shape for callers that inspect its evidence groups.
+function searchStages(planOrName) {
+  const plan =
+    typeof planOrName === 'object' && planOrName !== null ? planOrName : searchPlan(planOrName);
+  const stages = [],
+    queried = new Set(),
+    intent = plan.series ? { series: true } : {};
+  for (const phase of [plan, ...(plan.fallbacks || [])]) {
+    if (!phase.terms?.length) continue;
+    if (phase.terms.length > 1 && phase.titleGroups?.length) {
+      stages.push({ terms: [phase.titleGroups[0].whole], titleGroups: [], ...intent });
+    }
+    const terms = [...phase.terms];
+    // Reuse earlier query evidence through the cache when this hypothesis needs it.
+    // Parts excluded by the unique-query budget remain excluded.
+    for (const part of (phase.titleGroups || []).flatMap((group) => group.parts)) {
+      const key = normalize(part);
+      if (queried.has(key) && !terms.some((term) => normalize(term) === key)) terms.push(part);
+    }
+    stages.push({ terms, titleGroups: phase.titleGroups || [], ...intent });
+    for (const term of terms) queried.add(normalize(term));
+  }
+  return stages;
+}
 function searchTerms(name) {
-  return searchPlan(name).terms;
+  return searchStages(name)[0]?.terms || [];
 }
 function subjectNames(subject) {
   const aliases = (subject.infobox || [])
@@ -300,6 +415,7 @@ module.exports = {
   normalize,
   idFor,
   searchPlan,
+  searchStages,
   searchTerms,
   genericTitle,
   subjectNames,

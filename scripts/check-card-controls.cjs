@@ -208,7 +208,9 @@ async function seed(collections) {
     await seed([collection, other, overview]);
     // Seed legacy review evidence while the worker is closed; launch tests the actual persisted repair.
     const db = new DatabaseSync(path.join(profile, 'library.sqlite'));
-    db.exec("UPDATE nodes SET confirmed=0,match_review=0 WHERE kind='folder'");
+    db.exec(
+      "UPDATE nodes SET confirmed=0,match_review=0 WHERE kind='folder'; DELETE FROM settings WHERE key='matchReviewVersion'"
+    );
     db.prepare('UPDATE nodes SET match_review=1 WHERE id=?').run(idFor(overview));
     const patch = db.prepare(
       'UPDATE nodes SET subject_id=?,character_id=?,match_confidence=?,match_review=?,manual_subject=?,manual_cover=?,confirmed=?,cover_source=?,album_kind=? WHERE id=?'

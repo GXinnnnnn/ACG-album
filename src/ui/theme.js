@@ -25,7 +25,8 @@ function toggleTheme() {
 async function revealTheme(theme) {
   const root = document.documentElement;
   const motion = matchMedia('(prefers-reduced-motion: reduce)');
-  if (!document.startViewTransition || motion.matches || document.hidden) {
+  const simple = () => motion.matches || root.dataset.motion === 'low' || document.hidden;
+  if (!document.startViewTransition || simple()) {
     await saveSetting('theme', theme);
     return;
   }
@@ -43,7 +44,7 @@ async function revealTheme(theme) {
       await transition.updateCallbackDone;
       return;
     }
-    if (motion.matches) {
+    if (simple()) {
       transition.skipTransition();
       return;
     }
@@ -54,14 +55,14 @@ async function revealTheme(theme) {
         clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`]
       },
       {
-        duration: 300,
+        duration: root.dataset.motion === 'high' ? 340 : 280,
         easing: 'cubic-bezier(.2,0,.2,1)',
         fill: 'both',
         pseudoElement: '::view-transition-new(root)'
       }
     );
     const stop = () => {
-      if (motion.matches) {
+      if (simple()) {
         animation.cancel();
         transition.skipTransition();
       }
@@ -71,11 +72,15 @@ async function revealTheme(theme) {
       transition.skipTransition();
     };
     motion.addEventListener('change', stop);
+    document.addEventListener('visibilitychange', stop);
+    window.addEventListener('album-effects-change', stop);
     window.addEventListener('resize', resize, { once: true });
     try {
       await animation.finished.catch(() => {});
     } finally {
       motion.removeEventListener('change', stop);
+      document.removeEventListener('visibilitychange', stop);
+      window.removeEventListener('album-effects-change', stop);
       window.removeEventListener('resize', resize);
       animation.cancel();
     }

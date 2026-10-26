@@ -183,14 +183,18 @@ test(
         other = path.join(child, 'a-equal.png');
       await fs.writeFile(other, f.png);
       for (const file of [f.file, other]) await fs.utimes(file, 1700000200, 1700000200);
+      const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+      const [preferred, remaining] = [f.file, other].sort((a, b) =>
+        collator.compare(path.basename(a), path.basename(b))
+      );
       for (let i = 0; i < 2; i++) {
         await c.call('scan', { path: f.source, offline: true });
-        assert.equal((await c.call('get', { id: idFor(f.source) })).cover, idFor(other));
+        assert.equal((await c.call('get', { id: idFor(f.source) })).cover, idFor(preferred));
       }
-      assert.ok(path.resolve(other).startsWith(path.resolve(f.tmp) + path.sep));
-      await fs.rm(other);
+      assert.ok(path.resolve(preferred).startsWith(path.resolve(f.tmp) + path.sep));
+      await fs.rm(preferred);
       await c.call('scan', { path: f.source, offline: true });
-      assert.equal((await c.call('get', { id: idFor(f.source) })).cover, idFor(f.file));
+      assert.equal((await c.call('get', { id: idFor(f.source) })).cover, idFor(remaining));
     } finally {
       await c.stop();
       await cleanup(f.tmp);
@@ -237,7 +241,7 @@ test(
     let c = await client(f.data);
     try {
       assert.equal((await c.call('init')).settings.nickname, '新朋友');
-      await c.call('settings', { key: 'nickname', value: '  ACG-album · 星光  ' });
+      await c.call('settings', { key: 'nickname', value: '  测试朋友 · 星光  ' });
       await c.call('settings', { key: 'sidebarMode', value: 'compact' });
       const avatar =
         'data:image/webp;base64,' +
@@ -252,7 +256,7 @@ test(
       await c.stop();
       c = await client(f.data);
       const settings = (await c.call('init')).settings;
-      assert.equal(settings.nickname, 'ACG-album · 星光');
+      assert.equal(settings.nickname, '测试朋友 · 星光');
       assert.equal(settings.avatar, avatar);
       assert.equal(settings.sidebarMode, 'compact');
     } finally {

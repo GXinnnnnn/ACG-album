@@ -58,7 +58,7 @@ def scene(seed,title,subtitle='',wide=False,transparent=False):
  for i in range(int(h*.35)):sd.line((0,h-1-i,w,h-1-i),fill=(12,17,32,int(180*(1-i/(h*.35)))))
  im=Image.alpha_composite(im,shade);d=ImageDraw.Draw(im)
  margin=int(w*.09);d.text((margin,int(h*.075)),'ORIGINAL  /  LANDSCAPE STUDY',font=font(int(w*.018),True),fill=(247,240,242,200));d.line((margin,int(h*.11),margin+35,int(h*.11)),fill=(249,220,231,180),width=2)
- d.text((margin,int(h*.82)),title,font=font(int(w*.062)),fill=(251,244,242,245));d.text((margin,int(h*.90)),subtitle or 'THE MOMENTS WE KEEP',font=font(int(w*.022),True),fill=(239,226,232,195));d.text((w-margin-40,int(h*.92)),f'{seed%100:02}',font=font(int(w*.031),True),fill=(239,226,232,190))
+ d.text((margin,int(h*(.76 if wide else .82))),title,font=font(int(w*.062)),fill=(251,244,242,245));d.text((margin,int(h*.90)),subtitle or 'THE MOMENTS WE KEEP',font=font(int(w*.022),True),fill=(239,226,232,195));d.text((w-margin-40,int(h*.92)),f'{seed%100:02}',font=font(int(w*.031),True),fill=(239,226,232,190))
  return im.convert('RGB')
 def save(im,p):p.parent.mkdir(parents=True,exist_ok=True);im.save(p,quality=91)
 groups=[('幻想与游戏（示例）',['云海来信','月下旅人','森林回声','赤色黄昏','星河边界','远方之城','紫罗兰之夜','风的归处','雨后物语','白昼尽头','群山之间','长夏未央']),('动画与映画（示例）',['银河慢行','落日放映室','夏日序曲','夜航日记','海岸线']),('漫画与设定（示例）',['山野手记','旅途速写','幻想档案','城市画集'])]
@@ -71,5 +71,5 @@ for gi,(group,titles) in enumerate(groups):
   if i<2:
    save(scene(seed+8,title,'WORLD BUILDING',True),album/'设定集'/'01 场景与建筑'/'远景.jpg');save(scene(seed,title,transparent=True),album/'设定集'/'02 透明人物'/'透明角色.png')
   manifest.append(str(album))
-(ROOT/'示例说明.txt').write_text('本目录为ACG-album生成的示例图库。作品名称、风景与人物均为程序演示素材，不代表真实 Bangumi 条目。可从资料库移除分类；不影响你的真实图片。\n',encoding='utf-8')
+(ROOT/'示例说明.txt').write_text('本目录为 ACG-album 生成的示例图库。作品名称、风景与人物均为程序演示素材，不代表真实 Bangumi 条目。可从资料库移除分类；不影响你的真实图片。\n',encoding='utf-8')
 print(json.dumps({'albums':len(manifest),'files':len(list(ROOT.rglob('*.*'))),'path':str(ROOT)},ensure_ascii=False))

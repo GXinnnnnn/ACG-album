@@ -1,8 +1,8 @@
 {
   "name": "acg-album",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
-  "description": "Card-based local folder browser for ACG collections with Bangumi matching",
+  "description": "现代化 ACG 本地相册：关联 Bangumi 作品、角色与封面，让文件夹收藏更值得翻看。",
   "repository": {
     "type": "git",
     "url": "https://github.com/GXinnnnnn/ACG-album.git"
@@ -42,6 +42,12 @@
   "build": {
     "appId": "local.acg.album",
     "productName": "ACG-album",
+    "electronLanguages": [
+      "zh-CN",
+      "zh-TW",
+      "en-US",
+      "ja"
+    ],
     "directories": {
       "output": "release"
     },

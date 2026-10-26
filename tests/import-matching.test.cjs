@@ -69,10 +69,10 @@ test('exactly three score points are included despite floating point subtraction
   assert.equal(select(query, [best, popular]).selected.id, 2);
 });
 
-test('the oldest valid date wins within the inclusive90 percent popularity band', () => {
-  const recent = subject(1, 'Canonical', { collection: count(1000), date: '2024-01-01' });
-  const older = subject(2, 'Canonical', { collection: count(900), date: '2000-01-01' });
-  const tooUnpopular = subject(3, 'Canonical', { collection: count(899), date: '1980-01-01' });
+test('the newest valid date wins within the inclusive90 percent popularity band', () => {
+  const recent = subject(1, 'Canonical', { collection: count(1000), date: '2000-01-01' });
+  const older = subject(2, 'Canonical', { collection: count(900), date: '2024-01-01' });
+  const tooUnpopular = subject(3, 'Canonical', { collection: count(899), date: '2025-01-01' });
   assert.equal(select('Canonical', [recent, tooUnpopular, older]).selected.id, 2);
 });
 
@@ -98,13 +98,13 @@ test('missing, invalid, and overflowing counts do not masquerade as popularity',
   assert.equal(totals.get(4), 11);
 });
 
-test('when every count is missing or invalid chronology still picks the oldest valid date', () => {
+test('when every count is missing or invalid chronology still picks the newest valid date', () => {
   const candidates = [
     subject(1, 'Canonical', { date: 'not-a-date' }),
     subject(2, 'Canonical', { collection: { collect: -1 }, date: '2000-01-01' }),
     subject(3, 'Canonical', { date: '1990-01-01' })
   ];
-  assert.equal(select('Canonical', candidates).selected.id, 3);
+  assert.equal(select('Canonical', candidates).selected.id, 2);
 });
 
 test('invalid and impossible dates sort after valid dates, then use deterministic count/score/id ties', () => {
@@ -142,11 +142,11 @@ test('complete recall compares exact and nearby fuzzy matches by popularity and 
   assert.equal(result.selectionReason, 'similarity-popularity-date');
 });
 
-test('exact ties still follow near-maximum popularity and oldest release date', () => {
+test('exact ties still follow near-maximum popularity and newest release date', () => {
   const candidates = [
-    subject(1, 'AIR', { collection: count(1000), date: '2020-01-01' }),
-    subject(2, 'AIR', { collection: count(900), date: '2000-09-08' }),
-    subject(3, 'AIR', { collection: count(899), date: '1990-01-01' })
+    subject(1, 'AIR', { collection: count(1000), date: '2000-09-08' }),
+    subject(2, 'AIR', { collection: count(900), date: '2020-01-01' }),
+    subject(3, 'AIR', { collection: count(899), date: '2025-01-01' })
   ];
   assert.equal(select('air', candidates).selected.id, 2);
 });
@@ -241,7 +241,7 @@ test('the winner is selected before the ten-row display limit and is guaranteed 
   const candidates = Array.from({ length: 500 }, (_, i) =>
     subject(i + 1, 'Canonical', {
       collection: count(100),
-      date: i === 399 ? '1980-01-01' : '2000-01-01'
+      date: i === 399 ? '2025-01-01' : '2000-01-01'
     })
   );
   const result = select('Canonical', candidates);
@@ -255,7 +255,7 @@ test('large exact tie groups are deterministic across reversed and rotated input
   const candidates = Array.from({ length: 1200 }, (_, i) =>
     subject(i + 1, 'Canonical', {
       collection: count(100),
-      date: i >= 999 ? '1990-01-01' : '2000-01-01'
+      date: i >= 999 ? '2025-01-01' : '2000-01-01'
     })
   );
   for (const order of [
@@ -280,6 +280,54 @@ test('generic names, subtitle shortcuts, and empty candidates cannot bypass the 
   assert.equal(select('Canonical', [subtitle]).selected, null);
   // Ordinary matching intentionally retains its preexisting popular-subtitle shortcut.
   assert.equal(rankSubjects(['Canonical'], [subtitle], [2]).selected.id, 2);
+});
+
+test('short Chinese full names admit attached Latin names and delimited taglines', () => {
+  for (const [query, name] of [
+    ['常轨脱离', '常轨脱离Creative'],
+    ['亚托莉', '亚托莉 -我挚爱的时光-']
+  ]) {
+    const result = select(query, [subject(1, name)]);
+    assert.equal(result.selected?.id, 1, name);
+    assert.equal(result.selectedMatch, 0.97, name);
+    assert.equal(select(query, [subject(1, name)], { complete: false }).selected, null);
+    for (const suffix of [' 2', ' III', ' Season 2', ' 剧场版', ' After Story', ' 续'])
+      assert.equal(select(query, [subject(1, name + suffix, { aliases: [name] })]).selected, null);
+  }
+  assert.equal(select('常轨脱离', [subject(1, '常轨脱离凸')]).selected, null);
+  assert.equal(select('常轨脱离', [subject(1, '常轨脱离III')]).selected, null);
+  assert.equal(
+    select('英雄传说', [subject(1, '英雄传说6：空之轨迹', { aliases: ['英雄传说：空之轨迹'] })])
+      .selected,
+    null
+  );
+});
+
+test('explicit series intent permits only the full base with a verified numbered installment', () => {
+  const mobile = subject(453293, 'Legend of Heroes', { name_cn: '英雄传说', collection: count(2) });
+  const installment = subject(260, '英雄伝説VI 空の軌跡', {
+    name_cn: '英雄传说6：空之轨迹',
+    collection: count(4000)
+  });
+  assert.equal(select('英雄传说', [mobile, installment]).selected?.id, 453293);
+  const result = select('英雄传说', [mobile, installment], { series: true });
+  assert.equal(result.selected?.id, 260);
+  assert.equal(result.selectedMatch, 0.97);
+  assert.equal(select('英雄传说', [installment], { series: true, complete: false }).selected, null);
+  assert.equal(
+    select('英雄传说', [subject(9, '新英雄传说6：空之轨迹')], { series: true }).selected,
+    null
+  );
+});
+
+test('explicit installment evidence survives a subtitle after the number', () => {
+  const game = subject(410290, 'ARMORED CORE VI FIRES OF RUBICON', {
+    aliases: ['装甲核心6 境界天火', 'Armored Core 6 Fires of Rubicon']
+  });
+  assert.equal(select('装甲核心6', [game]).selected?.id, 410290);
+  assert.equal(select('装甲核心6', [game]).selectedMatch, 0.97);
+  assert.equal(select('装甲核心5', [game]).selected, null);
+  assert.equal(select('装甲核心', [game]).selected, null);
 });
 
 test('duplicate ids are deduplicated and caller arrays and subjects are not mutated', () => {

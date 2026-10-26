@@ -7,6 +7,7 @@ function createVirtualGrid() {
   const PAGE = 180,
     MEDIA_GAP = 8,
     FOLDER_GAP = 19,
+    FOLDER_INFO = 70,
     heights = new Map(),
     loaded = new Set(),
     failed = new Set(),
@@ -103,7 +104,7 @@ function createVirtualGrid() {
         return {
           top: Math.floor(index / this.cols) * this.rowHeight,
           left: (index % this.cols) * (this.width + this.gap),
-          height: cover + 70,
+          height: cover + FOLDER_INFO,
           width: this.width
         };
       const page = Math.floor(index / PAGE),
@@ -426,6 +427,18 @@ function createVirtualGrid() {
   function estimatedCover() {
     return Math.min(cover, grid.width);
   }
+  function naturalMediaCover(n) {
+    const w = Number(n?.width),
+      h = Number(n?.height);
+    return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0
+      ? Math.max(1, (grid.width * h) / w)
+      : estimatedCover();
+  }
+  function mediaCoverLimit() {
+    // The entire visible media card (including details) is at most twice the
+    // same-width folder card. Inter-card spacing is not part of that height.
+    return 2 * (cover + FOLDER_INFO) - detail;
+  }
   function seedColumns(page) {
     const occupied = page === firstMedia ? grid.folders % grid.cols : 0;
     return Array.from({ length: mediaCols }, (_, column) =>
@@ -463,21 +476,24 @@ function createVirtualGrid() {
     if (stamp === next) return;
     stamp = next;
     dirty = true;
-    grid.width = Math.max(1, Math.min(Number(S.settings.density) || 222, m.width));
-    grid.gap = grid.folders && grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
-    grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (grid.width + grid.gap)));
-    mediaCols = Math.max(1, Math.floor((m.width + MEDIA_GAP) / (grid.width + MEDIA_GAP)));
+    const preset = Math.max(1, Number(S.settings.density) || 222);
+    grid.gap = grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
+    // The preset chooses density; distribute the remaining width across those
+    // columns so the last card ends at the available content edge at any size.
+    grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (preset + grid.gap)));
+    grid.width = (m.width - (grid.cols - 1) * grid.gap) / grid.cols;
+    mediaCols = grid.cols;
     const ratio =
       S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12;
     cover = grid.width / ratio;
     detail = S.settings.details === false ? 0 : 48;
-    grid.rowHeight = cover + 70 + grid.gap;
+    grid.rowHeight = cover + FOLDER_INFO + grid.gap;
   }
   function pageHeight(page) {
     const metric = heights.get(page);
     if (!metric) return estimate(page);
     if (metric.stamp === stamp) return metric.height;
-    return estimatedPage(page, metric.mean * grid.width);
+    return estimatedPage(page, Math.min(mediaCoverLimit(), metric.mean * grid.width));
   }
   function pageTop(page) {
     if (page <= firstMedia) return mediaTop;
@@ -515,13 +531,7 @@ function createVirtualGrid() {
         index++
       ) {
         const n = grid.items.get(index);
-        let h = estimatedCover();
-        if (n) {
-          const w = Number(n.width),
-            h0 = Number(n.height);
-          if (Number.isFinite(w) && Number.isFinite(h0) && w > 0 && h0 > 0)
-            h = Math.max(1, (grid.width * h0) / w);
-        }
+        const h = Math.min(mediaCoverLimit(), naturalMediaCover(n));
         const column = shortest(columns);
         positions.set(index, {
           top: columns[column],
@@ -698,7 +708,9 @@ function createVirtualGrid() {
       const p = grid.getPosition(index),
         media = index >= grid.folders,
         shellHeight = media ? p.height - detail : cover,
-        infoHeight = media ? detail : 70;
+        infoHeight = media ? detail : FOLDER_INFO;
+      const clamped = String(media && naturalMediaCover(n) > mediaCoverLimit());
+      if (b.dataset.mediaClamped !== clamped) b.dataset.mediaClamped = clamped;
       let previous = cardLayouts.get(b);
       if (!previous) {
         previous = {
@@ -712,7 +724,7 @@ function createVirtualGrid() {
       if (previous.index !== index) moved.add(b);
       previous.index = index;
       if (n && previous.image) {
-        const src = thumb(n),
+        const src = thumb(n, grid.width),
           tier = /[?&]size=(\d+)/.exec(src)?.[1],
           currentTier =
             /[?&]size=(\d+)/.exec(previous.image.getAttribute('src') || '')?.[1] ||

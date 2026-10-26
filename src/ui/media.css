@@ -21,6 +21,11 @@
   object-fit: contain;
   transform: none;
 }
+/* Override applyCoverCrop's inline position only for height-clamped media. */
+.media-card[data-media-clamped='true'] .cover-shell img:not(.icon-cover) {
+  object-fit: cover;
+  object-position: top !important;
+}
 .media-card .card-info {
   height: 48px;
   padding: 7px 3px 3px;
