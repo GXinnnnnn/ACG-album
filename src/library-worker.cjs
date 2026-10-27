@@ -730,10 +730,83 @@ async function scanContents(rootPath, options = {}) {
     const name = path.basename(p);
     return { id: idFor(p), root: id, parent, path: p, name, sortkey: sortKey(name), kind, depth };
   }
-  // lstat already supplied mtime; retain exactly one direct-image candidate.
+  // A provisional local image can be displayed before the subtree is complete.
+  // Final selection below still applies the existing natural-name/newest policy.
+  function publishLocalCover(folderId, image) {
+    let published = false;
+    for (
+      let folder = getNode(folderId);
+      folder;
+      folder = folder.parent ? getNode(folder.parent) : null
+    ) {
+      if (folder.cover) continue;
+      coverFor(folder, image);
+      if (getNode(folder.id)?.cover === image.id) published = true;
+    }
+    return published;
+  }
+  async function primeLocalCover(folder) {
+    if (getNode(folder.id)?.cover || cancelled || stopping) return false;
+    // Preview siblings before descending into a large album. Across the whole
+    // probe inspect at most 128 entries / 8 directories / 4 levels, stat only
+    // traversed directories and the first image, and never follow symlinks.
+    const queue = [{ node: folder, ancestors: [] }];
+    let entries = 0,
+      opened = 0;
+    while (queue.length && entries < 128 && opened < 8 && !cancelled && !stopping) {
+      const { node, ancestors } = queue.shift();
+      try {
+        const directoryStat = await fsp.lstat(node.path);
+        if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) continue;
+        const chain =
+          node.id === folder.id ? ancestors : [...ancestors, { node, stat: directoryStat }];
+        opened++;
+        for await (const entry of await fsp.opendir(node.path, { bufferSize: 32 })) {
+          if (cancelled || stopping || entries++ >= 128) break;
+          if (entry.isSymbolicLink()) continue;
+          const p = path.join(node.path, entry.name);
+          if (p.toLowerCase() === home.toLowerCase()) continue;
+          if (entry.isDirectory()) {
+            if (chain.length < 3 && queue.length + opened < 8)
+              queue.push({ node: nodeFor(p, node.id, node.depth + 1, 'folder'), ancestors: chain });
+          } else if (IMAGE_EXT.has(path.extname(entry.name).toLowerCase())) {
+            const stat = await fsp.lstat(p);
+            if (stat.isSymbolicLink() || !stat.isFile()) continue;
+            if (cancelled || stopping) return false;
+            const image = nodeFor(p, node.id, node.depth + 1, 'image');
+            let published;
+            db.exec('BEGIN');
+            try {
+              for (const ancestor of chain) indexing.upsert(ancestor.node, ancestor.stat, started);
+              indexing.upsert(image, stat, started);
+              published = publishLocalCover(node.id, image);
+              db.exec('COMMIT');
+            } catch (error) {
+              db.exec('ROLLBACK');
+              throw error;
+            }
+            touched.set(folder.id, folder.depth);
+            for (const ancestor of chain) touched.set(ancestor.node.id, ancestor.node.depth);
+            dirtyEntries += chain.length + 1;
+            libraryRevision++;
+            await checkpoint();
+            return published;
+          }
+        }
+      } catch (error) {
+        if (!error.code || error.code.startsWith('ERR_') || error.code.startsWith('SQLITE_'))
+          throw error;
+        // The full scan reports unreadable paths; preview failure is nonfatal.
+      }
+    }
+    return false;
+  }
+  // lstat already supplied mtime; retain bounded direct-image candidates.
   function consider(candidates, n, stat) {
-    if (n.kind === 'image')
+    if (n.kind === 'image') {
+      candidates.available ||= n;
       candidates.newest = newestImage(candidates.newest, { ...n, mtime: stat.mtimeMs });
+    }
   }
   async function visit(folder) {
     if (cancelled) return;
@@ -758,6 +831,8 @@ async function scanContents(rootPath, options = {}) {
         );
         // Cancellation received while statting must not publish a partial batch.
         if (cancelled) return;
+        const previewFolders = [];
+        let published = false;
         db.exec('BEGIN');
         try {
           for (const item of batch) {
@@ -775,9 +850,19 @@ async function scanContents(rootPath, options = {}) {
             const n = nodeFor(item.p, folder.id, folder.depth + 1, kind);
             indexing.upsert(n, item.s, started);
             consider(candidates, n, item.s);
-            if (kind === 'folder') progress.queued++;
-            else progress.images++;
+            if (kind === 'folder') {
+              progress.queued++;
+              // Incremental scans recurse only into newly discovered folders.
+              // A probe must not persist partial rows in an existing skipped subtree.
+              if (
+                !getNode(n.id)?.cover &&
+                (!target || one('SELECT 1 FROM scan_new WHERE id=?', n.id))
+              )
+                previewFolders.push(n);
+            } else progress.images++;
           }
+          if (candidates.available && !getNode(folder.id)?.cover)
+            published = publishLocalCover(folder.id, candidates.available);
           db.exec('COMMIT');
           libraryRevision++;
           if (progress.images >= 128 && !progress.firstBatch) {
@@ -789,7 +874,12 @@ async function scanContents(rootPath, options = {}) {
           throw e;
         }
         dirtyEntries += entries.length;
+        if (published) emitProgress(true);
         await checkpoint();
+        for (const child of previewFolders) {
+          if (cancelled || stopping) break;
+          if (await primeLocalCover(child)) emitProgress(true);
+        }
         // Include unchanged scan stamps: they still dirty durable WAL pages.
         if (dirtyEntries >= 2048) {
           await maintenance.checkpoint();
@@ -2117,7 +2207,7 @@ const thumbJobs = new Map();
 let activeThumbs = 0;
 const thumbWait = [];
 async function thumbSlot(key, priority) {
-  if (activeThumbs < 2) {
+  if (activeThumbs < 4) {
     activeThumbs++;
     return;
   }
@@ -2193,7 +2283,8 @@ async function thumb(id, size = 1024, priority = false) {
           fit: 'inside',
           withoutEnlargement: true
         })
-        .webp({ quality: 86, alphaQuality: 100 })
+        // Fast encoding keeps cover quality/alpha while reducing first-view queue time.
+        .webp({ quality: 86, alphaQuality: 100, effort: 1 })
         .toFile(dest + '.tmp');
       await fsp.rename(dest + '.tmp', dest);
       const stat = await fsp.stat(dest);

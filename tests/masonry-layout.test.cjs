@@ -112,10 +112,10 @@ async function fixture(folders, media, width = 1180, density = 222, dpr = 1) {
     AbortController,
     console,
     $: (selector) => (selector === '#virtual-grid' ? wall : viewport),
-    card: (node, index) => {
+    card: (node, index, inline, columnWidth, priority) => {
       const b = element(node.id, document);
       b.dataset.index = String(index);
-      b.querySelector('img').src = context.thumb(node);
+      b.querySelector('img').src = context.thumb(node, columnWidth, priority);
       b.onclick = () => context.openViewer(node, index);
       created.push(b);
       return b;
@@ -612,6 +612,19 @@ test('existing thumbnails change size tiers at DPR 1/2 thresholds without replac
     }
     grid.reset();
   }
+});
+
+test('initial image requests use the fitted DPR tier once and prioritize the viewport over overscan', async () => {
+  const f = await fixture(0, 180, 1400, 222, 2);
+  for (const [index, card] of f.grid.cards) {
+    const image = card.querySelector('img'),
+      position = f.grid.getPosition(index),
+      inViewport = position.top + position.height > 0 && position.top < f.viewport.clientHeight;
+    assert.equal(image.writes.length, 1, 'No initial default-tier request before fitted tier');
+    assert.equal(new URL(image.src).searchParams.get('size'), '768');
+    assert.equal(new URL(image.src).searchParams.get('p') === '1', inViewport);
+  }
+  f.grid.reset();
 });
 
 test('preset column counts share all available width at 4K and narrow widths', async () => {

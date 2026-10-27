@@ -42,8 +42,8 @@
     const clamp = (v) => Math.max(-1, Math.min(1, v)),
       dx = clamp(((x - bounds.left) / Math.max(1, bounds.width) - 0.5) * 2),
       dy = clamp(((y - bounds.top) / Math.max(1, bounds.height) - 0.5) * 2);
-    active.style.setProperty('--effect-rx', (-dy * 2).toFixed(2) + 'deg');
-    active.style.setProperty('--effect-ry', (dx * 2).toFixed(2) + 'deg');
+    active.style.setProperty('--effect-rx', (-dy * 5).toFixed(2) + 'deg');
+    active.style.setProperty('--effect-ry', (dx * 5).toFixed(2) + 'deg');
   }
   function follow(event) {
     if (!enabled(event)) {

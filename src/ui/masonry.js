@@ -693,7 +693,9 @@ function createVirtualGrid() {
       }
       if (n && (!b || b.dataset.id !== String(n.id))) {
         b?.remove();
-        b = card(n, index);
+        const position = grid.getPosition(index),
+          inViewport = position.top + position.height > m.top && position.top < m.top + m.height;
+        b = card(n, index, false, grid.width, inViewport);
         grid.cards.set(index, b);
         m.el.append(b);
       } else if (!b) {

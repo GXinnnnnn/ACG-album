@@ -508,16 +508,16 @@ async function activeHigh(selector = folderSelector()) {
       const value = await matrix(selector);
       return (
         !value.is2D &&
-        Math.abs(value.rx) > 0.2 &&
-        Math.abs(value.ry) > 0.2 &&
-        Math.abs(value.scale - 1.04) < 0.002
+        Math.abs(value.rx) > 2 &&
+        Math.abs(value.ry) > 2 &&
+        Math.abs(value.scale - 1.065) < 0.002
       );
     })
     .toBe(true);
   const value = await matrix(selector);
   assert.match(value.transform, /^matrix3d\(/);
-  assert.ok(Math.abs(value.rx) <= 2.05 && Math.abs(value.ry) <= 2.05, JSON.stringify(value));
-  near(value.scale, 1.04, 0.003, 'High mode uses four percent whole-card scale');
+  assert.ok(Math.abs(value.rx) <= 5.05 && Math.abs(value.ry) <= 5.05, JSON.stringify(value));
+  near(value.scale, 1.065, 0.003, 'High mode uses 6.5 percent whole-card scale');
   assert.equal(await page.locator('.effects-active').count(), 1);
   assert.equal(
     await page.locator(selector).evaluate((el) => el.classList.contains('effects-active')),
@@ -699,7 +699,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
       }
     );
     await check(
-      'high uses actual mouse matrix3d with angles within two degrees and one active card',
+      'high uses 6.5 percent mouse matrix3d with noticeable tilt within five degrees and one active card',
       async () => {
         await effect('motionLevel', 'high');
         await go();
@@ -772,20 +772,41 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
       }
     );
     await check(
-      'computed radii and lower-left offsets apply to folder and long-image cards',
+      'card and inner clipping curves align; rating is pill shaped and folder count is inset',
       async () => {
         await go();
+        // Exercise the real folder renderer with a generated rating; no network fixture needed.
+        await page.evaluate((id) => {
+          const [index, node] = [...grid.items].find(([, node]) => node.id === id);
+          updateFolderCard(grid.cards.get(index), {
+            ...node,
+            metadata: { ...node.metadata, rating: { score: 8.6 } }
+          });
+        }, idFor(folders[0]));
         const folder = await page.locator(folderSelector()).evaluate((card) => {
           const cover = getComputedStyle(card.querySelector('.cover-shell')),
-            overlay = getComputedStyle(card.querySelector('.card-bottom-overlay'));
+            overlay = getComputedStyle(card.querySelector('.card-bottom-overlay')),
+            gradient = getComputedStyle(card.querySelector('.cover-gradient')),
+            rating = card.querySelector('.card-rating');
           return {
             radius: parseFloat(getComputedStyle(card).borderRadius),
             coverRadius: parseFloat(cover.borderRadius),
+            gradientRadius: parseFloat(gradient.borderBottomLeftRadius),
             left: parseFloat(overlay.left),
-            bottom: parseFloat(overlay.bottom)
+            bottom: parseFloat(overlay.bottom),
+            ratingRadius: parseFloat(getComputedStyle(rating).borderRadius),
+            ratingHeight: rating.getBoundingClientRect().height,
+            ratingText: rating.textContent
           };
         });
-        assert.deepEqual(folder, { radius: 16, coverRadius: 12, left: 4, bottom: 4 });
+        assert.equal(folder.radius, 16);
+        assert.equal(folder.coverRadius, folder.radius);
+        assert.equal(folder.gradientRadius, folder.coverRadius - 1);
+        assert.equal(folder.left, 8);
+        assert.equal(folder.bottom, 4);
+        assert.equal(folder.ratingText, '★ 8.6');
+        assert.ok(folder.ratingRadius >= folder.ratingHeight / 2, 'Rating corners form a capsule');
+        await shot('folder_aligned_corners_pill_rating');
         await page.evaluate(() => {
           document.querySelector('#viewport').scrollTop = grid.getPosition(grid.folders).top;
           grid.render();
@@ -804,6 +825,9 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           return {
             radius: parseFloat(getComputedStyle(card).borderRadius),
             coverRadius: parseFloat(cover.borderRadius),
+            hoverRadius: parseFloat(
+              getComputedStyle(card.querySelector('.media-hover')).borderBottomLeftRadius
+            ),
             left: parseFloat(overlay.left),
             bottom: parseFloat(overlay.bottom),
             height: parseFloat(card.style.height),
@@ -815,7 +839,8 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           };
         });
         assert.equal(media.radius, 6);
-        assert.equal(media.coverRadius, 6);
+        assert.equal(media.coverRadius, media.radius);
+        assert.equal(media.hoverRadius, media.coverRadius - 1);
         assert.equal(media.left, 8);
         assert.equal(media.bottom, 8);
         assert.equal(media.clamped, 'true');

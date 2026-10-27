@@ -167,8 +167,8 @@ test('high motion owns one card and one event-driven RAF, with one geometry read
   assert.equal(a.reads, 1);
   f.tick();
   assert.equal(f.frames.size, 0, 'No idle or continuous animation loop');
-  assert.equal(a.properties.get('--effect-rx'), '2.00deg');
-  assert.equal(a.properties.get('--effect-ry'), '2.00deg');
+  assert.equal(a.properties.get('--effect-rx'), '5.00deg');
+  assert.equal(a.properties.get('--effect-ry'), '5.00deg');
   f.point('pointerover', b);
   assert.equal(a.classList.has('effects-active'), false);
   assert.equal(a.properties.size, 0);
@@ -273,7 +273,7 @@ test('low mode disables only decorative surface motion and keeps scale/loading f
   );
   assert.match(styles, /--effect-duration: 120ms/);
   assert.match(styles, /transform: scale\(1\.008\)/);
-  assert.match(styles, /\.effects-active\s*\{[^}]*scale\(1\.04\)/);
+  assert.match(styles, /\.effects-active\s*\{[^}]*scale\(1\.065\)/);
 });
 
 function themeFixture(level = 'medium', reduce = false) {

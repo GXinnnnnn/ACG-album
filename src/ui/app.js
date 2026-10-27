@@ -105,11 +105,11 @@ async function attempt(action) {
     return null;
   }
 }
-function thumb(n, width = Number(S.settings.density || 222)) {
+function thumb(n, width = Number(S.settings.density || 222), priority = false) {
   const desired = width * (window.devicePixelRatio || 1) * 1.3;
   const size = desired <= 512 ? 512 : desired <= 768 ? 768 : 1024;
   const source = n.kind === 'folder' && /^[a-f0-9]{24}$/.test(n.cover) ? n.cover : n.id;
-  return `acg-image://thumb/${source}?v=${S.rev}&size=${size}${n.manual_cover ? '&p=1' : ''}${n.cover_revision ? '&r=' + encodeURIComponent(n.cover_revision) : ''}`;
+  return `acg-image://thumb/${source}?v=${S.rev}&size=${size}${priority || n.manual_cover ? '&p=1' : ''}${n.cover_revision ? '&r=' + encodeURIComponent(n.cover_revision) : ''}`;
 }
 function applySettings() {
   document.documentElement.dataset.theme = S.settings.theme;
@@ -329,7 +329,13 @@ function cardReviewBadge(n) {
   if (!message) return '';
   return `<span class="card-review" title="${esc(message)}"></span>`;
 }
-function card(n, index = 0, inline = false) {
+function card(
+  n,
+  index = 0,
+  inline = false,
+  width = Number(S.settings.density || 222),
+  priority = false
+) {
   const b = document.createElement('button');
   b.className = 'album-card' + (n.kind !== 'folder' ? ' image-card media-card' : '');
   b.dataset.index = index;
@@ -356,7 +362,10 @@ function card(n, index = 0, inline = false) {
     img.style.display = 'none';
     if (n.kind === 'video') window.queueVideoThumbnail?.(n, img);
   };
-  img.src = thumb(n);
+  // Request the final column/DPR tier once, with viewport work ahead of overscan.
+  img.decoding = 'async';
+  img.fetchPriority = priority ? 'high' : 'low';
+  img.src = thumb(n, width, priority);
   if (n.kind !== 'folder') window.decorateMediaCard?.(b, n);
   b.onclick = () =>
     attempt(() =>
@@ -1941,14 +1950,22 @@ $('#viewer-stage').onpointermove = (e) => {
   }
 };
 $('#viewer-stage').onpointerup = $('#viewer-stage').onpointercancel = () => (pan = null);
-let latestOnlineProgress = null;
+let latestOnlineProgress = null,
+  latestScanProgress = null,
+  preferScanSummary = false,
+  onlineProgressDirectory = '',
+  onlineProgressDirectoryId = '';
 function hasOnlineWork(data) {
-  return !!(data && (data.active || data.remaining > 0 || data.discovering || data.paused));
+  return !!(
+    data &&
+    (data.active || (data.remaining ?? data.pending) > 0 || data.discovering || data.paused)
+  );
 }
 function paintProgress({
   title,
   detail,
   current = '',
+  directory = '',
   active,
   paused = false,
   percent = null,
@@ -1963,6 +1980,16 @@ function paintProgress({
   panel.dataset.state = paused ? 'paused' : active ? 'active' : 'complete';
   panel.setAttribute('aria-busy', String(active && !paused));
   $('#progress-title').textContent = title;
+  let directoryLabel = $('#progress-directory');
+  if (!directoryLabel) {
+    directoryLabel = document.createElement('span');
+    directoryLabel.id = 'progress-directory';
+    $('#progress-title').after(directoryLabel);
+  }
+  directoryLabel.hidden = !directory;
+  directoryLabel.textContent = directory.split(/[\\/]/).filter(Boolean).at(-1) || directory;
+  directoryLabel.title = directory;
+  directoryLabel.setAttribute('aria-label', directory ? `当前目录：${directory}` : '');
   $('#progress-detail').textContent = detail;
   $('#progress-path').textContent = current;
   $('#progress-path').title = current;
@@ -1986,55 +2013,63 @@ function paintProgress({
     );
   if (bar.scanMotion) {
     if (moving) bar.scanMotion.play();
-    else bar.scanMotion.cancel();
+    else {
+      bar.scanMotion.cancel();
+      bar.scanMotion = null;
+    }
   }
   if (!active && !paused) progressHideTimer = setTimeout(() => (panel.hidden = true), 6000);
 }
 function showProgress(p) {
-  clearTimeout(progressHideTimer);
+  // An idle worker snapshot can still contain the previous batch's totals.
+  // Keep this import's summary until actual online work joins the new scan.
+  if (p.active && !scanActive) preferScanSummary = !hasOnlineWork(latestOnlineProgress);
+  latestScanProgress = p;
   scanActive = !!p.active;
   updateImportBusy();
   if (p.active && pendingImport) pendingImport.sawProgress = true;
-  if (!scanActive && hasOnlineWork(latestOnlineProgress)) {
-    renderOnlineProgress(latestOnlineProgress);
-    return;
-  }
-  const phase = p.phase || (p.active ? '扫描文件夹' : '索引完成');
-  paintProgress({
-    title: `${phase} · ${p.name || '本地相册'}`,
-    detail: `${fmt(p.images)} 个媒体项目 · ${fmt(p.folders)} 个目录${p.errors ? ' · ' + p.errors + ' 项跳过' : ''}`,
-    current: p.current || p.name || '',
-    active: !!p.active,
-    scan: true,
-    percent: p.active ? null : 100,
-    label: p.active ? '扫描中…' : phase.startsWith('已取消') ? '已取消' : '完成'
-  });
-  $('#footer-status').textContent = p.active ? `${phase} · 已载入的内容可继续浏览` : '就绪';
+  renderOnlineProgress(latestOnlineProgress || {});
 }
 function renderOnlineProgress(data) {
+  if (preferScanSummary && !hasOnlineWork(data)) data = {};
   const remaining = Math.max(0, Number(data.remaining ?? data.pending) || 0),
     completed = Math.max(0, Number(data.completed) || 0),
     total = Math.max(completed + remaining, Number(data.total) || 0),
-    active = hasOnlineWork(data),
-    paused = !!data.paused;
-  const title =
-    data.paused === 'access'
+    active = scanActive || hasOnlineWork(data),
+    paused = !scanActive && !!data.paused,
+    cancelled = !active && latestScanProgress?.phase?.startsWith('已取消');
+  const title = scanActive
+    ? '正在检索作品简介'
+    : data.paused === 'access'
       ? '作品检索已暂停'
       : paused
         ? '作品检索等待重试'
         : active
           ? '正在检索作品简介'
-          : '作品检索完成';
-  const detail = data.discovering
+          : cancelled
+            ? '导入已取消'
+            : total
+              ? '作品检索完成'
+              : '导入完成';
+  const scanDetail = latestScanProgress
+    ? `${fmt(latestScanProgress.images)} 个媒体项目 · ${fmt(latestScanProgress.folders)} 个目录${latestScanProgress.errors ? ' · ' + fmt(latestScanProgress.errors) + ' 项跳过' : ''}`
+    : '';
+  const matchDetail = data.discovering
     ? `正在整理待检索目录 · 已处理 ${fmt(completed)} 项 · 待处理 ${fmt(remaining)} 项以上`
     : `本次已处理 ${fmt(completed)} / ${fmt(total)} 个文件夹 · 待处理 ${fmt(remaining)} 项`;
-  const percent = data.discovering
-    ? null
-    : total
-      ? Math.min(100, Math.floor((completed / total) * 100))
-      : active
-        ? null
-        : 100;
+  const detail = scanActive
+    ? `${scanDetail}${hasOnlineWork(data) ? '；' + matchDetail : ''}`
+    : !hasOnlineWork(data) && !total && latestScanProgress
+      ? scanDetail
+      : `${matchDetail}${latestScanProgress?.errors ? ' · ' + fmt(latestScanProgress.errors) + ' 项跳过' : ''}`;
+  const percent =
+    scanActive || data.discovering
+      ? null
+      : total
+        ? Math.min(100, Math.floor((completed / total) * 100))
+        : active
+          ? null
+          : 100;
   const current =
     data.paused === 'access'
       ? '请在偏好设置更新 Access Token，任务进度已保留'
@@ -2047,19 +2082,39 @@ function renderOnlineProgress(data) {
     title,
     detail,
     current,
+    directory: scanActive
+      ? latestScanProgress?.current || latestScanProgress?.name || ''
+      : hasOnlineWork(data)
+        ? onlineProgressDirectory || latestScanProgress?.current || latestScanProgress?.name || ''
+        : '',
     active,
+    scan: scanActive,
     paused,
     percent,
-    label: paused ? '已暂停' : percent == null ? '整理中…' : `${percent}%`
+    label: paused ? '已暂停' : cancelled ? '已取消' : percent == null ? '整理中…' : `${percent}%`
   });
   $('#footer-status').textContent = active
     ? `${title} · 待处理 ${fmt(remaining)} 项${data.discovering ? '以上' : ''}`
     : '就绪';
 }
 function showOnlineStatus(data) {
+  if (hasOnlineWork(data)) preferScanSummary = false;
   const wasWorking = hasOnlineWork(latestOnlineProgress);
   latestOnlineProgress = data;
-  if (scanActive) return;
+  const directoryId = hasOnlineWork(data) ? data.id || '' : '';
+  if (directoryId !== onlineProgressDirectoryId) {
+    onlineProgressDirectoryId = directoryId;
+    onlineProgressDirectory = '';
+    if (directoryId)
+      void api('get', { id: directoryId })
+        .then((node) => {
+          if (onlineProgressDirectoryId !== directoryId || !hasOnlineWork(latestOnlineProgress))
+            return;
+          onlineProgressDirectory = node?.path || node?.name || '';
+          if (!scanActive) renderOnlineProgress(latestOnlineProgress);
+        })
+        .catch(() => {});
+  }
   const { paused, retryAt, active, discovering, remaining = data.pending } = data;
   const status = $('#footer-status');
   status.textContent =
@@ -2077,7 +2132,7 @@ function showOnlineStatus(data) {
         ? '任务进度已保存，等待网络恢复或服务端限流结束后自动重试。重启软件也会继续未完成的任务。'
         : '';
   status.setAttribute('aria-live', paused ? 'polite' : 'off');
-  if (hasOnlineWork(data) || wasWorking) renderOnlineProgress(data);
+  if (scanActive || hasOnlineWork(data) || wasWorking) renderOnlineProgress(data);
 }
 window.album.onEvent((event) => {
   if (event.type === 'sortMigration') {

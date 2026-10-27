@@ -36,15 +36,20 @@
   }
 }
 
-/* Tighter card corners; capsule navigation keeps its own silhouette. */
+/* Cover and card share a silhouette. Inset overlays follow the cover's 1px
+   border so their lower corners do not cut across its clipping curve. */
 :root .album-card {
-  border-radius: 16px;
+  --card-radius: 16px;
+  border-radius: var(--card-radius);
 }
 :root[data-card-size] .cover-shell {
-  border-radius: 12px;
+  border-radius: var(--card-radius, 16px);
 }
-:root .collection-preview .cover-shell {
-  border-radius: 8px;
+:root .collection-preview .album-card {
+  --card-radius: 12px;
+}
+:root .album-card .cover-gradient {
+  border-radius: 0 0 calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px);
 }
 :root .collection-tile,
 :root .intro-panel {
@@ -54,17 +59,23 @@
   border-radius: 17px 17px 0 0;
 }
 :root .collection-preview {
-  border-radius: 0 0 18px 18px;
+  border-radius: 0 0 17px 17px;
+}
+:root .media-card {
+  --card-radius: 6px;
 }
 :root .media-card,
 :root .media-card .cover-shell {
-  border-radius: 6px;
+  border-radius: var(--card-radius);
 }
 :root .media-hover {
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px);
+}
+:root .card-rating {
+  border-radius: 999px;
 }
 :root .album-card:not(.media-card) .card-bottom-overlay {
-  left: 4px;
+  left: 8px;
   bottom: 4px;
 }
 :root .media-card .card-bottom-overlay {
@@ -153,7 +164,7 @@
 :root[data-motion='high']
   :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)).effects-active {
   transform: perspective(900px) translateY(-2px) rotateX(var(--effect-rx, 0deg))
-    rotateY(var(--effect-ry, 0deg)) scale(1.04);
+    rotateY(var(--effect-ry, 0deg)) scale(1.065);
   transition-duration: 140ms;
   will-change: transform;
 }

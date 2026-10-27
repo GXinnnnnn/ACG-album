@@ -1736,12 +1736,24 @@ h1 {
   font-size: 11px;
 }
 .progress-top strong {
+  flex-shrink: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 550;
   font-size: 12px;
+}
+#progress-directory {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .progress-spinner {
   flex-shrink: 0;
@@ -1750,6 +1762,7 @@ h1 {
   background: var(--muted);
 }
 .progress-top button {
+  flex-shrink: 0;
   margin-left: auto;
 }
 .progress-spinner {

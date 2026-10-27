@@ -127,7 +127,29 @@ test(
       const hash = await checksum(imagePath);
       await c.call('setCover', { id: album.id, imageId: image });
       await c.call('patch', { id: album.id, changes: { crop_x: 23, crop_y: 72, favorite: 1 } });
-      const first = await c.call('thumb', { id: album.id });
+      // Rapid viewport/overscan requests share work, including a later promotion
+      // while other thumbnails occupy all bounded generation slots.
+      const requests = [
+        image,
+        ...[
+          'loose.png',
+          'Album 2/cover.png',
+          'Album 10/cover.png',
+          '星际牛仔 Cowboy Bebop/01.png'
+        ].map((rel) => idFor(path.join(f.source, rel))),
+        image,
+        album.id,
+        album.id
+      ];
+      const thumbnails = await Promise.all(
+        requests.map((id, i) => c.call('thumb', { id, priority: i >= 5 }))
+      );
+      const first = thumbnails[0];
+      for (const i of [5, 6, 7]) assert.equal(thumbnails[i].path, first.path);
+      for (const generated of thumbnails) {
+        const info = await sharp(generated.path).metadata();
+        assert.ok(info.width <= 1024 && info.height <= 1400 && info.hasAlpha);
+      }
       const st = await fs.stat(first.path);
       assert.ok((await sharp(first.path).metadata()).hasAlpha);
       const small = await c.call('thumb', { id: album.id, size: 512 });
