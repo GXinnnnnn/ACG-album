@@ -21,9 +21,17 @@ function harness({ reducedMotion = false } = {}) {
   let timerId = 0;
   function element() {
     const attributes = new Map();
+    let text = '';
     return {
       hidden: false,
-      textContent: '',
+      textWrites: 0,
+      get textContent() {
+        return text;
+      },
+      set textContent(value) {
+        text = String(value);
+        this.textWrites++;
+      },
       title: '',
       dataset: {},
       style: {},
@@ -75,9 +83,9 @@ function harness({ reducedMotion = false } = {}) {
     fmt: (value) => String(value || 0),
     matchMedia: () => ({ matches: reducedMotion }),
     clearTimeout: (id) => timers.delete(id),
-    setTimeout(action) {
+    setTimeout(action, delay = 0) {
       const id = ++timerId;
-      timers.set(id, action);
+      timers.set(id, { action, delay });
       return id;
     },
     api(method, args) {
@@ -93,9 +101,12 @@ function harness({ reducedMotion = false } = {}) {
     scan: (value) => context.showProgress(value),
     online: (value) => context.showOnlineStatus(value),
     get: (selector) => elements.get(selector),
-    flushTimers() {
-      for (const action of timers.values()) action();
-      timers.clear();
+    flushTimers(maxDelay = Infinity) {
+      for (const [id, timer] of [...timers])
+        if (timer.delay <= maxDelay) {
+          timers.delete(id);
+          timer.action();
+        }
     },
     timerCount: () => timers.size
   };
@@ -146,6 +157,7 @@ test('matching directory follows latest folder ID and discards stale asynchronou
   h.online({ active: false, remaining: 0, completed: 3 });
   h.requests[2].resolve({ path: '/generated/完成后返回' });
   await nextTurn();
+  h.flushTimers(300);
   assert.equal(h.get('#progress-title').textContent, '作品检索完成');
   assert.equal(h.get('#progress-directory').hidden, true);
   assert.equal(h.timerCount(), 1);
@@ -184,6 +196,7 @@ test('scan-only cancellation preserves skipped counts and reduced-motion never s
   assert.equal(h.animations.length, 0);
   assert.equal(h.get('#progress-bar').parentElement.getAttribute('aria-valuenow'), null);
   h.scan({ active: false, phase: '已取消导入', images: 12, folders: 4, errors: 3 });
+  h.flushTimers(300);
   assert.equal(h.get('#progress-title').textContent, '导入已取消');
   assert.equal(h.get('#progress-percent').textContent, '已取消');
   assert.match(h.get('#progress-detail').textContent, /3 项跳过/);
@@ -207,6 +220,7 @@ for (const cancelled of [false, true]) {
       folders: 4,
       errors: 2
     });
+    h.flushTimers(300);
     assert.equal(h.get('#progress-title').textContent, cancelled ? '导入已取消' : '导入完成');
     assert.match(h.get('#progress-detail').textContent, /22 个媒体项目 · 4 个目录 · 2 项跳过/);
     assert.doesNotMatch(h.get('#progress-detail').textContent, /3 \/ 3/);
@@ -216,6 +230,78 @@ for (const cancelled of [false, true]) {
     assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
   });
 }
+
+test('repeated active snapshots do not rewrite unchanged progress text', () => {
+  const h = harness();
+  const snapshot = { active: true, id: 'same', completed: 2, remaining: 8, total: 10 };
+  h.online(snapshot);
+  const selectors = [
+    '#progress-title',
+    '#progress-detail',
+    '#progress-path',
+    '#progress-percent',
+    '#footer-status'
+  ];
+  const counts = selectors.map((selector) => h.get(selector).textWrites);
+  for (let i = 0; i < 100; i++) h.online({ ...snapshot });
+  assert.deepEqual(
+    selectors.map((selector) => h.get(selector).textWrites),
+    counts
+  );
+  assert.equal(h.requests.length, 1);
+});
+
+test('completion settling accepts the latest idle totals without extending its deadline', () => {
+  const h = harness();
+  h.online({ active: true, completed: 2, remaining: 8, total: 10 });
+  h.online({ active: false, completed: 9, remaining: 0, total: 10 });
+  h.online({ active: false, completed: 10, remaining: 0, total: 10 });
+  assert.equal(h.timerCount(), 1);
+  h.flushTimers(300);
+  assert.match(h.get('#progress-detail').textContent, /10 \/ 10/);
+  assert.equal(h.get('#progress-percent').textContent, '100%');
+  assert.equal(h.timerCount(), 1, 'only the final hide timer remains');
+});
+
+test('folder labels stay visible until the next lookup resolves and brief idle snapshots never flash completion', async () => {
+  const h = harness();
+  h.online({ active: true, id: 'first', completed: 0, remaining: 2 });
+  h.requests[0].resolve({ name: '当前目录' });
+  await nextTurn();
+  h.online({ active: false, completed: 1, remaining: 0, total: 1 });
+  assert.equal(h.get('#progress-panel').dataset.state, 'active');
+  h.online({ active: true, id: 'second', completed: 1, remaining: 1 });
+  assert.equal(h.get('#progress-directory').textContent, '当前目录');
+  assert.equal(h.get('#progress-directory').hidden, false);
+  h.flushTimers(300);
+  assert.equal(h.get('#progress-panel').dataset.state, 'active');
+  h.requests[1].resolve({ name: '下个目录' });
+  await nextTurn();
+  assert.equal(h.get('#progress-directory').textContent, '下个目录');
+  h.online({ active: false, completed: 2, remaining: 0 });
+  h.flushTimers(300);
+  assert.equal(h.get('#progress-panel').dataset.state, 'complete');
+  assert.equal(h.timerCount(), 1);
+  h.flushTimers();
+  assert.equal(h.get('#progress-panel').hidden, true);
+  h.online({ active: false, completed: 2, remaining: 0 });
+  assert.equal(
+    h.get('#progress-panel').hidden,
+    true,
+    'late idle snapshots must not reopen completion'
+  );
+  assert.equal(h.timerCount(), 0);
+});
+
+test('reimport waiting on removed index cleanup exposes the cleanup stage without a second panel', () => {
+  const h = harness();
+  h.scan({ active: true, phase: '正在清理旧分类', name: '旧分类', images: 0, folders: 0 });
+  assert.equal(h.get('#progress-title').textContent, '正在清理旧分类');
+  assert.match(h.get('#progress-path').textContent, /完成后继续导入/);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  h.scan({ active: true, phase: '正在扫描', name: '旧分类', images: 1, folders: 1 });
+  assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
+});
 
 test('indeterminate motion restarts after pause and other maintenance progress clears the directory label', () => {
   const h = harness();

@@ -3,11 +3,196 @@
 // Page numbers stay absolute (offset = page * 180), including mixed boundary pages.
 // Anchor offsets are card-top pixels relative to the viewport; positions are grid-relative.
 // The host owns scroll/resize scheduling. Timeline badges/headers belong to card().
+// Overview previews use the same density targets, then distribute the spare pixels.
+// Keep the API bound explicit; a normal 4K window needs only 28–42 preview albums.
+function overviewPreviewGeometry(available, preset, gap = 19) {
+  const width = Math.max(1, Number(available) || 1),
+    target = Math.min(width, Math.max(1, Number(preset) || 222)),
+    spacing = Math.max(0, Number(gap) || 0),
+    columns = Math.max(1, Math.floor((width + spacing) / (target + spacing)));
+  return {
+    columns,
+    width: (width - (columns - 1) * spacing) / columns,
+    limit: Math.min(500, columns * 2)
+  };
+}
+let overviewPreviewController;
+function renderOverviewPreview(preview, parent, version) {
+  overviewPreviewController ||= createOverviewPreviewController();
+  return overviewPreviewController.render(preview, parent, version);
+}
+function createOverviewPreviewController() {
+  const entries = new Map();
+  let resizeObserver,
+    mutationObserver,
+    frame = 0;
+  function releaseDetached() {
+    for (const [preview, entry] of entries) {
+      if (preview.isConnected) continue;
+      entry.generation++;
+      resizeObserver?.unobserve(preview);
+      entries.delete(preview);
+    }
+    if (!entries.size) {
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      resizeObserver = mutationObserver = undefined;
+    }
+  }
+  function measure(entry) {
+    const preview = entry.preview,
+      styles = getComputedStyle(preview),
+      root = getComputedStyle(document.documentElement),
+      available = Math.max(
+        1,
+        preview.getBoundingClientRect().width -
+          (parseFloat(styles.paddingLeft) || 0) -
+          (parseFloat(styles.paddingRight) || 0) -
+          (parseFloat(styles.borderLeftWidth) || 0) -
+          (parseFloat(styles.borderRightWidth) || 0)
+      ),
+      geometry = overviewPreviewGeometry(
+        available,
+        parseFloat(root.getPropertyValue('--card-width')) || S.settings.density,
+        parseFloat(styles.columnGap) || 19
+      );
+    preview.dataset.previewColumns = String(geometry.columns);
+    preview.dataset.previewLimit = String(geometry.limit);
+    entry.geometry = geometry;
+    return geometry;
+  }
+  function current(entry, generation = entry.generation) {
+    return (
+      entries.get(entry.preview) === entry &&
+      entry.preview.isConnected &&
+      entry.generation === generation &&
+      entry.version === S.loadVersion &&
+      entry.sort === S.sort &&
+      entry.direction === S.direction
+    );
+  }
+  function reconcile(entry) {
+    const preview = entry.preview,
+      cards = new Map(
+        [...preview.querySelectorAll('.album-card')].map((el) => [el.dataset.id, el])
+      ),
+      active = document.activeElement;
+    let cursor = preview.firstElementChild;
+    for (const child of entry.items.slice(0, entry.geometry.limit)) {
+      const previous = cards.get(String(child.id)),
+        el = previous
+          ? updateFolderCard(previous, child, 0, entry.geometry.width)
+          : card(child, 0, true, entry.geometry.width);
+      if (el !== cursor) {
+        if (preview.moveBefore && el.parentElement === preview) preview.moveBefore(el, cursor);
+        else preview.insertBefore(el, cursor);
+      }
+      cursor = el.nextElementSibling;
+      cards.delete(String(child.id));
+    }
+    const lostFocus = [...cards.values()].some((el) => el.contains(active));
+    for (const el of cards.values()) el.remove();
+    let more = preview.querySelector('.collection-more');
+    if (!more) {
+      more = document.createElement('button');
+      more.className = 'collection-more';
+      more.innerHTML = `打开分类，查看全部内容 ${svg('chevron-right')}`;
+    }
+    more.onclick = () => attempt(() => navigate({ parent: entry.parent.id }));
+    if (preview.lastElementChild !== more) preview.append(more);
+    if (lostFocus) more.focus({ preventScroll: true });
+    preview.dataset.previewCount = String(Math.min(entry.items.length, entry.geometry.limit));
+    preview.dataset.previewTotal = String(entry.total);
+    entry.renderedWidth = entry.geometry.width;
+  }
+  async function request(entry) {
+    const generation = ++entry.generation,
+      version = entry.version,
+      sort = entry.sort,
+      direction = entry.direction,
+      limit = entry.geometry.limit;
+    entry.requestedLimit = limit;
+    entry.preview.setAttribute('aria-busy', 'true');
+    try {
+      const result = await api('list', {
+        parent: entry.parent.id,
+        filter: 'folders',
+        limit,
+        sort,
+        direction
+      });
+      if (!current(entry, generation) || version !== S.loadVersion) return false;
+      // A response may arrive before ResizeObserver delivers the new window width.
+      if (measure(entry).limit !== limit) {
+        schedule();
+        return false;
+      }
+      entry.items = (result.items || []).slice(0, limit);
+      entry.total = Number(result.total) || entry.items.length;
+      reconcile(entry);
+      return true;
+    } finally {
+      if (entry.generation === generation) entry.preview.removeAttribute('aria-busy');
+    }
+  }
+  function schedule() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      releaseDetached();
+      for (const entry of entries.values()) {
+        if (!current(entry)) continue;
+        const geometry = measure(entry);
+        if (geometry.limit !== entry.requestedLimit) attempt(() => request(entry));
+        else if (entry.items && Math.abs(geometry.width - entry.renderedWidth) > 0.01)
+          reconcile(entry);
+      }
+    });
+  }
+  function observe(preview) {
+    if (!resizeObserver) {
+      resizeObserver = new ResizeObserver(schedule);
+      mutationObserver = new MutationObserver((records) => {
+        if (
+          records.some((record) => record.type === 'attributes') ||
+          [...entries.keys()].some((el) => !el.isConnected)
+        )
+          schedule();
+      });
+      mutationObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['style', 'data-card-size']
+      });
+      mutationObserver.observe($('#category-overview'), { childList: true, subtree: true });
+    }
+    resizeObserver.observe(preview);
+  }
+  return {
+    render(preview, parent, version) {
+      releaseDetached();
+      if (!preview.isConnected || version !== S.loadVersion) return Promise.resolve(false);
+      let entry = entries.get(preview);
+      if (!entry) {
+        entry = { preview, generation: 0, items: null, renderedWidth: 0 };
+        entries.set(preview, entry);
+        observe(preview);
+      }
+      entry.parent = parent;
+      entry.version = version;
+      entry.sort = S.sort;
+      entry.direction = S.direction;
+      measure(entry);
+      // Explicit renders refresh metadata as well as sort/root/load generations.
+      return request(entry);
+    }
+  };
+}
 function createVirtualGrid() {
   const PAGE = 180,
     MEDIA_GAP = 8,
     FOLDER_GAP = 19,
-    FOLDER_INFO = 70,
+    FOLDER_DETAILS_INFO = 70,
+    FOLDER_TITLE_INFO = 40,
     heights = new Map(),
     loaded = new Set(),
     failed = new Set(),
@@ -26,6 +211,7 @@ function createVirtualGrid() {
     folderBottom = 0,
     cover = 0,
     detail = 48,
+    folderInfo = FOLDER_DETAILS_INFO,
     mediaCols = 1,
     extent = 0,
     retainedExtent = 0;
@@ -104,7 +290,7 @@ function createVirtualGrid() {
         return {
           top: Math.floor(index / this.cols) * this.rowHeight,
           left: (index % this.cols) * (this.width + this.gap),
-          height: cover + FOLDER_INFO,
+          height: cover + folderInfo,
           width: this.width
         };
       const page = Math.floor(index / PAGE),
@@ -437,7 +623,7 @@ function createVirtualGrid() {
   function mediaCoverLimit() {
     // The entire visible media card (including details) is at most twice the
     // same-width folder card. Inter-card spacing is not part of that height.
-    return 2 * (cover + FOLDER_INFO) - detail;
+    return 2 * (cover + folderInfo) - detail;
   }
   function seedColumns(page) {
     const occupied = page === firstMedia ? grid.folders % grid.cols : 0;
@@ -468,7 +654,8 @@ function createVirtualGrid() {
       Number(S.settings.density) || 222,
       S.settings.ratio,
       S.settings.details !== false,
-      !!(grid.folders && grid.total > grid.folders)
+      // An empty resize must not cache folder geometry for the later pure-media response.
+      grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP
     ].join('/');
   }
   function configure(m) {
@@ -487,7 +674,9 @@ function createVirtualGrid() {
       S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12;
     cover = grid.width / ratio;
     detail = S.settings.details === false ? 0 : 48;
-    grid.rowHeight = cover + FOLDER_INFO + grid.gap;
+    // Keep the folder title, while reclaiming the hidden subtitle row and its spacing.
+    folderInfo = S.settings.details === false ? FOLDER_TITLE_INFO : FOLDER_DETAILS_INFO;
+    grid.rowHeight = cover + folderInfo + grid.gap;
   }
   function pageHeight(page) {
     const metric = heights.get(page);
@@ -710,7 +899,7 @@ function createVirtualGrid() {
       const p = grid.getPosition(index),
         media = index >= grid.folders,
         shellHeight = media ? p.height - detail : cover,
-        infoHeight = media ? detail : FOLDER_INFO;
+        infoHeight = media ? detail : folderInfo;
       const clamped = String(media && naturalMediaCover(n) > mediaCoverLimit());
       if (b.dataset.mediaClamped !== clamped) b.dataset.mediaClamped = clamped;
       let previous = cardLayouts.get(b);

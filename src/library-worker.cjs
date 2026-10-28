@@ -22,12 +22,20 @@ const {
 } = require('./model.cjs');
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
 const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
+const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
-const { matchedIdentitySql, matchedAutomaticSql, pendingReviewSql } = require('./review-state.cjs');
+const {
+  matchedIdentitySql,
+  matchedAutomaticSql,
+  pendingReviewSql,
+  reviewScopeSql,
+  reviewEligible
+} = require('./review-state.cjs');
 const {
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
+  MATCHING_POLICY_VERSION,
   rankSubjects,
   rankImportSubjects,
   collections,
@@ -39,6 +47,8 @@ const { normalizeAccessToken, safeAccessError } = require('./bangumi-access.cjs'
 const { createHash } = require('node:crypto');
 const { createBangumiCache } = require('./bangumi-cache.cjs');
 const cacheDirectory = require('./cache-directory.cjs');
+const { createImagePreview, sniffImage } = require('./image-preview.cjs');
+const heifDecoder = require('./heif-decoder.cjs').createHeifDecoder();
 const localIndex = require('./local-index.cjs').createLocalIndex({
   localIndexPath: workerData.localIndexPath,
   resourcesPath: workerData.resourcesPath || process.resourcesPath
@@ -78,6 +88,7 @@ CREATE TABLE IF NOT EXISTS thumbs(key TEXT PRIMARY KEY,path TEXT,source TEXT,las
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(id UNINDEXED,name,tokenize='trigram');`);
 let running = false,
   scanTask = null,
+  scanRemovalController = null,
   cancelled = false,
   progress = { active: false },
   onlineRunning = false;
@@ -143,7 +154,9 @@ const defaults = {
   sidebarMode: 'auto',
   details: true,
   liquidGlass: true,
-  motionLevel: 'medium',
+  motionLevel: 'high',
+  fontFamily: '',
+  homeCopy: HOME_COPY_DEFAULTS,
   githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
@@ -156,6 +169,10 @@ function setSetting(key, value) {
 }
 let cacheHome = setting('cacheDirectory') || home;
 cacheDirectory.initializeCache(cacheHome);
+const imagePreview = createImagePreview({
+  getCacheDir: () => path.join(cacheHome, 'thumbnails'),
+  heifDecode: heifDecoder.decode
+});
 let cacheChanging = false,
   cacheTask = null,
   activeRequests = 0;
@@ -166,6 +183,7 @@ const cacheReadMethods = new Set([
   'ancestors',
   'syncStatus',
   'localIndexStatus',
+  'getRootMatchPolicy',
   'searchLocalIndex',
   'cancel'
 ]);
@@ -174,6 +192,7 @@ async function changeCache(operation) {
     cacheChanging ||
     running ||
     thumbJobs.size ||
+    imagePreview.stats().requests ||
     onlineRunning ||
     onlineScheduled ||
     activeNetwork ||
@@ -273,7 +292,11 @@ if (setting('browseOrderVersion') !== 1) {
 // Bump this migration alongside future browse-index schema changes. Do not
 // reconsider every large table on ordinary repeat startup.
 migrateOnce('browseOptimizeVersion', 1, () => db.exec('PRAGMA optimize=0x10002'));
-const getNode = (id) => one('SELECT * FROM nodes WHERE id=?', id);
+let rootRemoval;
+const getNode = (id) => {
+  const node = one('SELECT * FROM nodes WHERE id=?', id);
+  return node && !rootRemoval?.isHidden(node.root) ? node : null;
+};
 const characters = createCharacterLibrary({
   db,
   q,
@@ -296,6 +319,17 @@ const characters = createCharacterLibrary({
   paused: onlinePause,
   tokenPresent: () => !!normalizeAccessToken(workerData.token)
 });
+// Persist the automatic scope separately from the character network toggle:
+// offline unique-character lookup remains compatible with existing imports.
+migrateOnce('rootMatchPolicyVersion', 1, () => {
+  run(`UPDATE root_match_policy SET auto_enabled=CASE WHEN directory_kind='photo' THEN 0
+    WHEN directory_kind='character' THEN 1 ELSE enabled END`);
+  run(`UPDATE nodes AS n SET match_review=0 WHERE kind='folder' AND match_review<>0
+    AND NOT (${reviewScopeSql('n')})`);
+});
+db.exec(
+  "CREATE INDEX IF NOT EXISTS nodes_root_folder_id ON nodes(root,id) WHERE kind='folder' AND missing=0"
+);
 // Repair prior versions that treated a successful nonexact match as unreviewed.
 // Only unmatched local fallback covers need review; stale confidence-review flags
 // must not survive an explicit confirmation or reopen a matched cover.
@@ -306,9 +340,16 @@ migrateOnce('matchReviewVersion', 1, () =>
   )
 );
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
+media.setVisibility((alias) => rootRemoval?.visibleSql(alias) || '1');
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
   path.join(home, 'library.sqlite')
 );
+rootRemoval = require('./root-removal.cjs').createRootRemoval(db, {
+  checkpoint: () => maintenance.checkpoint(),
+  notify: (state) => send('removal', state),
+  error: (error) =>
+    send('error', { message: '分类后台清理未完成，将在下次启动继续：' + error.message })
+});
 const indexing = require('./indexing.cjs').createIndexing(db, maintenance);
 let libraryRevision = 0;
 function albumKind(n) {
@@ -340,6 +381,12 @@ function searchType(n) {
 }
 function hydrate(n) {
   if (!n) return null;
+  const reviewPolicy =
+    n.kind === 'folder' &&
+    one(
+      'SELECT match_depth,auto_enabled,directory_kind FROM root_match_policy WHERE root=?',
+      n.root
+    );
   const character = albumKind(n) === 'character';
   const meta = character
     ? characters.metadata(n)
@@ -348,6 +395,7 @@ function hydrate(n) {
       : null;
   return {
     ...n,
+    review_eligible: reviewEligible(n, reviewPolicy || null),
     effective_album_kind: albumKind(n),
     effective_search_type: searchType(n),
     effective_subject_types: n.kind === 'folder' ? manualMatchTypes(n) : [],
@@ -365,7 +413,7 @@ function roots() {
   // Roots are directories. Binding kind lets the existing parent/name index
   // serve this tiny result without scanning the global name index after ANALYZE.
   return q(
-    "SELECT * FROM nodes WHERE parent IS NULL AND missing=0 AND kind='folder' ORDER BY sortkey"
+    `SELECT * FROM nodes n WHERE parent IS NULL AND missing=0 AND kind='folder' AND ${rootRemoval.visibleSql('n')} ORDER BY sortkey`
   );
 }
 function browseWhere({
@@ -378,7 +426,7 @@ function browseWhere({
   month = '',
   place = ''
 } = {}) {
-  const where = ['n.missing=0'],
+  const where = ['n.missing=0', rootRemoval.visibleSql('n')],
     args = [];
   if (search.trim()) {
     const terms = search.trim().slice(0, 160).split(/\s+/).filter(Boolean);
@@ -483,8 +531,18 @@ function list(options = {}) {
     rows.push(
       ...page("n.kind IN ('image','video')", limit - rows.length, Math.max(0, offset - folders))
     );
+  const reviewRoots = [...new Set(rows.filter((n) => n.kind === 'folder').map((n) => n.root))];
+  const reviewPolicies = new Map(
+    reviewRoots.length
+      ? q(
+          `SELECT root,match_depth,auto_enabled,directory_kind FROM root_match_policy WHERE root IN (${reviewRoots.map(() => '?').join(',')})`,
+          ...reviewRoots
+        ).map((row) => [row.root, row])
+      : []
+  );
   const items = rows.map((n) => ({
     ...n,
+    review_eligible: reviewEligible(n, reviewPolicies.get(n.root) || null),
     effective_album_kind: n.kind === 'folder' ? albumKind(n) : undefined,
     metadata:
       albumKind(n) === 'character'
@@ -572,13 +630,15 @@ function confirmReview({ query, previewIds = [] } = {}) {
   if (updated) send('changed', { review: true });
   return { updated };
 }
-function emitProgress(force = false) {
+function emitProgress(force = false, heartbeat = false) {
   const now = Date.now();
   if (force || now - (progress.last || 0) >= 250) {
-    progress.last = now;
+    // An idle heartbeat must not consume the work-progress throttle: a real
+    // checkpoint immediately afterwards still needs to publish its revision.
+    if (!heartbeat) progress.last = now;
     progress.revision = libraryRevision;
     send('progress', { ...progress });
-    if (progress.active && (force || now - (progress.lastChanged || 0) >= 750)) {
+    if (!heartbeat && progress.active && (force || now - (progress.lastChanged || 0) >= 750)) {
       progress.lastChanged = now;
       send('changed', { root: progress.root, revision: libraryRevision });
     }
@@ -647,8 +707,19 @@ async function refreshLocalCover(id, direct, checkpoint = yieldNow, deferWrite =
     // NULL means a legacy folder has not been initialized; '' caches no images.
     run('UPDATE nodes SET local_newest=? WHERE id=?', newest?.id || '', id);
     // Read manual state at commit time: a patch may have arrived while totals
-    // yielded. A direct image still takes precedence over inherited descendants.
-    coverFor(getNode(id), direct || newest);
+    // yielded. Outside automatic matching scope, keep the first usable preview
+    // instead of changing it after a deeper enumeration. Only indexed reads are
+    // needed; local_newest still tracks the original ancestor-selection policy.
+    const current = getNode(id);
+    const previous =
+      current &&
+      current.depth > matchPolicy(current).matchDepth &&
+      current.cover_source === 'fallback'
+        ? getNode(current.cover)
+        : null;
+    const retained =
+      previous && previous.kind === 'image' && !previous.missing && previous.root === current.root;
+    coverFor(current, retained ? previous : direct || newest);
   };
   if (deferWrite) return save;
   save();
@@ -666,15 +737,61 @@ function updateTotals(id) {
     id
   );
 }
+let scanHeartbeat = null;
+function stopScanHeartbeat() {
+  if (scanHeartbeat) clearInterval(scanHeartbeat);
+  scanHeartbeat = null;
+}
 async function scan(rootPath, options = {}) {
   if (cacheChanging) throw new Error('正在管理缓存，请稍后再导入。');
   if (running) throw new Error('已有导入任务正在运行，请等待完成或先取消。');
   running = true;
   cancelled = false;
+  // Filesystem I/O and background WAL maintenance may await without processing
+  // entries. Report the current counts independently of that work, without
+  // inventing progress or triggering unchanged grid refreshes.
+  scanHeartbeat = setInterval(() => {
+    if (progress.active && !cancelled && !stopping) emitProgress(false, true);
+  }, 500);
+  scanHeartbeat.unref();
   try {
-    scanTask = scanContents(rootPath, options);
+    scanTask = (async () => {
+      const rootId = idFor(path.resolve(rootPath));
+      const blockers = rootRemoval.blockers(rootPath);
+      if (blockers.length) {
+        progress = {
+          active: true,
+          root: rootId,
+          name: path.basename(rootPath),
+          phase: '正在清理旧分类',
+          started: Date.now()
+        };
+        emitProgress(true);
+        scanRemovalController = new AbortController();
+        try {
+          for (const blocker of blockers)
+            await rootRemoval.wait(blocker.root, scanRemovalController.signal);
+        } catch (error) {
+          if (!scanRemovalController.signal.aborted) {
+            progress.active = false;
+            emitProgress(true);
+            throw error;
+          }
+        } finally {
+          scanRemovalController = null;
+        }
+        if (cancelled || stopping) {
+          progress.active = false;
+          progress.phase = '已取消，旧分类仍在后台清理';
+          emitProgress(true);
+          return { root: rootId, cancelled: true, errors: 0 };
+        }
+      }
+      return scanContents(rootPath, options);
+    })();
     return await scanTask;
   } finally {
+    stopScanHeartbeat();
     scanTask = null;
     running = false;
   }
@@ -696,7 +813,7 @@ async function scanContents(rootPath, options = {}) {
     throw new Error('不能将程序数据或缓存目录导入为相册，请选择原图库文件夹。');
   await cacheDirectory.validateCacheLocation(cacheHome, [rootPath]);
   const id = idFor(rootPath);
-  const containing = q('SELECT id,path FROM nodes WHERE parent IS NULL AND missing=0').find(
+  const containing = roots().find(
     (r) =>
       r.id !== id &&
       (rootPath.toLowerCase().startsWith(r.path.toLowerCase() + path.sep) ||
@@ -965,16 +1082,36 @@ async function scanContents(rootPath, options = {}) {
     invalidateRoot(id, {
       preserve: !!target && !offline && !Object.hasOwn(matchOptions, 'onlineMatch')
     });
-    if (Object.hasOwn(matchOptions, 'onlineMatch'))
+    if (Object.hasOwn(matchOptions, 'onlineMatch') || Object.hasOwn(matchOptions, 'matchDepth')) {
+      const previous = one('SELECT * FROM root_match_policy WHERE root=?', id);
+      const explicit = Object.hasOwn(matchOptions, 'onlineMatch');
+      const kind = matchOptions.directoryKind || previous?.directory_kind || 'work';
+      const enabled = explicit
+        ? matchOptions.onlineMatch
+        : previous
+          ? !!previous.enabled
+          : !!setting('autoMatch');
+      const automatic = explicit
+        ? (kind === 'character' || enabled) && kind !== 'photo'
+        : previous
+          ? !!previous.auto_enabled
+          : enabled;
       run(
-        `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover) VALUES(?,?,?,1,?,?) ON CONFLICT(root) DO UPDATE SET
-        enabled=excluded.enabled,types=excluded.types,directory_kind=excluded.directory_kind,character_cover=excluded.character_cover,revision=root_match_policy.revision+1`,
+        `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover,match_depth,auto_enabled)
+        VALUES(?,?,?,1,?,?,?,?) ON CONFLICT(root) DO UPDATE SET enabled=excluded.enabled,types=excluded.types,
+        directory_kind=excluded.directory_kind,character_cover=excluded.character_cover,match_depth=excluded.match_depth,
+        auto_enabled=excluded.auto_enabled,revision=root_match_policy.revision+1`,
         id,
-        matchOptions.onlineMatch ? 1 : 0,
-        JSON.stringify(matchOptions.subjectTypes || []),
-        matchOptions.directoryKind || 'work',
-        matchOptions.characterCover || 'local-first'
+        enabled ? 1 : 0,
+        JSON.stringify(
+          matchOptions.subjectTypes || (previous ? JSON.parse(previous.types) : [...SUBJECT_TYPES])
+        ),
+        kind,
+        matchOptions.characterCover || previous?.character_cover || 'local-first',
+        matchOptions.matchDepth ?? previous?.match_depth ?? 1,
+        automatic ? 1 : 0
       );
+    }
     libraryRevision++;
     emitProgress(true);
     // A progress listener can cancel as soon as the root becomes visible.
@@ -1413,7 +1550,8 @@ function matchPolicy(folder) {
       kind: albumKind(folder),
       characterCover: row.character_cover || 'local-first',
       networkEnabled: !!row.enabled,
-      enabled: albumKind(folder) === 'character' ? true : !!row.enabled,
+      enabled: !!row.auto_enabled && (albumKind(folder) === 'character' ? true : !!row.enabled),
+      matchDepth: row.match_depth || 1,
       types,
       revision: row.revision
     };
@@ -1425,9 +1563,103 @@ function matchPolicy(folder) {
     characterCover: 'local-first',
     networkEnabled: !!setting('autoMatch'),
     enabled: !!setting('autoMatch'),
+    matchDepth: 1,
     types: type ? [type] : [...SUBJECT_TYPES],
     revision: 0
   };
+}
+function getRootMatchPolicy({ id }) {
+  const root = getNode(id);
+  if (!root || root.parent || root.kind !== 'folder')
+    throw new Error('只可编辑顶层分类的绑定策略。');
+  const row = one('SELECT * FROM root_match_policy WHERE root=?', id);
+  const directoryKind = row?.directory_kind || albumKind(root);
+  const fallback = !!setting('autoMatch') && directoryKind !== 'photo';
+  return {
+    root: id,
+    explicit: !!row,
+    enabled: row ? !!row.auto_enabled : fallback,
+    onlineMatch: row ? !!row.enabled : fallback,
+    subjectTypes: row ? JSON.parse(row.types) : [...SUBJECT_TYPES],
+    directoryKind,
+    characterCover: row?.character_cover || 'local-first',
+    matchDepth: row?.match_depth || 1,
+    revision: row?.revision || 0
+  };
+}
+function setRootMatchPolicy(args) {
+  const { id, ...patch } = args;
+  const previous = getRootMatchPolicy({ id });
+  if (running) throw new Error('请先等待导入完成或取消导入，再修改绑定策略。');
+  const allowed = new Set([
+    'enabled',
+    'onlineMatch',
+    'subjectTypes',
+    'directoryKind',
+    'characterCover',
+    'matchDepth'
+  ]);
+  if (Object.keys(patch).some((key) => !allowed.has(key))) throw new Error('绑定策略选项无效。');
+  if (!Object.keys(patch).length) return previous;
+  if (patch.enabled !== undefined && typeof patch.enabled !== 'boolean')
+    throw new Error('自动绑定开关无效。');
+  const next = { ...previous, ...patch };
+  if (Object.hasOwn(patch, 'enabled') && !Object.hasOwn(patch, 'onlineMatch'))
+    next.onlineMatch = patch.enabled;
+  const validated = importOptions({
+    onlineMatch: next.onlineMatch,
+    subjectTypes: next.subjectTypes,
+    directoryKind: next.directoryKind,
+    ...(next.directoryKind === 'character' ? { characterCover: next.characterCover } : {}),
+    matchDepth: next.matchDepth
+  });
+  if (
+    patch.characterCover !== undefined &&
+    !['local-first', 'bangumi'].includes(patch.characterCover)
+  )
+    throw new Error('角色封面来源无效。');
+  if (next.directoryKind === 'photo') next.enabled = false;
+  else if (!Object.hasOwn(patch, 'enabled')) {
+    if (next.directoryKind === 'character' && previous.directoryKind !== 'character')
+      next.enabled = true;
+    else if (
+      next.directoryKind === 'work' &&
+      (Object.hasOwn(patch, 'onlineMatch') || previous.directoryKind !== 'work')
+    )
+      next.enabled = validated.onlineMatch;
+  }
+  db.exec('BEGIN');
+  try {
+    run(
+      `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover,match_depth,auto_enabled)
+      VALUES(?,?,?,1,?,?,?,?) ON CONFLICT(root) DO UPDATE SET enabled=excluded.enabled,types=excluded.types,
+      directory_kind=excluded.directory_kind,character_cover=excluded.character_cover,match_depth=excluded.match_depth,
+      auto_enabled=excluded.auto_enabled,revision=root_match_policy.revision+1`,
+      id,
+      validated.onlineMatch ? 1 : 0,
+      JSON.stringify(validated.subjectTypes),
+      validated.directoryKind,
+      next.characterCover,
+      validated.matchDepth,
+      next.enabled ? 1 : 0
+    );
+    invalidateRoot(id);
+    run(
+      `UPDATE nodes AS n SET match_review=0 WHERE root=? AND match_review<>0 AND NOT (${reviewScopeSql('n')})`,
+      id
+    );
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  libraryRevision++;
+  send('changed', { root: id, policy: true, revision: libraryRevision });
+  if (matchPolicy(getNode(id)).enabled) {
+    enqueueRoot(id);
+    startOnline();
+  }
+  return getRootMatchPolicy({ id });
 }
 function policyStamp(folder) {
   return JSON.stringify(matchPolicy(folder));
@@ -1491,9 +1723,10 @@ function incompleteResources(folder) {
   );
 }
 function eligibleMatch(folder, policy = matchPolicy(folder)) {
-  // Imports describe a collection root. Only its direct work/character albums
-  // receive automatic identities; manual search remains available at any depth.
-  if (!folder || folder.depth !== 1 || folder.parent !== folder.root) return false;
+  // Match depth bounds automatic identity only; filesystem indexing and manual
+  // binding still work at every depth. Existing imports default to one level.
+  if (!folder || folder.depth < 1 || folder.depth > policy.matchDepth || !policy.enabled)
+    return false;
   if (policy.kind === 'character') return characters.eligible(folder, policy);
   if (
     !folder ||
@@ -1981,13 +2214,22 @@ async function fillOnlineQueue(deferred = null) {
       'SELECT id,stamp FROM match_pending WHERE id>? ORDER BY id LIMIT 64',
       pendingAfter
     );
-    for (const { id, stamp } of pending) {
-      if (deferred?.has(id)) continue;
-      const folder = getNode(id);
-      if (!eligibleMatch(folder) || stamp !== pendingStamp(folder))
-        run('DELETE FROM match_pending WHERE id=?', id);
-      else onlineQueue.set(id, matchJob(folder));
+    const ready = [];
+    db.exec('BEGIN');
+    try {
+      for (const { id, stamp } of pending) {
+        if (deferred?.has(id)) continue;
+        const folder = getNode(id);
+        if (!eligibleMatch(folder) || stamp !== pendingStamp(folder))
+          run('DELETE FROM match_pending WHERE id=?', id);
+        else ready.push([id, matchJob(folder)]);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
+    for (const [id, job] of ready) onlineQueue.set(id, job);
     if (onlineQueue.size) return;
     if (pending.length === 64) {
       pendingAfter = pending.at(-1).id;
@@ -2003,11 +2245,20 @@ async function fillOnlineQueue(deferred = null) {
       await yieldNow();
       continue;
     }
-    const page = q(
-      "SELECT * FROM nodes WHERE parent=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
-      root.id,
-      frontier.after_id
-    );
+    const policy = matchPolicy(root);
+    const page =
+      policy.matchDepth === 1
+        ? q(
+            "SELECT * FROM nodes WHERE parent=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
+            root.id,
+            frontier.after_id
+          )
+        : q(
+            "SELECT * FROM nodes WHERE root=? AND kind='folder' AND missing=0 AND id>? AND depth BETWEEN 1 AND ? ORDER BY id LIMIT 64",
+            root.id,
+            frontier.after_id,
+            policy.matchDepth
+          );
     // Discovery and its bounded page of tasks commit atomically, so restart
     // cannot skip unprocessed members of a page whose cursor already advanced.
     db.exec('BEGIN');
@@ -2046,7 +2297,10 @@ function onlinePause() {
 }
 function onlineStatus(extra = {}) {
   const state = onlinePause();
-  const remaining = one('SELECT COUNT(*) total FROM match_pending').total;
+  const remaining = one(
+    `SELECT COUNT(*) total FROM match_pending p JOIN nodes n ON n.id=p.id
+      WHERE ${rootRemoval.visibleSql('p')} AND n.missing=0 AND ${reviewScopeSql('n')}`
+  ).total;
   return {
     pending: remaining,
     remaining,
@@ -2275,17 +2529,31 @@ async function thumb(id, size = 1024, priority = false) {
   const job = (async () => {
     await thumbSlot(key, priority);
     try {
-      await sharp(source.file, { limitInputPixels: 160000000, page: 0 })
-        .rotate()
-        .resize({
-          width: size,
-          height: Math.round((size * 1400) / 1024),
-          fit: 'inside',
-          withoutEnlargement: true
-        })
-        // Fast encoding keeps cover quality/alpha while reducing first-view queue time.
-        .webp({ quality: 86, alphaQuality: 100, effort: 1 })
-        .toFile(dest + '.tmp');
+      const writeThumbnail = (input) =>
+        sharp(input, { limitInputPixels: 160000000, page: 0 })
+          .rotate()
+          .resize({
+            width: size,
+            height: Math.round((size * 1400) / 1024),
+            fit: 'inside',
+            withoutEnlargement: true
+          })
+          // Fast encoding keeps cover quality/alpha while reducing first-view queue time.
+          .webp({ quality: 86, alphaQuality: 100, effort: 1 })
+          .toFile(dest + '.tmp');
+      try {
+        await writeThumbnail(source.file);
+      } catch {
+        // BMP/HEIC and other browser-incompatible stills share the viewer's
+        // bounded decoder, rather than silently losing folder/media covers.
+        const preview = await imagePreview.preview({
+          id: source.node.id,
+          file: source.file,
+          size: Math.ceil((size * 1400) / 1024),
+          force: true
+        });
+        await writeThumbnail(preview.path);
+      }
       await fsp.rename(dest + '.tmp', dest);
       const stat = await fsp.stat(dest);
       run(
@@ -2633,6 +2901,7 @@ const watchers = new Map(),
   watchPending = new Map();
 let watchTimer;
 function queueWatch(root, filename) {
+  if (!getNode(root.id)) return;
   const absolute = filename ? path.join(root.path, String(filename)) : root.path;
   const changed = getNode(idFor(absolute))?.kind === 'folder' ? absolute : path.dirname(absolute);
   if (
@@ -2701,6 +2970,8 @@ function reconcileWatches() {
     }
 }
 const methods = {
+  getRootMatchPolicy,
+  setRootMatchPolicy,
   localIndexStatus: () => localIndex.status(),
   searchLocalIndex: (args) => localIndex.search(args),
   init: () => ({
@@ -2716,9 +2987,10 @@ const methods = {
       githubRepository: effectiveRepository(setting('githubRepository'))
     },
     progress,
+    removal: rootRemoval.status(),
     online: onlineStatus({ active: onlineRunning }),
     stats: one(
-      "SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN kind IN ('image','video') THEN 1 ELSE 0 END),0) images,COALESCE(SUM(CASE WHEN kind='folder' THEN 1 ELSE 0 END),0) folders FROM nodes WHERE missing=0"
+      `SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN kind IN ('image','video') THEN 1 ELSE 0 END),0) images,COALESCE(SUM(CASE WHEN kind='folder' THEN 1 ELSE 0 END),0) folders FROM nodes n WHERE missing=0 AND ${rootRemoval.visibleSql('n')}`
     ),
     dataDir: home
   }),
@@ -2726,13 +2998,17 @@ const methods = {
   confirmReview,
   get: ({ id }) => hydrate(getNode(id)),
   ancestors: ({ id }) =>
-    q(
-      'WITH RECURSIVE chain AS (SELECT * FROM nodes WHERE id=? UNION ALL SELECT n.* FROM nodes n JOIN chain c ON n.id=c.parent) SELECT id,name,path FROM chain ORDER BY depth',
-      id
-    ),
+    getNode(id)
+      ? q(
+          'WITH RECURSIVE chain AS (SELECT * FROM nodes WHERE id=? UNION ALL SELECT n.* FROM nodes n JOIN chain c ON n.id=c.parent) SELECT id,name,path FROM chain ORDER BY depth',
+          id
+        )
+      : [],
   scan: ({ path: p, ...options }) => scan(p, options),
   cancel: () => {
     cancelled = true;
+    stopScanHeartbeat();
+    scanRemovalController?.abort();
     clearOnline();
     return true;
   },
@@ -2740,9 +3016,29 @@ const methods = {
   asset: async ({ id }) => {
     const n = getNode(id);
     if (!n || !['image', 'video'].includes(n.kind) || n.missing) throw new Error('媒体不存在。');
-    return { path: n.path };
+    let mime;
+    if (n.kind === 'image') {
+      const handle = await fsp.open(n.path, 'r');
+      try {
+        const prefix = Buffer.alloc(4096);
+        const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+        mime = sniffImage(prefix.subarray(0, bytesRead))?.mime;
+      } finally {
+        await handle.close();
+      }
+    }
+    return { path: n.path, mime };
   },
   source: ({ id }) => sourceFor(id),
+  prepareImagePreview: async ({ id, size = 8192 }) => {
+    const n = getNode(id);
+    if (!n || n.kind !== 'image' || n.missing) throw new Error('图片不存在或已离线。');
+    const preview = await imagePreview.preview({ id, file: n.path, size, force: true });
+    const current = getNode(id);
+    if (!current || current.missing || current.path !== n.path)
+      throw new Error('图片已从资料库移除。');
+    return preview;
+  },
   mediaInfo: ({ id }) => media.ensure(id),
   mediaStats: () => media.stats(),
   setPlace: (args) => media.setPlace(args),
@@ -2848,6 +3144,12 @@ const methods = {
       throw new Error('玻璃材质开关应为布尔值。');
     if (key === 'motionLevel' && !['low', 'medium', 'high'].includes(value))
       throw new Error('动效强度无效。');
+    if (key === 'fontFamily') {
+      if (typeof value !== 'string' || value.length > 160 || /[\u0000-\u001f\u007f]/u.test(value))
+        throw new Error('字体名称无效。');
+      value = value.trim();
+    }
+    if (key === 'homeCopy') value = normalizeHomeCopy(value);
     if (key === 'githubRepository') {
       value = effectiveRepository(value);
       if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');
@@ -2984,21 +3286,15 @@ const methods = {
   },
   removeRoot: ({ id }) => {
     const n = getNode(id);
+    if (rootRemoval.isHidden(id)) return true;
     if (!n || n.parent) throw new Error('只可移除顶层分类。');
     if (running) throw new Error('请先等待导入完成。');
-    invalidateRoot(id);
-    db.exec('BEGIN');
-    try {
-      run('DELETE FROM search_index WHERE id IN (SELECT id FROM nodes WHERE root=?)', id);
-      run('DELETE FROM nodes WHERE root=?', id);
-      run('DELETE FROM root_match_policy WHERE root=?', id);
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
-    }
-    media.seed();
-    send('changed', {});
+    // Invalidate live jobs without synchronously deleting the large pending set.
+    invalidateRoot(id, { preserve: true });
+    rootRemoval.enqueue(n);
+    watchPending.delete(id);
+    libraryRevision++;
+    send('changed', { root: id, removed: true, revision: libraryRevision });
     reconcileWatches();
     return true;
   },
@@ -3006,7 +3302,9 @@ const methods = {
     if (cacheTask) await cacheTask.catch(() => {});
     stopping = true;
     cancelled = true;
+    stopScanHeartbeat();
     clearOnline({ preserve: true });
+    await rootRemoval.stop();
     if (scanTask) await scanTask.catch(() => {});
     if (onlineTask) await onlineTask.catch(() => {});
     await Promise.allSettled([...subjectJobs]);
@@ -3017,6 +3315,8 @@ const methods = {
     await videoSaveTail;
     await media.stop();
     await Promise.allSettled([...thumbJobs.values()]);
+    await imagePreview.stop();
+    await heifDecoder.stop();
     localIndex.close();
     try {
       await maintenance.close();
@@ -3042,7 +3342,7 @@ parentPort.on('message', async ({ request, method, args }) => {
     const result = await methods[method](args || {});
     parentPort.postMessage({ request, result });
   } catch (e) {
-    parentPort.postMessage({ request, error: e.message, stack: e.stack });
+    parentPort.postMessage({ request, error: e.message, code: e.code, stack: e.stack });
   } finally {
     if (tracked) activeRequests--;
   }
@@ -3052,11 +3352,35 @@ sortKeysReady.then(
     // Existing libraries need this reconciliation once. Scanner commits already
     // seed/reset individual media rows atomically with each changed node.
     migrateOnce('mediaSeedVersion', 1, () => media.seed());
+    // Old misses have no pending task left to resume. Revisit enabled work roots
+    // once per identity policy, using the existing durable, depth-bounded cursor.
+    // Correct/manual identities retain the ordinary eligibleMatch protections.
+    migrateOnce('matchingNamePolicyVersion', MATCHING_POLICY_VERSION, () => {
+      for (const root of roots()) {
+        const policy = matchPolicy(root);
+        if (
+          policy.kind === 'work' &&
+          policy.enabled &&
+          one(
+            `SELECT id FROM nodes WHERE root=? AND kind='folder' AND missing=0
+             AND depth BETWEEN 1 AND ? AND (subject_id IS NULL OR subject_id<=0)
+             AND COALESCE(manual_subject,0)=0 LIMIT 1`,
+            root.id,
+            policy.matchDepth
+          )
+        ) {
+          enqueueRoot(root.id);
+          // An older in-flight cursor may already have passed previous misses.
+          run("UPDATE match_frontier SET after_id='' WHERE root=?", root.id);
+        }
+      }
+    });
     mediaStartupTimer = setTimeout(() => {
       if (!running) media.start().catch((e) => send('error', { message: e.message }));
     }, 600);
     reconcileWatches();
     parentPort.postMessage({ event: 'ready', data: {} });
+    rootRemoval.start();
     if (
       one('SELECT id FROM match_pending LIMIT 1') ||
       one('SELECT root FROM match_frontier LIMIT 1')

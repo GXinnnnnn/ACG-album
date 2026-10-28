@@ -238,7 +238,81 @@ test('boundary placeholders stay beside folders and media respects folder-height
   grid.layout(false);
   assert.equal(grid.getPosition(181).height, grid.getPosition(180).height * 2);
   assert.ok(Math.abs(grid.getPosition(182).height - (natural.height - 48)) < 0.001);
-  assert.equal(grid.getPosition(180).height, grid.width + 70);
+  assert.equal(grid.getPosition(180).height, grid.width + 40);
+  grid.reset();
+});
+
+test('folder details reclaim each row while retaining titles, cards and scroll anchors', async () => {
+  for (const width of [700, 3448])
+    for (const density of [158, 222]) {
+      const f = await fixture(500, 0, width, density),
+        { grid, settings, viewport, wall } = f,
+        index = grid.cols * 3;
+      grid.restoreAnchor(index, 96);
+      await f.settle();
+      const anchor = grid.captureAnchor(88),
+        before = grid.getPosition(anchor.index),
+        b = grid.cards.get(anchor.index),
+        info = b.querySelector('.card-info'),
+        image = b.querySelector('img'),
+        extent = Number.parseFloat(wall.style.height),
+        rows = Math.ceil(grid.total / grid.cols);
+      for (const details of [false, true, false, true]) {
+        settings.details = details;
+        grid.layout(false);
+        grid.restoreAnchor(anchor.index, anchor.offset);
+        await f.settle();
+        const current = grid.getPosition(anchor.index);
+        assert.equal(current.height, before.height - (details ? 0 : 30));
+        assert.equal(grid.rowHeight, current.height + 19);
+        assert.ok(
+          Math.abs(current.top - viewport.scrollTop - anchor.offset) < 0.001,
+          'The visible folder remains at the same viewport pixel'
+        );
+        assert.ok(
+          Math.abs(Number.parseFloat(wall.style.height) - (extent - (details ? 0 : rows * 30))) <
+            0.001,
+          'Every folder row gives back its hidden subtitle space'
+        );
+        assert.equal(grid.cards.get(anchor.index), b);
+        assert.equal(image.writes.length, 1, 'Details changes retain decoded covers');
+        assert.equal(info.hidden, false, 'Folder titles remain visible');
+        assert.equal(info.style.display, '');
+        assert.equal(info.style.height, details ? '70px' : '40px');
+      }
+      grid.reset();
+    }
+});
+
+test('mixed boundary rows reflow without overlap when folder and media details change together', async () => {
+  const f = await fixture(181, 360),
+    { grid, settings, viewport } = f;
+  grid.restoreAnchor(180, 96);
+  await f.settle();
+  const anchor = grid.captureAnchor(88),
+    before = grid.getPosition(180);
+  for (const details of [false, true, false]) {
+    settings.details = details;
+    grid.layout(false);
+    grid.restoreAnchor(anchor.index, anchor.offset);
+    await f.settle();
+    const folder = grid.getPosition(180),
+      media = grid.getPosition(181);
+    assert.equal(folder.height, before.height - (details ? 0 : 30));
+    assert.equal(folder.top, media.top, 'The partial boundary row stays shared');
+    assert.equal(
+      media.height,
+      folder.height * 2,
+      'The media cap follows the visible folder height'
+    );
+    assert.ok(
+      Math.abs(grid.getPosition(anchor.index).top - viewport.scrollTop - anchor.offset) < 0.001
+    );
+    const rectangles = Array.from({ length: 40 }, (_, i) => grid.getPosition(175 + i));
+    for (let i = 0; i < rectangles.length; i++)
+      for (let j = i + 1; j < rectangles.length; j++)
+        assert.ok(disjoint(rectangles[i], rectangles[j]), `Details=${details}: overlap ${i}/${j}`);
+  }
   grid.reset();
 });
 
@@ -627,6 +701,62 @@ test('initial image requests use the fitted DPR tier once and prioritize the vie
   f.grid.reset();
 });
 
+test('an empty resize before an asynchronous list response selects the final layout gap', async (t) => {
+  for (const [folders, media] of [
+    [0, 80],
+    [80, 0],
+    [1, 80]
+  ]) {
+    const f = await fixture(folders, media, 1752, 186),
+      { grid, context, wall } = f,
+      originalApi = context.api;
+    let release;
+    const responseReady = new Promise((resolve) => {
+      release = resolve;
+    });
+    context.api = async (...args) => {
+      await responseReady;
+      return originalApi(...args);
+    };
+    const loading = grid.load({}, 1);
+    // The host ResizeObserver can run after active=true but before list() returns.
+    grid.layout();
+    assert.equal(grid.total, 0);
+    assert.equal(grid.gap, 19);
+    assert.equal(grid.cols, 8);
+    release();
+    await loading;
+    await f.settle();
+    const gap = media ? 8 : 19,
+      expectedColumns = Math.floor((wall.clientWidth + gap) / (186 + gap)),
+      modelRight = Math.max(
+        ...Array.from({ length: grid.total }, (_, i) => {
+          const p = grid.getPosition(i);
+          return p.left + p.width;
+        })
+      ),
+      domRight = Math.max(
+        ...[...grid.cards.values()].map(
+          (card) => parseFloat(card.style.left) + parseFloat(card.style.width)
+        )
+      );
+    t.diagnostic(
+      JSON.stringify({
+        folders,
+        media,
+        columns: grid.cols,
+        gap: grid.gap,
+        rightError: wall.clientWidth - domRight
+      })
+    );
+    assert.equal(grid.gap, gap);
+    assert.equal(grid.cols, expectedColumns);
+    assert.ok(Math.abs(modelRight - wall.clientWidth) < 0.001);
+    assert.ok(Math.abs(domRight - wall.clientWidth) < 0.001);
+    grid.reset();
+  }
+});
+
 test('preset column counts share all available width at 4K and narrow widths', async () => {
   for (const width of [120, 700, 1180, 3448, 3840])
     for (const density of [158, 222])
@@ -739,4 +869,154 @@ test('a DPR change alone upgrades the retained thumbnail and video fallback URLs
   assert.equal(img.writes.length, 4);
   assert.match(img.src, /size=512/);
   grid.reset();
+});
+
+test('an immersive scroll viewport renders above the floating header without changing first-screen card coordinates', async () => {
+  for (const width of [760, 3400]) {
+    const old = await fixture(180, 0, width, 222, 2);
+    const immersive = await fixture(180, 0, width, 222, 2);
+    const oldOrigin = 180,
+      newOrigin = oldOrigin + 72;
+    old.viewport.getBoundingClientRect = () => ({ top: 100 });
+    old.wall.getBoundingClientRect = () => ({ top: 100 + oldOrigin - old.viewport.scrollTop });
+    immersive.viewport.getBoundingClientRect = () => ({ top: 28 });
+    immersive.viewport.clientHeight = old.viewport.clientHeight + 72;
+    immersive.wall.getBoundingClientRect = () => ({
+      top: 28 + newOrigin - immersive.viewport.scrollTop
+    });
+    old.grid.render();
+    immersive.grid.render();
+    assert.equal(
+      100 + oldOrigin + old.grid.getPosition(0).top,
+      28 + newOrigin + immersive.grid.getPosition(0).top
+    );
+    assert.equal(old.grid.width, immersive.grid.width);
+    assert.equal(old.wall.style.height, immersive.wall.style.height);
+    const index = immersive.grid.cols;
+    const position = immersive.grid.getPosition(index);
+    immersive.viewport.scrollTop = newOrigin + position.top - 10;
+    immersive.grid.render();
+    await immersive.settle();
+    assert.ok(immersive.grid.cards.has(index));
+    assert.equal(
+      28 + newOrigin + position.top - immersive.viewport.scrollTop,
+      38,
+      'card reaches the header top instead of clipping at y100'
+    );
+    const anchor = immersive.grid.captureAnchor(84);
+    const before = immersive.grid.cards.get(anchor.index);
+    const srcWrites = before.querySelector('img').writes.length;
+    immersive.grid.render();
+    assert.equal(immersive.grid.cards.get(anchor.index), before);
+    assert.equal(before.querySelector('img').writes.length, srcWrites);
+    immersive.settings.density = 158;
+    immersive.grid.layout(false);
+    immersive.grid.restoreAnchor(anchor.index, anchor.offset);
+    assert.equal(
+      newOrigin + immersive.grid.getPosition(anchor.index).top - immersive.viewport.scrollTop,
+      anchor.offset
+    );
+    old.grid.reset();
+    immersive.grid.reset();
+  }
+});
+
+test('a bottom-edge probe re-aligns its unloaded target after real page dimensions replace estimates', async () => {
+  const f = await fixture(0, 280, 824, 186, 1);
+  const { grid, viewport, wall } = f;
+  const origin = 218,
+    index = grid.total - grid.cols,
+    sampleY = 998;
+  viewport.clientHeight = 1000;
+  wall.getBoundingClientRect = () => ({ top: origin - viewport.scrollTop });
+  assert.equal(grid.items.has(index), false);
+  const estimate = grid.getPosition(index).top;
+  viewport.scrollTop = origin + estimate - sampleY + 20;
+  grid.render();
+  await f.settle();
+  assert.equal(grid.items.has(index), true);
+  assert.notEqual(
+    grid.getPosition(index).top,
+    estimate,
+    'real dimensions change the unseen-page estimate'
+  );
+  // The GUI probe must follow the target instead of waiting at the obsolete jump.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    viewport.scrollTop = origin + grid.getPosition(index).top - sampleY + 20;
+    grid.render();
+    await f.settle();
+    if (grid.cards.has(index)) break;
+  }
+  assert.ok(grid.cards.has(index));
+  assert.equal(origin + grid.getPosition(index).top - viewport.scrollTop, sampleY - 20);
+  assert.ok(grid.cards.size < grid.total);
+  assert.deepEqual(f.errors, []);
+  grid.reset();
+});
+
+test('window-edge viewport keeps absolute first-screen positions and virtualizes both physical edges', async () => {
+  for (const width of [760, 3400])
+    for (const dpr of [1, 2]) {
+      const old = await fixture(180, 0, width, 186, dpr);
+      const edge = await fixture(180, 0, width, 186, dpr);
+      const oldOrigin = 252,
+        edgeOrigin = oldOrigin + 28;
+      old.viewport.getBoundingClientRect = () => ({ top: 28 });
+      old.wall.getBoundingClientRect = () => ({ top: 28 + oldOrigin - old.viewport.scrollTop });
+      edge.viewport.getBoundingClientRect = () => ({ top: 0 });
+      edge.viewport.clientHeight = old.viewport.clientHeight + 56;
+      edge.wall.getBoundingClientRect = () => ({ top: edgeOrigin - edge.viewport.scrollTop });
+      old.grid.render();
+      edge.grid.render();
+      assert.equal(
+        28 + oldOrigin + old.grid.getPosition(0).top,
+        edgeOrigin + edge.grid.getPosition(0).top
+      );
+      assert.equal(edge.grid.width, old.grid.width);
+      assert.equal(edge.wall.style.height, old.wall.style.height);
+      assert.equal(
+        oldOrigin + parseFloat(old.wall.style.height) - old.viewport.clientHeight,
+        edgeOrigin + parseFloat(edge.wall.style.height) + 28 - edge.viewport.clientHeight,
+        'new internal bottom padding preserves the previous maximum scroll'
+      );
+      const topIndex = edge.grid.cols * 2;
+      const top = edge.grid.getPosition(topIndex);
+      edge.viewport.scrollTop = edgeOrigin + top.top + 16;
+      edge.grid.render();
+      await edge.settle();
+      assert.ok(edge.grid.cards.has(topIndex));
+      assert.equal(edgeOrigin + top.top - edge.viewport.scrollTop, -16);
+      assert.ok(edgeOrigin + top.top + top.height - edge.viewport.scrollTop > 1);
+      const bottomIndex = edge.grid.cols * 8;
+      const bottom = edge.grid.getPosition(bottomIndex);
+      edge.viewport.scrollTop = edgeOrigin + bottom.top - edge.viewport.clientHeight + 16;
+      edge.grid.render();
+      await edge.settle();
+      assert.ok(edge.grid.cards.has(bottomIndex));
+      assert.equal(
+        edgeOrigin + bottom.top - edge.viewport.scrollTop,
+        edge.viewport.clientHeight - 16
+      );
+      assert.ok(
+        edgeOrigin + bottom.top + bottom.height - edge.viewport.scrollTop >
+          edge.viewport.clientHeight
+      );
+      const anchor = edge.grid.captureAnchor(112);
+      const retained = edge.grid.cards.get(anchor.index),
+        writes = retained.querySelector('img').writes.length;
+      edge.grid.render();
+      assert.equal(edge.grid.cards.get(anchor.index), retained);
+      assert.equal(retained.querySelector('img').writes.length, writes);
+      edge.settings.density = 222;
+      edge.grid.layout(false);
+      edge.grid.restoreAnchor(anchor.index, anchor.offset);
+      assert.equal(
+        edgeOrigin + edge.grid.getPosition(anchor.index).top - edge.viewport.scrollTop,
+        anchor.offset
+      );
+      assert.ok(edge.grid.cards.size < edge.grid.total);
+      assert.deepEqual(edge.errors, []);
+      old.grid.reset();
+      edge.grid.reset();
+    }
 });

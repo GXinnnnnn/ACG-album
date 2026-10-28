@@ -26,8 +26,13 @@ async function revealTheme(theme) {
   const root = document.documentElement;
   const motion = matchMedia('(prefers-reduced-motion: reduce)');
   const simple = () => motion.matches || root.dataset.motion === 'low' || document.hidden;
-  if (!document.startViewTransition || simple()) {
+  const persist = async () => {
     await saveSetting('theme', theme);
+    // A view-transition snapshot must include optical edges in the new palette.
+    window.albumLiquidGlass?.refresh({ immediate: true });
+  };
+  if (!document.startViewTransition || simple()) {
+    await persist();
     return;
   }
   const rect = document.querySelector('#theme-button').getBoundingClientRect();
@@ -35,8 +40,9 @@ async function revealTheme(theme) {
     y = rect.top + rect.height / 2;
   let transition;
   root.classList.add('theme-revealing');
+  window.albumLiquidGlass?.suspend(true);
   try {
-    transition = document.startViewTransition(() => saveSetting('theme', theme));
+    transition = document.startViewTransition(persist);
     try {
       await transition.ready;
     } catch {
@@ -90,5 +96,6 @@ async function revealTheme(theme) {
       await transition.finished.catch(() => {});
     }
     root.classList.remove('theme-revealing');
+    window.albumLiquidGlass?.suspend(false);
   }
 }

@@ -18,7 +18,8 @@ function harness({
     throw new Error('unexpected native network');
   },
   schedule = setTimeout,
-  cancel = clearTimeout
+  cancel = clearTimeout,
+  systemFonts
 } = {}) {
   const handlers = new Map(),
     sent = [],
@@ -80,7 +81,8 @@ function harness({
       assert.equal(method, 'init');
       return { settings: { githubRepository: repository } };
     },
-    getWindow: () => win
+    getWindow: () => win,
+    systemFonts
   });
   return {
     ...module.exports,
@@ -499,4 +501,34 @@ test('all displayed credit and author links open through the HTTPS allowlist', a
   ])
     assert.throws(() => h.openExternal(url));
   assert.equal(h.external.length, Object.values(credits).flat().length + 1);
+});
+test('system font IPC is lazy, read-only, and rejects every caller-supplied argument', async () => {
+  let calls = 0;
+  const h = harness({
+    systemFonts: async () => {
+      calls++;
+      return {
+        families: ['Microsoft YaHei', '微软雅黑', '宋体'],
+        source: 'windows-installed-fonts'
+      };
+    }
+  });
+  assert.equal(calls, 0);
+  const handler = h.handlers.get('library:systemFonts');
+  assert.equal(typeof handler, 'function');
+  assert.deepEqual(await handler(), {
+    families: ['Microsoft YaHei', '微软雅黑', '宋体'],
+    source: 'windows-installed-fonts'
+  });
+  assert.equal(calls, 1);
+  for (const args of [
+    { command: 'Get-Process' },
+    { path: 'C:\\fonts' },
+    ['Arial'],
+    'Arial',
+    null,
+    42
+  ])
+    assert.throws(() => handler(null, args), /不接受参数/);
+  assert.equal(calls, 1);
 });

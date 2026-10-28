@@ -327,7 +327,7 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
     [{ search: 'Needle', scope: 'root-a' }, ['favorite', 'nested']],
     [{ search: 'Needle', favorites: true }, ['favorite', 'other-favorite']],
     [{ search: 'Needle', filter: 'pending', scope: 'root-b' }, ['other-favorite']],
-    [{ filter: 'pending' }, ['root-a', 'root-b', 'favorite', 'nested', 'other-favorite']],
+    [{ filter: 'pending' }, ['favorite', 'other-favorite']],
     [{ parent: 'root-a', filter: 'folders' }, ['favorite']],
     [{ parent: 'root-a', filter: 'images' }, ['favorite']],
     [{ parent: 'root-a', timeline: true, month: '2026-10', place: 'somewhere' }, ['favorite']],
@@ -341,7 +341,7 @@ test('bulk query semantics match home, favorites, scoped search, pending, media,
         add('root-a', { parent: null, depth: 0 });
         add('root-b', { root: 'root-b', parent: null, depth: 0 });
         add('favorite', { name: 'Needle favorite', favorite: 1, match_review: 1 });
-        add('nested', { name: 'Needle nested', parent: 'favorite', match_review: 1 });
+        add('nested', { name: 'Needle nested', parent: 'favorite', depth: 2, match_review: 1 });
         add('other-favorite', {
           name: 'Needle other',
           root: 'root-b',

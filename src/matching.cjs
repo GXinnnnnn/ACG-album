@@ -1,9 +1,16 @@
 'use strict';
 const { normalize, similarity, subjectNames, genericTitle } = require('./model.cjs');
+const { VERIFIED_ALIAS_VERSION } = require('./verified-title-aliases.cjs');
 
+const MATCHING_POLICY_VERSION = '2026-10-27-number-symbol-v1';
 const MIN_CONFIDENCE = 0.88;
 const IMPORT_MIN_CONFIDENCE = 0.85;
 const POPULAR_SUBTITLE_COLLECTIONS = 1000;
+function seriesSideStory(name) {
+  return /续篇|續篇|后传|後傳|后日谈|後日談|外传|外傳|番外|特别篇|特別篇|剧场|劇場|电影|電影|总集篇|総集編|\b(?:after\s*story|after|extra|encore|sequel|fan\s*dis[ck]|movie|film|ova|oad|special|sp|spin[\s-]*off)\b/i.test(
+    String(name || '').normalize('NFKC')
+  );
+}
 function subtitleBlocked(name) {
   const value = String(name || '').normalize('NFKC');
   return (
@@ -109,13 +116,7 @@ function evidence(queries, explicit, subject, series = false) {
   };
   const names = subjectNames(subject).map((name) => ({ name, ...installment(name) }));
   const subtitleAllowed = !names.some(({ name }) => subtitleBlocked(name));
-  const seriesAllowed =
-    series &&
-    !names.some(({ name }) =>
-      /外传|外傳|番外|剧场|劇場|电影|電影|\b(?:movie|film|ova|oad|special|spin[\s-]?off)\b/i.test(
-        name
-      )
-    );
+  const seriesAllowed = series && !names.some(({ name }) => seriesSideStory(name));
   if (!explicit.length) {
     const primary = [subject.name, subject.name_cn].filter((name) => typeof name === 'string');
     // An alias of the unnumbered base cannot hide a visible sequel identity.
@@ -375,7 +376,16 @@ function rankImportSubjects(
   // Restrict bounded recall before popularity is considered: an exact match
   // must never allow a nearby fuzzy candidate to bypass complete recall.
   const eligible = complete ? admitted : admitted.filter((item) => item.match === 1);
-  const chosen = chooseClose(eligible) || null;
+  let chosen = chooseClose(eligible) || null;
+  if (titleGroups.length && eligible.length) {
+    const [best, rival] = eligible;
+    // Popularity/date cannot decide between two equally supported translations,
+    // just as in explicit search. Complete alias proof must identify one work.
+    chosen =
+      rival && best.agreement === rival.agreement && best.primaryParts === rival.primaryParts
+        ? null
+        : best;
+  }
   // Keep the selected item visible even when chronology promoted an item that
   // appeared below the first ten rows in the evidence ordering.
   const visible = chosen
@@ -401,13 +411,52 @@ function rankImportSubjects(
   };
 }
 
+// The local reader calls this only after independent, complete bilingual Vol
+// evidence. Explicit-title admission remains in rankImportSubjects above.
+function rankVerifiedSeriesMembers(members, types) {
+  const valid = members.filter(
+    ({ subject, volume }) =>
+      subject &&
+      Number.isSafeInteger(subject.id) &&
+      subject.id > 0 &&
+      types.includes(subject.type) &&
+      Number.isInteger(volume) &&
+      volume >= 0 &&
+      volume < 100
+  );
+  const volumes = new Set(valid.map((item) => item.volume));
+  const ambiguous = valid.length !== members.length || volumes.size !== valid.length;
+  const ranked = valid.map(({ subject, volume }) => ({
+    subject,
+    volume,
+    match: 0.97,
+    total: Number.isFinite(collections(subject)) ? collections(subject) : 0,
+    date: dateValue(subject.date)
+  }));
+  const chosen = !ambiguous && volumes.size >= 2 ? chooseClose(ranked) : null;
+  const ordered = chosen ? [chosen, ...ranked.filter((item) => item !== chosen)] : ranked;
+  return {
+    selected: chosen?.subject || null,
+    selectedMatch: chosen?.match ?? null,
+    candidates: ordered.slice(0, 10).map((item) => ({
+      ...item.subject,
+      match: item.match,
+      collection_total: item.total,
+      series_volume: item.volume
+    })),
+    selectionReason: chosen ? 'bilingual-series-representative' : 'ambiguous-series-identity',
+    seriesRepresentative: !!chosen,
+    evidenceLabel: chosen ? '系列代表' : '系列身份不明确'
+  };
+}
+
 // Bounded promise cache coalesces repeated multilingual folder queries. Failed
 // requests never become persistent misses, and categories are part of identity.
 function createSearchCache({ limit = 128, ttl = 10 * 60 * 1000, now = Date.now } = {}) {
   const cache = new Map();
   return {
     get(query, types, load) {
-      const key = `${[...types].sort((a, b) => a - b).join(',')}|${normalize(query)}`;
+      const key = `${MATCHING_POLICY_VERSION}:${VERIFIED_ALIAS_VERSION}|${[...types].sort((a, b) => a - b).join(',')}|${normalize(query)}`;
       const existing = cache.get(key);
       if (existing && now() - existing.at < ttl) return existing.value;
       if (existing) cache.delete(key);
@@ -427,9 +476,12 @@ function createSearchCache({ limit = 128, ttl = 10 * 60 * 1000, now = Date.now }
   };
 }
 module.exports = {
+  MATCHING_POLICY_VERSION,
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
   rankImportSubjects,
+  rankVerifiedSeriesMembers,
+  seriesSideStory,
   installment,
   collections,
   dateValue,

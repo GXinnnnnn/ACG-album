@@ -9,8 +9,8 @@ const icons = {
     '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
   'check-circle': '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
   collapse: '<path d="m8 7 4 4 4-4m-8 10 4-4 4 4"/>',
-  settings:
-    '<path d="M12.22 2h-.44a2 2 0 0 0-2 1.72l-.12.91a2 2 0 0 1-1.18 1.52l-.24.11a2 2 0 0 1-1.9-.18l-.74-.54a2 2 0 0 0-2.64.67l-.22.38a2 2 0 0 0 .64 2.68l.73.55a2 2 0 0 1 .8 1.7v.27a2 2 0 0 1-.8 1.71l-.73.54a2 2 0 0 0-.64 2.68l.22.39a2 2 0 0 0 2.64.67l.74-.54a2 2 0 0 1 1.9-.18l.24.11a2 2 0 0 1 1.18 1.52l.12.91A2 2 0 0 0 11.78 22h.44a2 2 0 0 0 2-1.72l.12-.91a2 2 0 0 1 1.18-1.52l.24-.11a2 2 0 0 1 1.9.18l.74.54a2 2 0 0 0 2.64-.67l.22-.39a2 2 0 0 0-.64-2.68l-.73-.54a2 2 0 0 1-.8-1.71v-.27a2 2 0 0 1 .8-1.71l.73-.54a2 2 0 0 0 .64-2.68l-.22-.38a2 2 0 0 0-2.64-.67l-.74.54a2 2 0 0 1-1.9.18l-.24-.11a2 2 0 0 1-1.18-1.52l-.12-.91A2 2 0 0 0 12.22 2Z"/><circle cx="12" cy="12" r="3"/>',
+  settings: window.albumSidebarIcons.settings,
+  pin: window.albumSidebarIcons.pin,
   'arrow-left': '<path d="m12 5-7 7 7 7M5 12h14"/>',
   home: '<path d="m3 10 9-7 9 7M5 9v11h5v-6h4v6h5V9"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
@@ -125,7 +125,8 @@ function applySettings() {
   window.applyNavigationSettings?.();
   window.albumEffects?.apply(S.settings);
   if ($('#liquid-glass')) $('#liquid-glass').checked = S.settings.liquidGlass !== false;
-  if ($('#motion-level')) $('#motion-level').value = S.settings.motionLevel || 'medium';
+  if ($('#motion-level')) $('#motion-level').value = S.settings.motionLevel || 'high';
+  window.albumTypography?.apply(S.settings);
   applyDisplaySettings();
 }
 async function saveSetting(key, value) {
@@ -133,6 +134,7 @@ async function saveSetting(key, value) {
   S.settings[key] = value;
   applySettings();
 }
+window.albumHomeCopy?.mount({ settings: () => S.settings, save: saveSetting, notify: toast });
 function queryArgs() {
   return {
     parent: S.parent,
@@ -255,44 +257,83 @@ async function loadPage(keepScroll = false) {
         }[S.view];
   $('#footer-location').textContent = S.current?.path || 'ACG-album · 本地相册';
   $('#footer-location').title = S.current?.path || '';
-  $('#refresh-button').hidden = !S.roots.length;
-  $('#refresh-button').disabled = false;
-  $$('.filter-tabs button').forEach((b) =>
-    b.classList.toggle('active', b.dataset.filter === S.filter)
-  );
+  const refreshButton = $('#refresh-button');
+  if (refreshButton) refreshButton.disabled = libraryRefreshBusy || scanActive || !S.roots.length;
+  $$('.filter-tabs button').forEach((b) => {
+    const active = b.dataset.filter === S.filter;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  updateFilterIndicator();
   $('#sort').value = S.sort;
   $('#sort-direction').style.transform = S.direction === 'desc' ? 'rotate(180deg)' : '';
   updateMediaView();
-  const crumbs = $('#breadcrumbs');
-  crumbs.innerHTML = '<button data-home>资料库</button>';
-  crumbs.querySelector('button').onclick = () => attempt(() => navigate({}));
-  if (S.current) {
-    const ancestors = await api('ancestors', { id: S.current.id });
-    if (version !== S.loadVersion) return;
-    for (const n of ancestors) {
-      crumbs.insertAdjacentHTML('beforeend', svg('chevron-right'));
-      const b = document.createElement('button');
-      b.textContent = n.name;
-      b.title = n.path;
-      b.onclick = () => attempt(() => navigate({ parent: n.id }));
-      crumbs.append(b);
-    }
-  }
+  window.albumHomeCopy?.render(S.view === 'library' && !S.parent && !S.search);
+  const ancestors = S.current ? await api('ancestors', { id: S.current.id }) : [];
+  if (version !== S.loadVersion) return;
+  renderBreadcrumbs(ancestors);
   if (S.current && !S.search) renderIntro(S.current);
   if (isOverview()) {
     grid.hide();
-    $('#result-count').textContent = `${fmt(S.roots.length)} 个分类`;
+    setResultCount(`${fmt(S.roots.length)} 个分类`);
     if (!S.roots.length) renderEmpty();
     else await renderOverview(version);
   } else {
     const total = await grid.load(queryArgs(), version);
     if (version !== S.loadVersion) return;
-    $('#result-count').textContent = `${fmt(total)} 项`;
+    setResultCount(`${fmt(total)} 项`);
     if (!total) renderEmpty(false);
   }
   if (keepScroll) $('#viewport').scrollTop = scroll;
   else $('#viewport').scrollTop = 0;
   updateScrollActions();
+}
+let filterResizeObserver;
+function updateFilterIndicator() {
+  const tabs = $('.navigation .filter-tabs'),
+    active = tabs?.querySelector('button.active');
+  if (!active) return;
+  if (!filterResizeObserver) {
+    filterResizeObserver = new ResizeObserver(updateFilterIndicator);
+    filterResizeObserver.observe(tabs);
+  }
+  for (const [name, value] of Object.entries({
+    '--filter-x': active.offsetLeft + 'px',
+    '--filter-y': active.offsetTop + 'px',
+    '--filter-width': active.offsetWidth + 'px',
+    '--filter-height': active.offsetHeight + 'px'
+  })) {
+    if (tabs.style.getPropertyValue(name) !== value) tabs.style.setProperty(name, value);
+  }
+  if (!tabs.hasAttribute('data-indicator-ready'))
+    requestAnimationFrame(() => tabs.setAttribute('data-indicator-ready', ''));
+}
+function renderBreadcrumbs(ancestors) {
+  const crumbs = $('#breadcrumbs');
+  const key = JSON.stringify(ancestors.map(({ id, name, path }) => [id, name, path]));
+  if (crumbs.dataset.routeKey === key) return;
+  const fragment = document.createDocumentFragment();
+  const home = document.createElement('button');
+  home.dataset.home = '';
+  home.textContent = '资料库';
+  home.onclick = () => attempt(() => navigate({}));
+  fragment.append(home);
+  for (const node of ancestors) {
+    const separator = document.createElement('span');
+    separator.innerHTML = svg('chevron-right');
+    separator.setAttribute('aria-hidden', 'true');
+    const button = document.createElement('button');
+    button.textContent = node.name;
+    button.title = node.path;
+    button.onclick = () => attempt(() => navigate({ parent: node.id }));
+    fragment.append(separator, button);
+  }
+  crumbs.replaceChildren(fragment);
+  crumbs.dataset.routeKey = key;
+}
+function setResultCount(text) {
+  const count = $('#result-count');
+  if (count.textContent !== text) count.textContent = text;
 }
 function renderEmpty(first = true) {
   const firstRun = first && !S.roots.length;
@@ -317,7 +358,23 @@ function renderEmpty(first = true) {
     })
   );
 }
+function cardCountText(value, abbreviated = true) {
+  const count = Math.max(0, Math.floor(Number(value) || 0));
+  if (!Number.isFinite(count)) return '0 张';
+  if (abbreviated && count > 10000000000) return (count / 100000000).toFixed(1) + '亿张';
+  if (abbreviated && count > 1000000) return (count / 10000).toFixed(1) + '万张';
+  return fmt(count) + ' 张';
+}
+function cardCountMarkup(n) {
+  if (n.kind !== 'folder') return `<span class="card-count">${esc(pathExt(n.name))}</span>`;
+  const full = cardCountText(n.files, false);
+  const label = cardCountText(n.files),
+    unit = label.endsWith('万张') ? '万张' : label.endsWith('亿张') ? '亿张' : ' 张',
+    value = label.slice(0, -unit.length);
+  return `<span class="card-count" title="${esc(full)}" aria-label="${esc(full)}"><span class="card-count-value">${esc(value)}</span><span class="card-count-unit">${unit}</span></span>`;
+}
 function cardReviewMessage(n) {
+  if (n.review_eligible === false) return '';
   // Persisted manual confirmation wins over legacy review flags. A Bangumi
   // association is a successful match at any confidence; only local fallback
   // covers without an associated entry need review.
@@ -345,13 +402,14 @@ function card(
     'aria-label',
     (n.kind === 'folder' ? '打开相册：' : '查看图片：') +
       n.name +
+      (n.kind === 'folder' ? '，' + cardCountText(n.files, false) : '') +
       (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '')
   );
   const icon =
     n.cover_source === 'folder-icon' ||
     n.cover_source === 'local-icon' ||
     (n.kind === 'folder' && !n.cover);
-  b.innerHTML = `<div class="cover-shell"><span class="cover-placeholder">${svg(n.kind === 'folder' ? 'folder' : 'image')}</span><img alt="" draggable="false" class="${icon ? 'icon-cover' : ''}" style="object-position:${n.crop_x ?? 50}% ${n.crop_y ?? 50}%"><span class="cover-gradient"></span>${cardReviewBadge(n)}${n.favorite ? `<span class="card-favorite">${svg('heart')}</span>` : ''}<div class="card-bottom-overlay">${svg(n.kind === 'folder' ? 'folder' : 'image')}<span>${n.kind === 'folder' ? fmt(n.files) + ' 张' : pathExt(n.name)}</span>${n.metadata?.rating?.score ? `<span class="card-rating">★ ${Number(n.metadata.rating.score).toFixed(1)}</span>` : ''}</div></div><div class="card-info"><span class="card-title">${esc(n.name)}</span><span class="card-subtitle"><span>${n.kind === 'folder' ? (n.folders ? fmt(n.folders) + ' 个子相册' : '本地相册') : bytes(n.bytes)}</span><span>${n.kind === 'folder' ? (n.manual_cover ? '自选封面' : n.cover_source === 'bangumi' ? 'Bangumi' : '本地') : new Date(n.mtime).toLocaleDateString('zh-CN')}</span></span></div>`;
+  b.innerHTML = `<div class="cover-shell"><span class="cover-placeholder">${svg(n.kind === 'folder' ? 'folder' : 'image')}</span><img crossorigin="anonymous" alt="" draggable="false" class="${icon ? 'icon-cover' : ''}" style="object-position:${n.crop_x ?? 50}% ${n.crop_y ?? 50}%"><span class="cover-gradient"></span>${cardReviewBadge(n)}${n.favorite ? `<span class="card-favorite">${svg('heart')}</span>` : ''}<div class="card-bottom-overlay">${svg(n.kind === 'folder' ? 'folder' : 'image')}${cardCountMarkup(n)}${n.metadata?.rating?.score ? `<span class="card-rating">★ ${Number(n.metadata.rating.score).toFixed(1)}</span>` : ''}</div></div><div class="card-info"><span class="card-title">${esc(n.name)}</span><span class="card-subtitle"><span>${n.kind === 'folder' ? (n.folders ? fmt(n.folders) + ' 个子相册' : '本地相册') : bytes(n.bytes)}</span><span>${n.kind === 'folder' ? (n.manual_cover ? '自选封面' : n.cover_source === 'bangumi' ? 'Bangumi' : '本地') : new Date(n.mtime).toLocaleDateString('zh-CN')}</span></span></div>`;
   const img = b.querySelector('img');
   applyCoverCrop(img, n);
   img.onload = () => {
@@ -375,12 +433,21 @@ function card(
   return b;
 }
 // Import checkpoints update folder data without replacing the loaded cover or keyboard focus.
-function updateFolderCard(b, n, index = Number(b.dataset.index) || 0) {
+function updateFolderCard(
+  b,
+  n,
+  index = Number(b.dataset.index) || 0,
+  width = Number(S.settings.density || 222)
+) {
   b.dataset.index = index;
   b.title = n.name;
   b.setAttribute(
     'aria-label',
-    '打开相册：' + n.name + (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '')
+    '打开相册：' +
+      n.name +
+      '，' +
+      cardCountText(n.files, false) +
+      (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '')
   );
   const img = b.querySelector('img');
   img.style.display = '';
@@ -389,7 +456,7 @@ function updateFolderCard(b, n, index = Number(b.dataset.index) || 0) {
     ['folder-icon', 'local-icon'].includes(n.cover_source) || !n.cover
   );
   applyCoverCrop(img, n);
-  const src = thumb(n);
+  const src = thumb(n, width);
   if (img.getAttribute('src') !== src) img.src = src;
   b.querySelector('.card-title').textContent = n.name;
   const subtitle = b.querySelector('.card-subtitle');
@@ -400,7 +467,7 @@ function updateFolderCard(b, n, index = Number(b.dataset.index) || 0) {
       ? 'Bangumi'
       : '本地';
   b.querySelector('.card-bottom-overlay').innerHTML =
-    `${svg('folder')}<span>${fmt(n.files)} 张</span>${n.metadata?.rating?.score ? `<span class="card-rating">★ ${Number(n.metadata.rating.score).toFixed(1)}</span>` : ''}`;
+    `${svg('folder')}${cardCountMarkup(n)}${n.metadata?.rating?.score ? `<span class="card-rating">★ ${Number(n.metadata.rating.score).toFixed(1)}</span>` : ''}`;
   b.querySelector('.card-review')?.remove();
   b.querySelector('.cover-shell').insertAdjacentHTML('beforeend', cardReviewBadge(n));
   if (!n.favorite) b.querySelector('.card-favorite')?.remove();
@@ -448,7 +515,7 @@ async function renderOverview(version) {
     tile.dataset.id = n.id;
     tile.className = 'collection-tile' + (expanded ? ' expanded' : '');
     if (!retained)
-      tile.innerHTML = `<div class="collection-image"><img alt="" class="${n.cover_source === 'folder-icon' || !n.cover ? 'folder-icon' : ''}"><button class="collection-open" aria-label="打开分类 ${esc(n.name)}${cardReviewMessage(n) ? '，' + esc(cardReviewMessage(n)) : ''}"></button>${cardReviewBadge(n)}<span class="collection-path">本地分类</span></div><div class="collection-details"><div><h3>${esc(n.name)}</h3><p>${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目</p></div><button class="category-enter" title="打开分类" aria-label="打开 ${esc(n.name)}">${svg('arrow-left').replace('<svg ', '<svg style="transform:rotate(180deg)" ')}</button><button class="category-expand" aria-label="${expanded ? '收起' : '展开'}分类" title="${expanded ? '收起' : '展开'}分类" aria-expanded="${expanded}">${svg(expanded ? 'collapse' : 'chevron-down')}</button></div>`;
+      tile.innerHTML = `<div class="collection-image"><img crossorigin="anonymous" alt="" class="${n.cover_source === 'folder-icon' || !n.cover ? 'folder-icon' : ''}"><button class="collection-open" aria-label="打开分类 ${esc(n.name)}${cardReviewMessage(n) ? '，' + esc(cardReviewMessage(n)) : ''}"></button>${cardReviewBadge(n)}<span class="collection-path">本地分类</span></div><div class="collection-details"><div><h3>${esc(n.name)}</h3><p>${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目</p></div><button class="category-expand" aria-label="${expanded ? '收起' : '展开'}分类" title="${expanded ? '收起' : '展开'}分类" aria-expanded="${expanded}">${svg(expanded ? 'collapse' : 'chevron-down')}</button></div>`;
     tile.querySelector('h3').textContent = n.name;
     tile.querySelector('.collection-details p').textContent =
       `${fmt(n.folders)} 个相册 · ${fmt(n.files)} 个媒体项目`;
@@ -469,8 +536,27 @@ async function renderOverview(version) {
       cover.src = src;
     }
     tile.querySelector('img').onerror = (e) => (e.target.style.opacity = '0');
-    for (const el of tile.querySelectorAll('.collection-open,.category-enter'))
-      el.onclick = () => attempt(() => navigate({ parent: n.id }));
+    tile.querySelector('.category-enter')?.remove();
+    const summary = tile.querySelector('.collection-details > div');
+    summary.classList.add('collection-summary');
+    summary.setAttribute('role', 'button');
+    summary.tabIndex = 0;
+    summary.setAttribute('aria-label', `打开分类 ${n.name}`);
+    summary.onkeydown = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      attempt(() => navigate({ parent: n.id }));
+    };
+    tile.querySelector('.collection-open').onclick = () =>
+      attempt(() => navigate({ parent: n.id }));
+    tile.onclick = (event) => {
+      if (
+        event.defaultPrevented ||
+        event.target.closest('button,a,input,select,.collection-preview')
+      )
+        return;
+      attempt(() => navigate({ parent: n.id }));
+    };
     tile.querySelector('.category-expand').onclick = () => {
       if (expanded) S.overviewExpanded.delete(n.id);
       else S.overviewExpanded.add(n.id);
@@ -484,36 +570,18 @@ async function renderOverview(version) {
       const preview = tile.querySelector('.collection-preview') || document.createElement('div');
       preview.className = 'collection-preview';
       if (!preview.isConnected) tile.append(preview);
-      const result = await api('list', {
-        parent: n.id,
-        filter: 'folders',
-        limit: 12,
-        sort: S.sort,
-        direction: S.direction
-      });
+      await renderOverviewPreview(preview, n, version);
       if (version !== S.loadVersion) return;
-      const cards = new Map(
-        [...preview.querySelectorAll('.album-card')].map((el) => [el.dataset.id, el])
-      );
-      let next = preview.firstElementChild;
-      for (const child of result.items) {
-        const previous = cards.get(String(child.id));
-        const el = previous ? updateFolderCard(previous, child) : card(child, 0, true);
-        if (el !== next) preview.insertBefore(el, next);
-        next = el.nextElementSibling;
-        cards.delete(String(child.id));
-      }
-      for (const el of cards.values()) el.remove();
-      const more = preview.querySelector('.collection-more') || document.createElement('button');
-      more.className = 'collection-more';
-      more.innerHTML = `打开分类，查看全部内容 ${svg('chevron-right')}`;
-      more.onclick = () => attempt(() => navigate({ parent: n.id }));
-      if (preview.lastElementChild !== more) preview.append(more);
     } else tile.querySelector('.collection-preview')?.remove();
   }
   for (const tile of existing.values()) tile.remove();
 }
 const grid = createVirtualGrid();
+// Typography captures/restores its anchor around this synchronous metrics update.
+window.addEventListener('album:font-loaded', () => {
+  grid.layout();
+  updateFilterIndicator();
+});
 let renderFrame = 0;
 $('#viewport').addEventListener(
   'scroll',
@@ -554,7 +622,7 @@ function renderIntro(n) {
     .slice(0, 4)
     .map((p) => p.name + (p.relation ? ' · ' + p.relation : ''))
     .join(' / ');
-  area.innerHTML = `<section class="intro-panel"><div class="intro-art"><img class="intro-cover" alt="${esc(m.name_cn || m.name)}"></div><div class="intro-content"><div class="intro-labels"><span class="chip accent">${{ 1: '书籍', 2: '动画', 3: '音乐', 4: '游戏', 6: '影视' }[m.type] || '作品'}</span>${m.date ? `<span class="chip">${esc(m.date)}</span>` : ''}<span class="chip">${n.manual_subject ? '手动关联' : '自动匹配'} · 本地缓存</span></div><h2>${esc(m.name_cn || m.name)}</h2><div class="intro-original">${esc(m.name || '')}</div><p class="intro-summary">${esc(m.summary || '暂无简介')}</p>${staff ? `<div class="intro-staff">${esc(staff)}</div>` : ''}<div class="intro-actions"><button id="intro-details" class="text-button">查看完整简介 ${svg('chevron-right')}</button><button id="intro-edit" class="text-button">${svg('link')}更改关联</button><button id="intro-refresh" class="text-button">${svg('refresh')}更新评分与简介</button></div></div><div class="intro-score"><strong>${m.rating?.score ? Number(m.rating.score).toFixed(1) : '—'}</strong><small>Bangumi 评分</small><small>${fmt(m.rating?.total)} 人评价</small></div></section>`;
+  area.innerHTML = `<section class="intro-panel"><div class="intro-art"><img crossorigin="anonymous" class="intro-cover" alt="${esc(m.name_cn || m.name)}"></div><div class="intro-content"><div class="intro-labels"><span class="chip accent">${{ 1: '书籍', 2: '动画', 3: '音乐', 4: '游戏', 6: '影视' }[m.type] || '作品'}</span>${m.date ? `<span class="chip">${esc(m.date)}</span>` : ''}<span class="chip">${n.manual_subject ? '手动关联' : '自动匹配'} · 本地缓存</span></div><h2>${esc(m.name_cn || m.name)}</h2><div class="intro-original">${esc(m.name || '')}</div><p class="intro-summary">${esc(m.summary || '暂无简介')}</p>${staff ? `<div class="intro-staff">${esc(staff)}</div>` : ''}<div class="intro-actions"><button id="intro-details" class="text-button">查看完整简介 ${svg('chevron-right')}</button><button id="intro-edit" class="text-button">${svg('link')}更改关联</button><button id="intro-refresh" class="text-button">${svg('refresh')}更新评分与简介</button></div></div><div class="intro-score"><strong>${m.rating?.score ? Number(m.rating.score).toFixed(1) : '—'}</strong><small>Bangumi 评分</small><small>${fmt(m.rating?.total)} 人评价</small></div></section>`;
   if (n.association_type_mismatch) {
     const types = (n.effective_subject_types || [])
       .map((t) => ({ 1: '书籍', 2: '动画', 3: '音乐', 4: '游戏', 6: '三次元' })[t])
@@ -596,7 +664,7 @@ function renderCharacterIntro(n) {
     $('#intro-bind').onclick = () => characterBindModal(n);
     return;
   }
-  area.innerHTML = `<section class="intro-panel"><div class="intro-art"><img class="intro-cover" alt="${esc(m.name_cn || m.name)}"></div><div class="intro-content"><div class="intro-labels"><span class="chip accent">角色</span><span class="chip">${m.source === 'custom' ? '自定义资料' : n.manual_character ? '手动关联' : '精确匹配'} · 本地保存</span></div><h2>${esc(m.name_cn || m.name)}</h2><div class="intro-original">${esc(m.name || '')}</div><p class="intro-summary">${esc(m.summary || '暂无简介')}</p><div class="intro-actions"><button id="intro-details" class="text-button">查看完整简介 ${svg('chevron-right')}</button><button id="intro-edit" class="text-button">${svg('link')}更改角色资料</button>${m.source !== 'custom' ? `<button id="intro-refresh" class="text-button">${svg('refresh')}更新角色简介</button>` : ''}</div></div></section>`;
+  area.innerHTML = `<section class="intro-panel"><div class="intro-art"><img crossorigin="anonymous" class="intro-cover" alt="${esc(m.name_cn || m.name)}"></div><div class="intro-content"><div class="intro-labels"><span class="chip accent">角色</span><span class="chip">${m.source === 'custom' ? '自定义资料' : n.manual_character ? '手动关联' : '精确匹配'} · 本地保存</span></div><h2>${esc(m.name_cn || m.name)}</h2><div class="intro-original">${esc(m.name || '')}</div><p class="intro-summary">${esc(m.summary || '暂无简介')}</p><div class="intro-actions"><button id="intro-details" class="text-button">查看完整简介 ${svg('chevron-right')}</button><button id="intro-edit" class="text-button">${svg('link')}更改角色资料</button>${m.source !== 'custom' ? `<button id="intro-refresh" class="text-button">${svg('refresh')}更新角色简介</button>` : ''}</div></div></section>`;
   const image = area.querySelector('img');
   applyCoverCrop(image, n);
   image.src = thumb(n);
@@ -709,10 +777,12 @@ function characterBindModal(n) {
 }
 function openModal(title, html, width = 610) {
   modalGeneration++;
-  if (!$('#modal').open) modalReturnFocus = document.activeElement;
+  if (!$('#modal').open)
+    modalReturnFocus = window.albumDialogInteraction.rememberFocus(document.activeElement);
   const d = $('#modal');
   d.classList.remove('binding-modal', 'display-dialog');
   $('#modal-title').textContent = title;
+  $('#modal-heading-actions').replaceChildren();
   $('#modal-content').innerHTML = html;
   d.style.width = width + 'px';
   if (!d.open) d.showModal();
@@ -721,15 +791,12 @@ function openModal(title, html, width = 610) {
 }
 function closeModal() {
   $('#modal').close();
-  modalReturnFocus?.focus?.({ preventScroll: true });
+  window.albumDialogInteraction.restoreFocus(modalReturnFocus);
 }
 $('#modal-close').onclick = closeModal;
-$('#modal').addEventListener('click', (e) => {
-  if (e.target === $('#modal') && !$('#settings-shell')) {
-    const r = e.target.getBoundingClientRect();
-    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)
-      closeModal();
-  }
+$('#modal').addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeModal();
 });
 function detailModal(n) {
   const m = n.metadata;
@@ -984,9 +1051,11 @@ function confirmModal(title, message, onConfirm, label = '确认') {
 }
 function showContext(e, n) {
   e.preventDefault();
+  e.stopPropagation();
   const actions = [];
   const action = (label, icon, fn, extra = {}) => actions.push({ label, icon, fn, ...extra });
   if (n.kind === 'folder') {
+    if (!n.parent) action('分类绑定设置…', 'sliders', () => rootBindingModal(n));
     action('相册类型…', 'folder', () => albumKindModal(n));
     action('按时间浏览此相册', 'clock', () =>
       navigate({ view: 'timeline', parent: n.id, filter: 'images' })
@@ -1209,13 +1278,13 @@ async function refreshGrowingView() {
     overviewLast = Date.now();
     const scroll = $('#viewport').scrollTop;
     if (S.roots.length) $('#empty-state').replaceChildren();
-    $('#result-count').textContent = `${fmt(S.roots.length)} 个分类`;
+    setResultCount(`${fmt(S.roots.length)} 个分类`);
     await renderOverview(version);
     if (version === S.loadVersion) $('#viewport').scrollTop = scroll;
   } else if (grid.active) {
     const total = await grid.refreshGrowing();
     if (version !== S.loadVersion || key !== viewKey()) return;
-    $('#result-count').textContent = `${fmt(total)} 项`;
+    setResultCount(`${fmt(total)} 项`);
     if (total) $('#empty-state').replaceChildren();
     if (S.parent) {
       const current = await api('get', { id: S.parent });
@@ -1251,10 +1320,31 @@ const importChoices = {
   onlineMatch: false,
   subjectTypes: [1, 2, 4, 6],
   directoryKind: 'work',
-  characterCover: 'local-first'
+  characterCover: 'local-first',
+  matchDepth: 1
 };
 function importFolder() {
   if (pendingImport || scanActive) return;
+  showImportOptions();
+}
+async function rootBindingModal(n) {
+  const version = S.loadVersion,
+    generation = modalGeneration;
+  const policy = await api('getRootMatchPolicy', { id: n.id });
+  if (version !== S.loadVersion || generation !== modalGeneration) return;
+  showImportOptions({ node: n, policy });
+}
+function showImportOptions(editing = null) {
+  if (!editing && (pendingImport || scanActive)) return;
+  const choices = editing
+    ? {
+        onlineMatch: editing.policy.onlineMatch,
+        subjectTypes: [...editing.policy.subjectTypes],
+        directoryKind: editing.policy.directoryKind,
+        characterCover: editing.policy.characterCover,
+        matchDepth: editing.policy.matchDepth
+      }
+    : importChoices;
   const existing = $('#import-options');
   if (existing?.isConnected && $('#modal').open) {
     $('#import-directory-kind').focus({ preventScroll: true });
@@ -1267,8 +1357,8 @@ function importFolder() {
     { label: '三次元', type: 6 }
   ];
   const dialog = openModal(
-    '导入文件夹',
-    `<div id="import-options" class="import-options"><p class="import-options-intro">保留文件夹层级，原始文件留在原处。本次选择应用到整个导入目录，重扫时继续使用。</p><div class="import-select-row"><label for="import-directory-kind">文件夹按什么命名</label><select id="import-directory-kind"><option value="work">作品名称</option><option value="character">角色名称</option><option value="photo">普通图片 / 相册</option></select></div><div id="import-character-options" class="import-select-row" hidden><label for="import-character-cover">角色封面来源</label><select id="import-character-cover" aria-describedby="import-character-help"><option value="local-first">本地图片 · 自然名称顺序第一张</option><option value="bangumi">Bangumi 角色立绘 · 找不到用本地首图</option></select><p id="import-character-help">仅唯一精确名称自动关联；同名角色请右键手动绑定。封面选择不影响角色简介；立绘下载需要开启联网匹配。</p></div><label class="import-match-row" for="import-online-match"><span><strong id="import-match-label">联网匹配 Bangumi 作品</strong><span id="import-match-help">优先按文件夹原名检索作品，忽略末尾括号附注与「系列」；无高匹配时再尝试分词和少量直接子目录名称。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先最新发行的作品。仅自动关联导入分类下的一级作品文件夹，未匹配时使用本地首图。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p id="import-options-note" class="import-options-note">手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
+    editing ? `绑定设置 · ${editing.node.name}` : '导入文件夹',
+    `<div id="import-options" class="import-options"><p class="import-options-intro">${editing ? '调整当前分类的绑定方式，增量更新时继续使用。移除分类会清除这些设置；手动关联和封面会保留。' : '保留文件夹层级，原始文件留在原处。本次选择应用到整个导入目录，重扫时继续使用。'}</p><div class="import-select-row"><label for="import-directory-kind">文件夹按什么命名</label><select id="import-directory-kind"><option value="work">作品名称</option><option value="character">角色名称</option><option value="photo">普通图片 / 相册</option></select></div><div class="import-select-row"><label for="import-match-depth">自动关联到几级文件夹</label><select id="import-match-depth" aria-describedby="import-depth-help">${Array.from({ length: 8 }, (_, i) => `<option value="${i + 1}">${i + 1 === 1 ? '一级 · 默认，仅当前分类的直接子文件夹' : `包含 ${i + 1} 级文件夹`}</option>`).join('')}</select><p id="import-depth-help">更深层的图片仍会显示，子文件夹使用本地封面，不自动绑定，也不进入待确认项目。</p></div><div id="import-character-options" class="import-select-row" hidden><label for="import-character-cover">角色封面来源</label><select id="import-character-cover" aria-describedby="import-character-help"><option value="local-first">本地图片 · 自然名称顺序第一张</option><option value="bangumi">Bangumi 角色立绘 · 找不到用本地首图</option></select><p id="import-character-help">仅唯一精确名称自动关联；同名角色请右键手动绑定。封面选择不影响角色简介；立绘下载需要开启联网匹配。</p></div><label class="import-match-row" for="import-online-match"><span><strong id="import-match-label">联网匹配 Bangumi 作品</strong><span id="import-match-help">优先按文件夹原名检索作品，忽略末尾括号附注与「系列」；无高匹配时再尝试分词和少量直接子目录名称。</span></span><input id="import-online-match" class="switch" type="checkbox" aria-expanded="false" aria-controls="import-subject-types" aria-describedby="import-match-help"></label><fieldset id="import-subject-types" class="import-subject-types" aria-describedby="import-category-help import-options-error" hidden disabled><legend>检索哪些作品</legend><div class="import-category-chips">${categories.map(({ label, type }) => `<button type="button" class="import-category-chip" data-import-subject-type="${type}" aria-pressed="true"><span class="import-category-check" aria-hidden="true">${svg('check-circle')}</span>${label}</button>`).join('')}</div><p id="import-category-help">可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先最新发行的作品。仅自动关联导入分类下的一级作品文件夹，未匹配时使用本地首图。</p></fieldset><p id="import-options-error" class="inline-error" role="alert" hidden></p><p id="import-options-note" class="import-options-note">手动关联、封面和裁切会保留。</p><div class="modal-actions"><button id="import-options-cancel" type="button" class="subtle-button">取消</button><button id="import-options-confirm" type="button" class="primary">${svg('folder')}选择文件夹</button></div></div>`,
     560
   );
   dialog.setAttribute('aria-labelledby', 'modal-title');
@@ -1279,19 +1369,29 @@ function importFolder() {
     chips = [...root.querySelectorAll('[data-import-subject-type]')];
   let submitted = false;
   const kindSelect = $('#import-directory-kind'),
-    coverSelect = $('#import-character-cover');
+    coverSelect = $('#import-character-cover'),
+    depthSelect = $('#import-match-depth');
+  depthSelect.value = choices.matchDepth || 1;
+  depthSelect.onchange = () => {
+    choices.matchDepth = Number(depthSelect.value);
+    updateChoices();
+  };
+  $('#import-options-confirm').textContent = editing ? '保存绑定设置' : '选择文件夹并导入';
   kindSelect.onchange = () => {
-    importChoices.directoryKind = kindSelect.value;
+    choices.directoryKind = kindSelect.value;
     updateChoices();
   };
   coverSelect.onchange = () => {
-    importChoices.characterCover = coverSelect.value;
+    choices.characterCover = coverSelect.value;
     updateChoices();
   };
   function updateChoices() {
-    const kind = importChoices.directoryKind;
+    const kind = choices.directoryKind;
     kindSelect.value = kind;
-    coverSelect.value = importChoices.characterCover;
+    depthSelect.disabled = kind === 'photo';
+    $('#import-category-help').textContent =
+      `可多选。匹配度超过 85% 时自动关联；分数接近时优先热门作品，人数接近时优先最新发行。仅在所选 ${choices.matchDepth || 1} 级范围内自动关联，其余子目录使用本地封面。`;
+    coverSelect.value = choices.characterCover;
     $('#import-character-options').hidden = kind !== 'character';
     toggle.closest('label').hidden = kind === 'photo';
     $('#import-match-label').textContent =
@@ -1305,9 +1405,9 @@ function importFolder() {
         ? '角色只按唯一精确名称自动关联，同名或未找到时保留本地首图，可右键手动绑定。自然顺序如 1、2、10；手动关联、封面和裁切会保留。'
         : kind === 'photo'
           ? '不匹配 Bangumi 条目，使用本地图片封面。手动封面和裁切会保留。'
-          : '满分匹配不显示提示；未满分会标记匹配度，可右键更改作品关联或确认匹配。未开启或没有合适匹配时，使用最新本地图片。手动关联、封面和裁切会保留。';
-    const enabled = kind === 'work' && importChoices.onlineMatch;
-    toggle.checked = importChoices.onlineMatch;
+          : '成功关联会自动确认；没有合适条目时使用本地图片。更深层的子文件夹仅展示本地封面，不进入待确认。手动关联、封面和裁切会保留。';
+    const enabled = kind === 'work' && choices.onlineMatch;
+    toggle.checked = choices.onlineMatch;
     toggle.setAttribute('aria-expanded', String(enabled));
     fieldset.hidden = !enabled;
     fieldset.disabled = !enabled;
@@ -1315,25 +1415,25 @@ function importFolder() {
       chip.disabled = !enabled;
       chip.setAttribute(
         'aria-pressed',
-        String(importChoices.subjectTypes.includes(Number(chip.dataset.importSubjectType)))
+        String(choices.subjectTypes.includes(Number(chip.dataset.importSubjectType)))
       );
     }
-    if (!enabled || importChoices.subjectTypes.length) {
+    if (!enabled || choices.subjectTypes.length) {
       error.hidden = true;
       error.textContent = '';
       fieldset.removeAttribute('aria-invalid');
     }
   }
   toggle.onchange = () => {
-    importChoices.onlineMatch = toggle.checked;
+    choices.onlineMatch = toggle.checked;
     updateChoices();
   };
   for (const chip of chips) {
     chip.onclick = () => {
       const type = Number(chip.dataset.importSubjectType);
-      importChoices.subjectTypes = importChoices.subjectTypes.includes(type)
-        ? importChoices.subjectTypes.filter((value) => value !== type)
-        : [...importChoices.subjectTypes, type].sort((a, b) => a - b);
+      choices.subjectTypes = choices.subjectTypes.includes(type)
+        ? choices.subjectTypes.filter((value) => value !== type)
+        : [...choices.subjectTypes, type].sort((a, b) => a - b);
       updateChoices();
     };
   }
@@ -1341,13 +1441,15 @@ function importFolder() {
     if (event.repeat && ['Enter', ' '].includes(event.key)) event.preventDefault();
   });
   $('#import-options-cancel').onclick = closeModal;
-  $('#import-options-confirm').onclick = () => {
-    if (submitted || pendingImport || scanActive || !root.isConnected || !dialog.open) return;
+  $('#import-options-confirm').onclick = async () => {
     if (
-      importChoices.directoryKind === 'work' &&
-      importChoices.onlineMatch &&
-      !importChoices.subjectTypes.length
-    ) {
+      submitted ||
+      (!editing && (pendingImport || scanActive)) ||
+      !root.isConnected ||
+      !dialog.open
+    )
+      return;
+    if (choices.directoryKind === 'work' && choices.onlineMatch && !choices.subjectTypes.length) {
       error.textContent = '请至少选择一种作品类型，或关闭联网匹配。';
       error.hidden = false;
       fieldset.setAttribute('aria-invalid', 'true');
@@ -1356,15 +1458,50 @@ function importFolder() {
     }
     submitted = true;
     const options = {
-      onlineMatch: importChoices.directoryKind === 'photo' ? false : importChoices.onlineMatch,
-      subjectTypes: [...importChoices.subjectTypes],
-      directoryKind: importChoices.directoryKind,
-      ...(importChoices.directoryKind === 'character'
-        ? { characterCover: importChoices.characterCover }
-        : {})
+      onlineMatch: choices.directoryKind === 'photo' ? false : choices.onlineMatch,
+      subjectTypes: [...choices.subjectTypes],
+      directoryKind: choices.directoryKind,
+      matchDepth: choices.matchDepth || 1,
+      ...(choices.directoryKind === 'character' ? { characterCover: choices.characterCover } : {})
     };
-    closeModal();
-    void startFolderImport(options);
+    if (!editing) {
+      closeModal();
+      void startFolderImport(options);
+      return;
+    }
+    const patch = { id: editing.node.id };
+    for (const key of ['subjectTypes', 'directoryKind', 'characterCover', 'matchDepth']) {
+      if (
+        options[key] !== undefined &&
+        JSON.stringify(options[key]) !== JSON.stringify(editing.policy[key])
+      )
+        patch[key] = options[key];
+    }
+    if (options.onlineMatch !== editing.policy.onlineMatch) {
+      patch.onlineMatch = options.onlineMatch;
+    }
+    const controls = [...root.querySelectorAll('button,input,select')];
+    controls.forEach((control) => {
+      control.disabled = true;
+    });
+    error.hidden = true;
+    try {
+      if (Object.keys(patch).length > 1) await api('setRootMatchPolicy', patch);
+      if (root.isConnected && dialog.open) closeModal();
+      await loadSummary();
+      await loadPage(true);
+      toast('分类绑定设置已保存，自动检索会按新设置继续。');
+    } catch (exception) {
+      if (root.isConnected && dialog.open) {
+        controls.forEach((control) => {
+          control.disabled = false;
+        });
+        updateChoices();
+        error.textContent = exception.message || String(exception);
+        error.hidden = false;
+        submitted = false;
+      }
+    }
   };
   updateChoices();
   kindSelect.focus({ preventScroll: true });
@@ -1393,9 +1530,15 @@ async function startFolderImport(options) {
     }
   });
 }
+let libraryRefreshBusy = false;
 async function refreshLibrary() {
+  if (libraryRefreshBusy || scanActive) return;
   const b = $('#refresh-button');
-  b.disabled = true;
+  libraryRefreshBusy = true;
+  if (b) {
+    b.disabled = true;
+    b.setAttribute('aria-busy', 'true');
+  }
   try {
     if (S.parent) await api('refresh', { id: S.parent });
     else for (const n of S.roots) await api('refresh', { id: n.id });
@@ -1405,7 +1548,16 @@ async function refreshLibrary() {
   } catch (e) {
     toast(e.message, true);
   } finally {
-    b.disabled = false;
+    libraryRefreshBusy = false;
+    if (b?.isConnected) {
+      b.disabled = false;
+      b.removeAttribute('aria-busy');
+    }
+    const current = $('#refresh-button');
+    if (current && current !== b) {
+      current.disabled = false;
+      current.removeAttribute('aria-busy');
+    }
   }
 }
 function densityModal() {
@@ -1417,6 +1569,15 @@ function densityModal() {
     `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 Ctrl + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
   );
   dialog.classList.add('display-dialog');
+  const refreshButton = document.createElement('button');
+  refreshButton.id = 'refresh-button';
+  refreshButton.className = 'subtle-button display-refresh';
+  refreshButton.innerHTML = `${svg('refresh')}<span>批量增量更新</span>`;
+  refreshButton.title = S.parent ? '增量更新当前目录及其子文件夹' : '增量更新全部已导入分类';
+  refreshButton.disabled = libraryRefreshBusy || scanActive;
+  refreshButton.setAttribute('aria-busy', String(libraryRefreshBusy));
+  refreshButton.onclick = () => attempt(refreshLibrary);
+  $('#modal-heading-actions').append(refreshButton);
   applyDisplaySettings();
   $$('#modal [data-density]').forEach(
     (b) =>
@@ -1656,7 +1817,7 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>卡片尺寸与比例</strong><p>可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
+        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK_中</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div><div class="setting-row"><div><strong>卡片尺寸与比例</strong><p>可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
         $('#sidebar-mode').value = S.settings.sidebarMode || 'auto';
         $('#sidebar-mode').onchange = (e) =>
           attempt(() => saveSetting('sidebarMode', e.target.value));
@@ -1666,7 +1827,11 @@ async function settingsModal(tab = 'appearance') {
         $('#liquid-glass').checked = S.settings.liquidGlass !== false;
         $('#liquid-glass').onchange = (event) =>
           persistEffectSetting('liquidGlass', event.target.checked, event.target);
-        $('#motion-level').value = S.settings.motionLevel || 'medium';
+        $('#motion-level').value = S.settings.motionLevel || 'high';
+        window.albumTypography?.mount(content, {
+          settings: () => S.settings,
+          save: saveSetting
+        });
         $('#motion-level').onchange = (event) =>
           persistEffectSetting('motionLevel', event.target.value, event.target);
         try {
@@ -1766,29 +1931,16 @@ async function settingsModal(tab = 'appearance') {
       // Keep focus out of an outgoing panel, including switches requested by async actions.
       if (outgoing.contains(document.activeElement))
         tabs.find((button) => button.dataset.tab === name).focus({ preventScroll: true });
-      const exit = animate(
-        outgoing,
-        [
-          { opacity: 1, transform: 'translateX(0)' },
-          { opacity: 0, transform: `translateX(${-direction * 8}px)` }
-        ],
-        140
-      );
+      // The shell and its glass stay painted; never fade an entire panel through zero.
+      outgoing.hidden = true;
       animate(
         incoming,
         [
-          { opacity: 0, transform: `translateX(${direction * 10}px)` },
+          { opacity: 0.94, transform: `translateX(${direction * 8}px)` },
           { opacity: 1, transform: 'translateX(0)' }
         ],
-        200
+        180
       );
-      if (exit)
-        exit.finished
-          .then(() => {
-            if (current !== outgoing) outgoing.hidden = true;
-          })
-          .catch(() => {});
-      else outgoing.hidden = true;
     }
   }
   shell.switchTab = switchTab;
@@ -1843,7 +1995,7 @@ async function openViewer(n, index = 0, inline = false) {
   if (!$('#viewer').open) $('#viewer').showModal();
   await displayImage(n);
 }
-async function displayOriginalImage(n) {
+async function displayOriginalImage(n, onError = null) {
   V.node = n;
   V.scale = 1;
   V.native = false;
@@ -1870,7 +2022,8 @@ async function displayOriginalImage(n) {
   };
   image.onerror = () => {
     if (serial !== V.serial) return;
-    $('#viewer-loading').textContent = '无法解码原图，可右键查看属性或在资源管理器中定位。';
+    if (onError) void onError(serial);
+    else $('#viewer-loading').textContent = '原图读取失败，可用系统应用打开或在资源管理器中定位。';
   };
   image.src = `acg-image://original/${n.id}`;
   image.oncontextmenu = (e) => showContext(e, n);
@@ -1954,7 +2107,19 @@ let latestOnlineProgress = null,
   latestScanProgress = null,
   preferScanSummary = false,
   onlineProgressDirectory = '',
-  onlineProgressDirectoryId = '';
+  onlineProgressDirectoryId = '',
+  progressCompletionTimer = null,
+  progressCompletionData = null;
+function setProgressText(element, value) {
+  const text = String(value ?? '');
+  if (element.textContent !== text) element.textContent = text;
+}
+function setProgressAttribute(element, name, value) {
+  if (value == null) {
+    if (element.getAttribute(name) != null) element.removeAttribute(name);
+  } else if (element.getAttribute(name) !== String(value))
+    element.setAttribute(name, String(value));
+}
 function hasOnlineWork(data) {
   return !!(
     data &&
@@ -1972,38 +2137,52 @@ function paintProgress({
   label,
   scan = false
 }) {
-  clearTimeout(progressHideTimer);
   const panel = $('#progress-panel'),
     bar = $('#progress-bar'),
-    track = bar.parentElement;
-  panel.hidden = false;
-  panel.dataset.state = paused ? 'paused' : active ? 'active' : 'complete';
-  panel.setAttribute('aria-busy', String(active && !paused));
-  $('#progress-title').textContent = title;
+    track = bar.parentElement,
+    state = paused ? 'paused' : active ? 'active' : 'complete',
+    wasComplete = panel.dataset.state === 'complete';
+  if (active || paused) {
+    clearTimeout(progressHideTimer);
+    progressHideTimer = null;
+    if (panel.hidden) panel.hidden = false;
+  } else if (!wasComplete) {
+    panel.hidden = false;
+    clearTimeout(progressHideTimer);
+    progressHideTimer = setTimeout(() => {
+      panel.hidden = true;
+      progressHideTimer = null;
+    }, 6000);
+  }
+  if (panel.dataset.state !== state) panel.dataset.state = state;
+  setProgressAttribute(panel, 'aria-busy', String(active && !paused));
+  setProgressText($('#progress-title'), title);
   let directoryLabel = $('#progress-directory');
   if (!directoryLabel) {
     directoryLabel = document.createElement('span');
     directoryLabel.id = 'progress-directory';
     $('#progress-title').after(directoryLabel);
   }
-  directoryLabel.hidden = !directory;
-  directoryLabel.textContent = directory.split(/[\\/]/).filter(Boolean).at(-1) || directory;
-  directoryLabel.title = directory;
-  directoryLabel.setAttribute('aria-label', directory ? `当前目录：${directory}` : '');
-  $('#progress-detail').textContent = detail;
-  $('#progress-path').textContent = current;
-  $('#progress-path').title = current;
-  $('#progress-percent').textContent = label;
-  $('#cancel-import').hidden = !scan || !active;
-  $('.progress-spinner').hidden = !active || paused;
-  bar.style.width = percent == null ? '35%' : `${percent}%`;
-  track.setAttribute('role', 'progressbar');
-  track.setAttribute('aria-label', title);
-  track.setAttribute('aria-valuemin', '0');
-  track.setAttribute('aria-valuemax', '100');
-  track.setAttribute('aria-valuetext', `${label}，${detail}`);
-  if (percent == null) track.removeAttribute('aria-valuenow');
-  else track.setAttribute('aria-valuenow', String(percent));
+  if (directoryLabel.hidden !== !directory) directoryLabel.hidden = !directory;
+  setProgressText(directoryLabel, directory.split(/[\\/]/).filter(Boolean).at(-1) || directory);
+  if (directoryLabel.title !== directory) directoryLabel.title = directory;
+  setProgressAttribute(directoryLabel, 'aria-label', directory ? `当前目录：${directory}` : '');
+  setProgressText($('#progress-detail'), detail);
+  setProgressText($('#progress-path'), current);
+  if ($('#progress-path').title !== current) $('#progress-path').title = current;
+  setProgressText($('#progress-percent'), label);
+  const cancel = $('#cancel-import'),
+    spinner = $('.progress-spinner');
+  if (cancel.hidden !== (!scan || !active)) cancel.hidden = !scan || !active;
+  if (spinner.hidden !== (!active || paused)) spinner.hidden = !active || paused;
+  const width = percent == null ? '35%' : `${percent}%`;
+  if (bar.style.width !== width) bar.style.width = width;
+  setProgressAttribute(track, 'role', 'progressbar');
+  setProgressAttribute(track, 'aria-label', title);
+  setProgressAttribute(track, 'aria-valuemin', '0');
+  setProgressAttribute(track, 'aria-valuemax', '100');
+  setProgressAttribute(track, 'aria-valuetext', `${label}，${detail}`);
+  setProgressAttribute(track, 'aria-valuenow', percent);
   const moving =
     active && !paused && percent == null && !matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (moving && !bar.scanMotion && bar.animate)
@@ -2011,14 +2190,10 @@ function paintProgress({
       [{ transform: 'translateX(-100%)' }, { transform: 'translateX(290%)' }],
       { duration: 1600, iterations: Infinity }
     );
-  if (bar.scanMotion) {
-    if (moving) bar.scanMotion.play();
-    else {
-      bar.scanMotion.cancel();
-      bar.scanMotion = null;
-    }
+  if (bar.scanMotion && !moving) {
+    bar.scanMotion.cancel();
+    bar.scanMotion = null;
   }
-  if (!active && !paused) progressHideTimer = setTimeout(() => (panel.hidden = true), 6000);
 }
 function showProgress(p) {
   // An idle worker snapshot can still contain the previous batch's totals.
@@ -2030,7 +2205,23 @@ function showProgress(p) {
   if (p.active && pendingImport) pendingImport.sawProgress = true;
   renderOnlineProgress(latestOnlineProgress || {});
 }
-function renderOnlineProgress(data) {
+function renderOnlineProgress(data, settled = false) {
+  // Adjacent queue snapshots can briefly report idle between two pieces of work.
+  // Keep the live panel steady until the idle state survives one short settling window.
+  if (!scanActive && !hasOnlineWork(data) && !settled) {
+    progressCompletionData = data;
+    if (progressCompletionTimer == null)
+      progressCompletionTimer = setTimeout(() => {
+        progressCompletionTimer = null;
+        const completed = progressCompletionData;
+        progressCompletionData = null;
+        renderOnlineProgress(completed || {}, true);
+      }, 300);
+    return;
+  }
+  clearTimeout(progressCompletionTimer);
+  progressCompletionTimer = null;
+  progressCompletionData = null;
   if (preferScanSummary && !hasOnlineWork(data)) data = {};
   const remaining = Math.max(0, Number(data.remaining ?? data.pending) || 0),
     completed = Math.max(0, Number(data.completed) || 0),
@@ -2038,8 +2229,11 @@ function renderOnlineProgress(data) {
     active = scanActive || hasOnlineWork(data),
     paused = !scanActive && !!data.paused,
     cancelled = !active && latestScanProgress?.phase?.startsWith('已取消');
+  const cleaning = scanActive && latestScanProgress?.phase === '正在清理旧分类';
   const title = scanActive
-    ? '正在检索作品简介'
+    ? cleaning
+      ? '正在清理旧分类'
+      : '正在检索作品简介'
     : data.paused === 'access'
       ? '作品检索已暂停'
       : paused
@@ -2076,7 +2270,9 @@ function renderOnlineProgress(data) {
       : paused
         ? `任务进度已保留，将于 ${new Date(data.retryAt).toLocaleTimeString([], { hour12: false })} 后重试`
         : active
-          ? '作品简介在后台检索，可继续浏览相册'
+          ? cleaning
+            ? '正在分批清理旧索引，完成后继续导入；可继续浏览相册'
+            : '作品简介在后台检索，可继续浏览相册'
           : '可在「待确认项目」中核对未满分匹配';
   paintProgress({
     title,
@@ -2093,18 +2289,19 @@ function renderOnlineProgress(data) {
     percent,
     label: paused ? '已暂停' : cancelled ? '已取消' : percent == null ? '整理中…' : `${percent}%`
   });
-  $('#footer-status').textContent = active
-    ? `${title} · 待处理 ${fmt(remaining)} 项${data.discovering ? '以上' : ''}`
-    : '就绪';
+  setProgressText(
+    $('#footer-status'),
+    active ? `${title} · 待处理 ${fmt(remaining)} 项${data.discovering ? '以上' : ''}` : '就绪'
+  );
 }
 function showOnlineStatus(data) {
   if (hasOnlineWork(data)) preferScanSummary = false;
   const wasWorking = hasOnlineWork(latestOnlineProgress);
   latestOnlineProgress = data;
-  const directoryId = hasOnlineWork(data) ? data.id || '' : '';
+  const directoryId = hasOnlineWork(data) ? data.id || onlineProgressDirectoryId : '';
   if (directoryId !== onlineProgressDirectoryId) {
     onlineProgressDirectoryId = directoryId;
-    onlineProgressDirectory = '';
+    // Retain the last resolved label while the next folder lookup is in flight.
     if (directoryId)
       void api('get', { id: directoryId })
         .then((node) => {
@@ -2115,24 +2312,19 @@ function showOnlineStatus(data) {
         })
         .catch(() => {});
   }
-  const { paused, retryAt, active, discovering, remaining = data.pending } = data;
+  const { paused } = data;
   const status = $('#footer-status');
-  status.textContent =
-    paused === 'access'
-      ? '简介同步已暂停 · 请在偏好设置更新 Token'
-      : paused
-        ? `简介同步等待重试 · ${new Date(retryAt).toLocaleTimeString([], { hour12: false })}`
-        : active
-          ? `正在补全简介 · 待处理 ${remaining} 项${discovering ? '以上' : ''}`
-          : '就绪';
-  status.title =
+  const statusTitle =
     paused === 'access'
       ? '任务进度已保存。请在偏好设置「作品简介」更新有相应访问权限的 Access Token，保存后继续。'
       : paused
         ? '任务进度已保存，等待网络恢复或服务端限流结束后自动重试。重启软件也会继续未完成的任务。'
         : '';
-  status.setAttribute('aria-live', paused ? 'polite' : 'off');
-  if (scanActive || hasOnlineWork(data) || wasWorking) renderOnlineProgress(data);
+  if (status.title !== statusTitle) status.title = statusTitle;
+  setProgressAttribute(status, 'aria-live', paused ? 'polite' : 'off');
+  if (scanActive || hasOnlineWork(data) || wasWorking || progressCompletionTimer != null)
+    renderOnlineProgress(data);
+  else setProgressText(status, '就绪');
 }
 window.album.onEvent((event) => {
   if (event.type === 'sortMigration') {
@@ -2252,7 +2444,6 @@ $$('[data-window]').forEach((b) => (b.onclick = () => window.album.window(b.data
 $('#brand-home').onclick = $('#home-button').onclick = () => attempt(() => navigate({}));
 $('#back-button').onclick = () => attempt(back);
 $('#import-sidebar').onclick = importFolder;
-$('#refresh-button').onclick = refreshLibrary;
 $('#settings-button').onclick = () => attempt(() => settingsModal());
 $('#density-button').title = '查看设置：卡片尺寸、封面比例与批量确认封面';
 $('#density-button').setAttribute('aria-label', $('#density-button').title);

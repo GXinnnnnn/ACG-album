@@ -1,0 +1,6 @@
+/* Only suppress the UA's keyboard ring for a pointer-origin dialog return.
+   The next key, pointer press or blur removes this marker; keyboard returns
+   never receive it. Native focus and screen-reader focus remain in place. */
+:root [data-dialog-focus-return='pointer']:focus-visible {
+  outline: none !important;
+}

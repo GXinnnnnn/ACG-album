@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="light" data-liquid-glass="on" data-motion="medium">
+<html lang="zh-CN" data-theme="light" data-liquid-glass="on" data-motion="high">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -20,6 +20,15 @@
     <link rel="stylesheet" href="local-search.css" />
     <link rel="stylesheet" href="cache-settings.css" />
     <link rel="stylesheet" href="effects.css" />
+    <link rel="stylesheet" href="liquid-glass.css" />
+    <link rel="stylesheet" href="layout-refinement.css" />
+    <link rel="stylesheet" href="header-layout.css" />
+    <link rel="stylesheet" href="sidebar-refinement.css" />
+    <link rel="stylesheet" href="dialog-interaction.css" />
+    <link rel="stylesheet" href="typography.css" />
+    <link rel="stylesheet" href="dialog-refinement.css" />
+    <link rel="stylesheet" href="viewer-frame.css" />
+    <link rel="stylesheet" href="home-copy.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -52,15 +61,18 @@
           data-icon="home"
         ></button>
         <div id="breadcrumbs" class="breadcrumbs">资料库</div>
+        <div class="toolbar-left navigation-filters" aria-label="项目筛选">
+          <div class="filter-tabs">
+            <button data-filter="all" class="active">全部</button
+            ><button data-filter="folders">相册</button><button data-filter="images">媒体</button>
+          </div>
+          <span class="toolbar-divider"></span
+          ><span id="result-count" class="result-count">0 个分类</span>
+        </div>
       </div>
       <div class="search-wrap glass">
         <span data-icon="search"></span
-        ><input
-          id="search"
-          type="search"
-          placeholder="搜索相册与图片"
-          aria-label="搜索资料库"
-        /><kbd>Ctrl K</kbd>
+        ><input id="search" type="search" placeholder="搜索相册与图片" aria-label="搜索资料库" />
       </div>
       <div class="header-actions glass">
         <button
@@ -163,8 +175,8 @@
               title="固定侧栏"
               aria-label="固定侧栏"
               aria-pressed="false"
-              data-icon="sliders"
-              inert
+              data-icon="pin"
+              aria-controls="sidebar-panel"
             ></button>
             <div id="sidebar-copyright" class="sidebar-copyright sidebar-label" inert>
               <span>© 2026 友利奈绪的胖次</span
@@ -176,15 +188,6 @@
       <main>
         <div id="viewport" tabindex="-1">
           <div class="toolbar" id="toolbar">
-            <div class="toolbar-left glass">
-              <div class="filter-tabs">
-                <button data-filter="all" class="active">全部</button
-                ><button data-filter="folders">相册</button
-                ><button data-filter="images">媒体</button>
-              </div>
-              <span class="toolbar-divider"></span
-              ><span id="result-count" class="result-count">0 个分类</span>
-            </div>
             <div class="toolbar-right glass">
               <label class="sort-label"
                 ><span data-icon="sort"></span
@@ -255,9 +258,6 @@
               <h1 id="page-title">我的相册<span class="heading-dot">.</span></h1>
               <p id="page-description">把散落的画面，整理成喜欢的世界。</p>
             </div>
-            <button class="subtle-button glass" id="refresh-button">
-              <span data-icon="refresh"></span>增量更新
-            </button>
           </div>
           <div id="intro-area"></div>
           <section id="timeline-controls" class="timeline-controls" hidden>
@@ -313,7 +313,10 @@
       <div class="modal-top">
         <div>
           <span class="eyebrow" id="modal-eyebrow">ACG-album</span>
-          <h2 id="modal-title"></h2>
+          <div class="modal-heading-row">
+            <h2 id="modal-title"></h2>
+            <div id="modal-heading-actions"></div>
+          </div>
         </div>
         <button id="modal-close" class="icon-button" aria-label="关闭对话框" data-icon="x"></button>
       </div>
@@ -322,7 +325,7 @@
     <dialog id="viewer" class="viewer">
       <div class="viewer-top">
         <div><strong id="viewer-name"></strong><span id="viewer-position"></span></div>
-        <div>
+        <div id="viewer-actions">
           <button id="viewer-edit" class="viewer-button">编辑副本</button
           ><button id="viewer-info" class="viewer-button">拍摄与地点</button
           ><button id="viewer-external" class="viewer-button">系统打开</button
@@ -361,7 +364,8 @@
         data-icon="chevron-right"
       ></button>
       <div class="viewer-bottom">
-        <span id="viewer-path"></span><span>← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭</span>
+        <span id="viewer-path"></span
+        ><span id="viewer-hint">← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭</span>
       </div>
     </dialog>
     <button
@@ -375,11 +379,16 @@
     </button>
     <script src="crop.js"></script>
     <script src="effects.js"></script>
+    <script src="liquid-glass.js"></script>
     <script src="theme.js"></script>
     <script src="display.js"></script>
     <script src="masonry.js"></script>
     <script src="refresh-policy.js"></script>
     <script src="cache-settings.js"></script>
+    <script src="sidebar-icons.js"></script>
+    <script src="dialog-interaction.js"></script>
+    <script src="typography.js"></script>
+    <script src="home-copy.js"></script>
     <script src="app.js"></script>
     <script src="local-search.js"></script>
     <script src="media-ui.js"></script>

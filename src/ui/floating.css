@@ -106,7 +106,7 @@ body {
   padding: 6px 18px 6px 7px;
   border-radius: 27px;
   letter-spacing: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   transition:
     transform 180ms var(--ui-ease),
@@ -170,14 +170,22 @@ body {
 }
 .icon-button,
 .small-icon {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
   border-radius: 50%;
   width: 34px;
   height: 34px;
 }
+.icon-button svg,
+.small-icon svg {
+  display: block;
+}
 .breadcrumbs {
   margin-left: 4px;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   padding-right: 8px;
   min-width: 0;
   flex: 1;
@@ -202,8 +210,21 @@ body {
   gap: 10px;
   flex: 0 1 440px;
 }
+.search-wrap > [data-icon],
+.profile-button > [data-icon],
+.sort-label > [data-icon] {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.search-wrap > [data-icon] > svg,
+.profile-button > [data-icon] > svg,
+.sort-label > [data-icon] > svg {
+  display: block;
+}
 .search-wrap input {
-  font-size: 12px;
+  font-size: 13px;
 }
 .search-wrap:focus-within {
   box-shadow:
@@ -234,7 +255,7 @@ kbd {
   height: 36px;
   border-radius: 19px;
   padding: 0 7px 0 2px;
-  font-size: 12px;
+  font-size: 13px;
   max-width: 215px;
 }
 .profile-button:hover {
@@ -299,8 +320,9 @@ main {
 .sidebar {
   position: absolute;
   inset: 0;
-  width: 240px;
-  padding: 16px;
+  width: 100%;
+  /* The glass shell contributes 1px: 1 + 15 + half a 40px control = 36px. */
+  padding: 16px 15px;
   border: 0;
   background: transparent;
   overflow: hidden;
@@ -318,11 +340,12 @@ main {
   gap: 16px;
   border-radius: 15px;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0;
 }
 .sidebar .import-button {
   gap: 22px;
+  border: 0;
 }
 .sidebar-shell:not(.is-open) .nav-item,
 .sidebar-shell:not(.is-open) .import-button {
@@ -655,12 +678,15 @@ h1 {
 .filter-tabs {
   background: var(--surface);
   border: 1px solid var(--line);
-  padding: 2px;
+  padding: 4px;
   gap: 2px;
-  border-radius: 16px;
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 3px color-mix(in srgb, var(--text) 10%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--surface-solid) 65%, transparent);
 }
 .filter-tabs button {
-  font-size: 12px;
+  font-size: 13px;
   border-radius: 13px;
   padding: 0 13px;
   height: 26px;
@@ -672,16 +698,16 @@ h1 {
   color: var(--accent);
 }
 .result-count {
-  font-size: 11px;
+  font-size: 12px;
   margin: 0 5px 0 0;
   white-space: nowrap;
 }
 .sort-label {
-  font-size: 12px;
+  font-size: 13px;
   gap: 6px;
 }
 .sort-label select {
-  font-size: 12px;
+  font-size: 13px;
   max-width: 120px;
   padding-right: 2px;
 }
@@ -777,6 +803,20 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.album-card:not(.media-card) .card-count {
+  display: inline-flex;
+  align-items: center;
+}
+.album-card:not(.media-card) .card-count-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.album-card:not(.media-card) .card-count-unit {
+  flex-shrink: 0;
+  white-space: pre;
+}
 .album-card:not(.media-card) .card-rating {
   flex-shrink: 0;
   font-size: 11px;
@@ -821,9 +861,17 @@ h1 {
 }
 .category-enter,
 .category-expand {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
   border-radius: 50%;
   width: 33px;
   height: 33px;
+}
+.category-enter > svg,
+.category-expand > svg {
+  display: block;
 }
 .page-footnote {
   font-size: 10px;
@@ -873,7 +921,7 @@ h1 {
 .settings-tabs button {
   border: 0;
   border-radius: 18px;
-  font-size: 12px;
+  font-size: 13px;
   min-height: 36px;
   padding: 8px 14px;
   line-height: 20px;
@@ -882,18 +930,18 @@ h1 {
   padding: 18px 0;
 }
 .setting-row strong {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 .setting-row p {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.7;
 }
 .field-input {
   border-radius: 14px;
   min-height: 43px;
   background: var(--surface);
-  font-size: 13px;
+  font-size: 14px;
 }
 .identity-preview {
   display: flex;
@@ -933,12 +981,25 @@ h1 {
 .context-menu button {
   border-radius: 11px;
   min-height: 35px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .toast {
   border-radius: 20px;
+  font-size: 12px;
 }
 .progress-panel {
   border-radius: 24px;
+}
+.progress-top strong {
+  font-size: 13px;
+}
+#progress-directory,
+.progress-details {
+  font-size: 12px;
+}
+.progress-panel p {
+  font-size: 11px;
 }
 @media (min-width: 2100px) {
   .topbar {
@@ -991,7 +1052,7 @@ h1 {
   }
   .brand {
     padding-right: 13px;
-    font-size: 13px;
+    font-size: 14px;
   }
   .brand > img {
     width: 33px;

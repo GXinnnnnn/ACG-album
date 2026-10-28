@@ -8,7 +8,8 @@ let videoActive = false,
   videoScanTimer,
   mediaRefreshTimer,
   mediaDirty = false,
-  lastMediaScroll = 0;
+  lastMediaScroll = 0,
+  viewerVideoTimer;
 function prioritizeMediaDetails(n) {
   if (n.kind !== 'image' || n.width || detailReads.has(n.id)) return;
   detailReads.set(n.id, true);
@@ -42,6 +43,7 @@ function decorateMediaCard(button, n) {
 }
 function updateMediaView() {
   const timeline = S.view === 'timeline';
+  $('.app-shell').dataset.view = S.view;
   $('#timeline-controls').hidden = !timeline;
   $('#sort').disabled = $('#sort-direction').disabled = timeline;
   $$('[data-filter]').forEach((b) => {
@@ -228,34 +230,48 @@ function scheduleVideoScan() {
   }, 140);
 }
 function stopViewerVideo() {
+  clearTimeout(viewerVideoTimer);
+  viewerVideoTimer = null;
   const video = $('#viewer-video');
+  video.onerror = video.onloadeddata = null;
   video.pause();
   video.removeAttribute('src');
   video.load();
   video.hidden = true;
-  video.onerror = video.onloadeddata = null;
 }
 async function displayImage(n) {
   stopViewerVideo();
   const video = n.kind === 'video';
-  $('.viewer-bottom span:last-child').textContent = video
+  $('#viewer-hint').textContent = video
     ? '← → 切换 · 使用原生播放控件 · Esc 关闭'
     : '← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭';
   $('#viewer-copy').hidden = $('#viewer-fit').hidden = $('#viewer-edit').hidden = video;
   if (!video) {
-    await displayOriginalImage(n);
-    const image = $('#viewer-image'),
-      serial = V.serial;
-    image.onerror = () => {
-      if (serial !== V.serial) return;
-      if (image.dataset.preview !== n.id) {
-        image.dataset.preview = n.id;
-        $('#viewer-loading').textContent = '原图编码未被浏览器支持，正在读取 SDR 预览…';
-        image.src = 'acg-image://frame/' + n.id + '?index=0&size=1600';
-        $('#viewer-position').textContent += ' · SDR 静态预览';
-      } else $('#viewer-loading').textContent = '此编码暂无法解码，可用系统应用打开。';
-    };
-    delete image.dataset.preview;
+    let previewRequested = false;
+    await displayOriginalImage(n, async (serial) => {
+      if (serial !== V.serial || !$('#viewer').open) return;
+      const loading = $('#viewer-loading');
+      loading.hidden = false;
+      if (previewRequested) {
+        loading.textContent = '预览图片读取失败。可点击「系统打开」或在资源管理器中检查文件。';
+        return;
+      }
+      previewRequested = true;
+      loading.textContent = '正在使用兼容解码读取图片…';
+      try {
+        const preview = await api('prepareImagePreview', { id: n.id, size: 8192 });
+        if (serial !== V.serial || !$('#viewer').open) return;
+        $('#viewer-position').textContent =
+          `${fmt(V.index + 1)} / ${fmt(V.total)} · SDR 静态预览` +
+          (preview.width && preview.height
+            ? ` · ${fmt(preview.width)} × ${fmt(preview.height)}`
+            : '');
+        $('#viewer-image').src = 'acg-image://preview/' + n.id + '?size=8192';
+      } catch (error) {
+        if (serial !== V.serial || !$('#viewer').open) return;
+        loading.textContent = '图片读取失败：' + error.message + ' 可点击「系统打开」。';
+      }
+    });
     return;
   }
   V.node = n;
@@ -276,17 +292,45 @@ async function displayImage(n) {
   $('#viewer-loading').hidden = false;
   $('#viewer-loading').textContent = '正在打开视频…';
   player.hidden = false;
+  // Only a user-opened viewer can hand a video to the OS. Background poster
+  // failures never launch an application; one viewing attempt launches at most once.
+  let handedOff = false;
+  async function useSystemPlayer(reason) {
+    if (handedOff || serial !== V.serial || !$('#viewer').open) return;
+    handedOff = true;
+    stopViewerVideo();
+    const loading = $('#viewer-loading');
+    loading.hidden = false;
+    loading.textContent = reason + '，正在交给系统默认播放器…';
+    try {
+      await api('openMedia', { id: n.id });
+      if (serial !== V.serial || !$('#viewer').open) return;
+      loading.textContent = '已交给系统默认播放器。可继续切换其他图片和视频。';
+      $('#viewer-position').textContent = `${fmt(V.index + 1)} / ${fmt(V.total)} · 系统默认播放器`;
+    } catch (error) {
+      if (serial !== V.serial || !$('#viewer').open) return;
+      loading.textContent = '系统播放器打开失败：' + error.message + ' 可点击「系统打开」重试。';
+    }
+  }
   // Playback metadata is persisted by the thumbnail lane; no full video bytes cross IPC.
   player.onloadeddata = () => {
-    if (serial === V.serial) $('#viewer-loading').hidden = true;
-  };
-  player.onerror = () => {
     if (serial === V.serial) {
-      $('#viewer-loading').hidden = false;
-      $('#viewer-loading').textContent = '浏览器不支持此视频编码，请点击「系统打开」。';
+      clearTimeout(viewerVideoTimer);
+      viewerVideoTimer = null;
+      $('#viewer-loading').hidden = true;
     }
   };
+  player.onerror = () => {
+    const code = player.error?.code;
+    if (code === 1) {
+      clearTimeout(viewerVideoTimer);
+      viewerVideoTimer = null;
+      return; // An aborted/replaced load is not a codec failure.
+    }
+    void useSystemPlayer(code === 2 ? '内置播放读取失败' : '此视频暂不能在内置播放器中播放');
+  };
   player.oncontextmenu = (e) => showContext(e, n);
+  viewerVideoTimer = setTimeout(() => void useSystemPlayer('内置播放器未能及时读取画面'), 10000);
   player.src = 'acg-image://original/' + n.id;
   player.load();
 }
@@ -323,6 +367,9 @@ $('#viewport').addEventListener(
   { passive: true }
 );
 $('#viewer').addEventListener('close', () => {
+  // Native dialog close events are queued. A quick reopen may already be
+  // showing another item when the previous session's close event arrives.
+  if ($('#viewer').open) return;
   stopViewerVideo();
   const image = $('#viewer-image');
   image.onload = image.onerror = null;

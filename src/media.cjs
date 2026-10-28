@@ -72,6 +72,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
       finite(n.mtime) ? n.mtime : 0,
       finite(n.bytes) ? n.bytes : 0
     ).revision;
+  let visibleSql = () => '1';
   const cache = path.join(home, 'media-frames');
   db.exec(`CREATE TABLE IF NOT EXISTS media(
     id TEXT PRIMARY KEY,revision TEXT,width INTEGER,height INTEGER,format TEXT,frames INTEGER,delays TEXT,
@@ -154,12 +155,17 @@ function createMedia({ db, home, getNode, send = () => {} }) {
   async function details(id) {
     let n = node(id),
       rev;
-    const indexedRevision = revision(n);
+    const indexedRevision = revision(n),
+      indexedGeneration = n.indexed;
     if (!get(id)) sync(n);
     try {
       const stat = await fsp.stat(n.path);
       if (!stat.isFile()) fail('资源不是普通文件。');
-      n = { ...n, mtime: stat.mtimeMs, bytes: stat.size };
+      // Removal may have hidden this root while stat was pending. Revalidate
+      // before sync, otherwise an old decoder could recreate deleted media.
+      const current = node(id);
+      if (current.indexed !== indexedGeneration) fail('索引已变化，请重新读取详情。');
+      n = { ...current, mtime: stat.mtimeMs, bytes: stat.size };
       rev = sync(n);
       if (get(id)?.status === 'ready') return get(id);
       let data;
@@ -253,6 +259,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
       const latest = node(id),
         st = await fsp.stat(n.path);
       if (
+        latest.indexed !== indexedGeneration ||
         revision(latest) !== indexedRevision ||
         st.size !== n.bytes ||
         st.mtimeMs !== n.mtime ||
@@ -285,13 +292,17 @@ function createMedia({ db, home, getNode, send = () => {} }) {
         rev
       );
     } catch (e) {
-      run(
-        "UPDATE media SET status='error',error=? WHERE id=? AND (? IS NULL OR revision=?)",
-        String(e.message).slice(0, 500),
-        id,
-        rev ?? null,
-        rev ?? null
-      );
+      // A hidden or reimported node belongs to a different lifecycle. An old
+      // decoder must not mark its replacement's media row as an error.
+      const latest = getNode(id);
+      if (latest && !latest.missing && latest.indexed === indexedGeneration)
+        run(
+          "UPDATE media SET status='error',error=? WHERE id=? AND (? IS NULL OR revision=?)",
+          String(e.message).slice(0, 500),
+          id,
+          rev ?? null,
+          rev ?? null
+        );
     }
     notify(id);
     return get(id);
@@ -341,7 +352,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
         // Keep the small pending index outermost; node indexes can otherwise
         // make SQLite visit/sort the whole library for every decoder batch.
         const batch = all(
-          "SELECT m.id FROM media m CROSS JOIN nodes n ON n.id=m.id WHERE m.status='pending' AND n.missing=0 AND n.kind IN ('image','video') ORDER BY m.taken DESC,m.id DESC LIMIT 32"
+          `SELECT m.id FROM media m CROSS JOIN nodes n ON n.id=m.id WHERE m.status='pending' AND n.missing=0 AND n.kind IN ('image','video') AND ${visibleSql('n')} ORDER BY m.taken DESC,m.id DESC LIMIT 32`
         );
         if (!batch.length) break;
         for (const { id } of batch) {
@@ -374,7 +385,11 @@ function createMedia({ db, home, getNode, send = () => {} }) {
   }
   function stats() {
     return {
-      rows: all('SELECT status,COUNT(*) AS count FROM media GROUP BY status'),
+      rows:
+        visibleSql('n') === '1'
+          ? all('SELECT status,COUNT(*) AS count FROM media GROUP BY status')
+          : all(`SELECT m.status,COUNT(*) AS count FROM media m LEFT JOIN nodes n ON n.id=m.id
+          WHERE n.id IS NULL OR ${visibleSql('n')} GROUP BY m.status`),
       queued: jobs.size,
       active: !!pumping,
       background: !!background
@@ -690,6 +705,9 @@ function createMedia({ db, home, getNode, send = () => {} }) {
   return {
     seed,
     sync,
+    setVisibility: (sql) => {
+      visibleSql = sql;
+    },
     start,
     ensure,
     get,

@@ -9,6 +9,12 @@ function importOptions(options = {}) {
     throw new Error('导入选项无效。');
   const directoryKind = options.directoryKind;
   const characterCover = options.characterCover;
+  const matchDepth = options.matchDepth;
+  if (
+    matchDepth !== undefined &&
+    (!Number.isInteger(matchDepth) || matchDepth < 1 || matchDepth > 8)
+  )
+    throw new Error('匹配深度应为 1 到 8 的整数。');
   if (directoryKind !== undefined && !['work', 'character', 'photo'].includes(directoryKind))
     throw new Error('目录类型无效。');
   if (characterCover !== undefined && !['local-first', 'bangumi'].includes(characterCover))
@@ -19,7 +25,7 @@ function importOptions(options = {}) {
     throw new Error('请明确选择是否在线匹配。');
   if (!Object.hasOwn(options, 'onlineMatch')) {
     if (Object.hasOwn(options, 'subjectTypes')) throw new Error('请明确选择是否在线匹配。');
-    return {};
+    return matchDepth === undefined ? {} : { matchDepth };
   }
   if (typeof options.onlineMatch !== 'boolean') throw new Error('在线匹配选项无效。');
   const supplied = options.subjectTypes;
@@ -45,6 +51,7 @@ function importOptions(options = {}) {
   return {
     onlineMatch: directoryKind === 'photo' ? false : options.onlineMatch,
     subjectTypes: types.length ? types : [...SUBJECT_TYPES],
+    ...(matchDepth === undefined ? {} : { matchDepth }),
     ...extra
   };
 }

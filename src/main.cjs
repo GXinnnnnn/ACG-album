@@ -96,7 +96,7 @@ function bootWorker() {
         pending.delete(m.request);
         if (m.error) {
           log(m.error, m.stack || '');
-          p.reject(new Error(m.error));
+          p.reject(Object.assign(new Error(m.error), { code: m.code }));
         } else p.resolve(m.result);
       }
     });
@@ -151,13 +151,15 @@ function createWindow() {
   win.on('unmaximize', () =>
     win.webContents.send('library:event', { type: 'window', data: { maximized: false } })
   );
-  // Native Windows hide/minimize can leave the renderer visibility API unchanged.
-  // Tell transient pointer effects to release their frame and compositing layer.
-  for (const event of ['blur', 'hide', 'minimize'])
-    win.on(event, () => {
-      if (!win.isDestroyed())
-        win.webContents.send('library:event', { type: 'window', data: { inactive: true } });
-    });
+  // Native Windows hide/restore can leave DOM focus and visibility unchanged.
+  // Send both transitions so rendering can resume after the window returns.
+  const notifyActivity = (inactive) => {
+    if (!win.isDestroyed())
+      win.webContents.send('library:event', { type: 'window', data: { inactive } });
+  };
+  for (const event of ['blur', 'hide', 'minimize']) win.on(event, () => notifyActivity(true));
+  for (const event of ['focus', 'show', 'restore'])
+    win.on(event, () => notifyActivity(!win.isVisible() || win.isMinimized() || !win.isFocused()));
   win.on('close', () => {
     try {
       const b = win.getNormalBounds();
@@ -172,6 +174,7 @@ function handlers() {
   registerApplicationHandlers({ call, getWindow: () => win });
   const methods = [
     'mediaInfo',
+    'prepareImagePreview',
     'mediaStats',
     'setPlace',
     'setAlbumKind',
@@ -181,6 +184,8 @@ function handlers() {
     'searchLocalIndex',
     'list',
     'get',
+    'getRootMatchPolicy',
+    'setRootMatchPolicy',
     'ancestors',
     'patch',
     'confirmReview',
@@ -367,6 +372,11 @@ async function imageProtocol(request) {
         priority: u.searchParams.get('p') === '1'
       });
     else if (u.hostname === 'original') result = await call('asset', { id });
+    else if (u.hostname === 'preview')
+      result = await call('prepareImagePreview', {
+        id,
+        size: Number(u.searchParams.get('size')) || 8192
+      });
     else if (u.hostname === 'frame')
       result = await call('frame', {
         id,
@@ -390,15 +400,23 @@ async function imageProtocol(request) {
       if (!image || image.isEmpty()) image = nativeImage.createFromPath(file);
       if (image.isEmpty()) image = await app.getFileIcon(result.path, { size: 'large' });
       return new Response(image.toPNG(), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' }
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*'
+        }
       });
     }
     const ranged = await rangedFileResponse(result.path, request);
-    if (ranged) return ranged;
+    if (ranged) {
+      if (result.mime) ranged.headers.set('Content-Type', result.mime);
+      return ranged;
+    }
     const response = await net.fetch(pathToFileURL(result.path).href, {
       headers: request.headers.has('range') ? { Range: request.headers.get('range') } : {}
     });
     const headers = new Headers(response.headers);
+    if (result.mime) headers.set('Content-Type', result.mime);
     headers.set('Access-Control-Allow-Origin', '*');
     headers.set('Accept-Ranges', 'bytes');
     return new Response(response.body, {
@@ -407,7 +425,16 @@ async function imageProtocol(request) {
       headers
     });
   } catch (e) {
-    return new Response('', { status: 404 });
+    if (/^acg-image:\/\/(original|preview)\//.test(request.url))
+      log('Media request failed:', request.url, e.code || '', e.message);
+    const missing = e.code === 'ENOENT' || /不存在|已离线|未在索引/.test(e.message);
+    return Response.json(
+      { error: e.message, code: e.code || 'MEDIA_READ_FAILED' },
+      {
+        status: missing ? 404 : e.code?.startsWith('IMAGE_') ? 415 : 500,
+        headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
+      }
+    );
   }
 }
 if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {

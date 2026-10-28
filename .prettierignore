@@ -1,4 +1,5 @@
 src/assets/**
+src/vendor/**
 src/demo/**
 node_modules/**
 release/**

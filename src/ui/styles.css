@@ -443,6 +443,7 @@ button:active:not(:disabled) {
 }
 main {
   min-width: 0;
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -547,6 +548,7 @@ kbd {
 #viewport {
   overflow: auto;
   overflow-anchor: none;
+  min-height: 0;
   flex: 1;
   padding: 35px 38px 0;
   position: relative;
@@ -1801,6 +1803,14 @@ h1 {
   line-height: 1.6;
   color: var(--muted);
 }
+#progress-detail {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 #progress-percent {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -1987,12 +1997,12 @@ h1 {
   color: #8c8c9f;
   background: linear-gradient(transparent, #0b0c13e0);
 }
-.viewer-bottom span:first-child {
+#viewer-path {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.viewer-bottom span:last-child {
+#viewer-hint {
   white-space: nowrap;
 }
 .density-popup {

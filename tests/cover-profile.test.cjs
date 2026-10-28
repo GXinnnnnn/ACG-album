@@ -183,10 +183,9 @@ test(
         other = path.join(child, 'a-equal.png');
       await fs.writeFile(other, f.png);
       for (const file of [f.file, other]) await fs.utimes(file, 1700000200, 1700000200);
-      const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
-      const [preferred, remaining] = [f.file, other].sort((a, b) =>
-        collator.compare(path.basename(a), path.basename(b))
-      );
+      // Equal timestamps follow the requested English-before-Han name groups.
+      const preferred = other,
+        remaining = f.file;
       for (let i = 0; i < 2; i++) {
         await c.call('scan', { path: f.source, offline: true });
         assert.equal((await c.call('get', { id: idFor(f.source) })).cover, idFor(preferred));

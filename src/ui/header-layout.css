@@ -1,0 +1,230 @@
+@charset "UTF-8";
+/* Keep the starting layout while allowing scrolled content behind the floating header. */
+:root {
+  --content-header-space: 72px;
+  --window-titlebar-space: 28px;
+  --window-status-space: 28px;
+  --content-edge-space: 16px;
+  --content-scrollbar-space: 8px;
+  --collapsed-rail-width: 72px;
+}
+/* Window chrome overlays the scroll surface instead of clipping its two edges. */
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 30;
+  background: transparent;
+}
+.app-shell {
+  height: 100vh;
+}
+main {
+  position: relative;
+  padding-top: 0;
+  /* Place the scrollport directly after the visible rail; its inner padding
+     supplies the same 16px breathing room as the rail's window-left inset. */
+  margin-left: calc(var(--content-edge-space) + var(--collapsed-rail-width));
+}
+.app-shell[data-sidebar='expanded'] main {
+  margin-left: calc(var(--content-edge-space) + 240px);
+}
+#viewport {
+  padding-left: var(--content-edge-space);
+  /* Stable gutter already reserves the global 8px scrollbar. */
+  padding-right: calc(var(--content-edge-space) - var(--content-scrollbar-space));
+  padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 4px);
+  padding-bottom: var(--window-status-space);
+  scroll-padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 12px);
+  scroll-padding-bottom: var(--window-status-space);
+}
+main > .statusbar {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 14;
+  background: transparent;
+  pointer-events: none;
+}
+/* Navigation and result filters share one surface and one spacing system. */
+.topbar .navigation {
+  flex: 0 1 auto;
+  max-width: min(60vw, 1080px);
+  min-width: 0;
+  padding-right: 20px;
+  gap: 3px;
+}
+.topbar .breadcrumbs {
+  flex: 0 1 auto;
+  max-width: clamp(120px, 24vw, 440px);
+  padding-right: 0;
+}
+.topbar .navigation-filters {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin-left: 12px;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+.navigation-filters .filter-tabs {
+  flex-shrink: 0;
+}
+.navigation-filters > .toolbar-divider {
+  margin: 0 3px;
+}
+.navigation-filters .result-count {
+  margin-right: 0;
+  font-variant-numeric: tabular-nums;
+}
+/* Explicit control fonts otherwise keep their older 11/12px declarations
+   from the enhanced-select and display sheets. Preserve shrinking at 980px. */
+.toolbar-right :is(.sort-label, .album-select-button, .card-size-controls button) {
+  font-size: 13px;
+}
+.toolbar-right .card-size-label {
+  font-size: 12px;
+}
+.modal:not(.viewer) .album-select-button,
+.album-select-list {
+  font-size: 13px;
+}
+.navigation-filters .result-count {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The second row no longer reserves a blank strip across the content. */
+#toolbar {
+  position: sticky;
+  /* The scrollport already contains the header padding; do not offset it twice. */
+  top: 0;
+  z-index: 12;
+  display: block;
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+#toolbar .toolbar-right {
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: auto;
+}
+#page-heading {
+  padding-right: 480px;
+  min-height: 94px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+#page-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#intro-area,
+#timeline-controls {
+  position: relative;
+}
+.modal-heading-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.modal-heading-row h2 {
+  margin-right: 0;
+}
+#modal-heading-actions:empty {
+  display: none;
+}
+.display-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.display-refresh svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+@media (max-width: 1250px) {
+  .topbar {
+    gap: 8px;
+  }
+  .topbar .navigation {
+    max-width: 60vw;
+    padding-right: 15px;
+  }
+  .topbar .breadcrumbs {
+    max-width: 20vw;
+  }
+  .topbar .navigation-filters {
+    margin-left: 8px;
+    padding-left: 10px;
+    gap: 5px;
+  }
+  .navigation-filters .filter-tabs button {
+    padding: 0 10px;
+  }
+  .topbar .search-wrap {
+    flex-basis: 220px;
+    min-width: 140px;
+  }
+}
+@media (max-width: 1050px) {
+  .topbar .navigation {
+    max-width: calc(100vw - 360px);
+  }
+  .topbar .breadcrumbs {
+    max-width: 120px;
+  }
+  .navigation-filters .filter-tabs button {
+    padding: 0 8px;
+  }
+  .navigation-filters .result-count {
+    font-size: 11px;
+    max-width: 85px;
+  }
+  .topbar .search-wrap {
+    flex-basis: 180px;
+    min-width: 120px;
+  }
+  #toolbar .card-size-label {
+    display: none;
+  }
+  #page-heading {
+    padding-right: 420px;
+    min-height: 94px;
+  }
+}
+@media (max-width: 850px) {
+  .topbar .navigation {
+    max-width: none;
+    flex: 1;
+  }
+  .topbar .search-wrap {
+    display: none;
+  }
+  .topbar .breadcrumbs {
+    max-width: 25vw;
+  }
+  #toolbar {
+    height: 48px;
+    min-height: 48px;
+    margin-bottom: 8px;
+  }
+  #page-heading {
+    padding-right: 0;
+  }
+}

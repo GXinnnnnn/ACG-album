@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { build, Platform, Arch } = require('electron-builder');
 const metadata = require('../package.json');
+const { publicFontFiles } = require('./public-font-package.cjs');
 const root = path.resolve(__dirname, '..');
 const releaseRoot = path.resolve(
   process.env.ACG_RELEASE_OUTPUT || path.join(root, 'release', metadata.version)
@@ -85,6 +86,7 @@ async function assertNoLocalIndex(directory) {
     publish: 'never',
     config: {
       ...metadata.build,
+      files: publicFontFiles(metadata.build.files),
       directories: { ...metadata.build.directories, output: out },
       artifactName: `ACG-album-Setup-${metadata.version}-Standard.` + '${ext}',
       extraMetadata: { searchEdition: 'standard' },

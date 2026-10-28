@@ -1,0 +1,97 @@
+@charset "UTF-8";
+/* Load after effects.css. These rules own content geometry, not header/overlay effects. */
+.collection-details > .category-enter,
+.collection-details > .category-expand {
+  display: grid;
+  place-items: center;
+  flex: 0 0 33px;
+  width: 33px;
+  height: 33px;
+  min-height: 33px;
+  padding: 0;
+  line-height: 1;
+}
+.collection-details > .category-enter > svg,
+.collection-details > .category-expand > svg {
+  display: block;
+  margin: 0;
+  align-self: center;
+  justify-self: center;
+}
+.collection-preview {
+  min-width: 0;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-width)), 1fr));
+}
+.collection-preview > .collection-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.collection-preview > .collection-more > svg {
+  display: block;
+  flex: none;
+}
+.app-shell[data-view='timeline'] #virtual-grid {
+  width: 100%;
+  max-width: none;
+}
+.timeline-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  align-items: end;
+  column-gap: 14px;
+  row-gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+.timeline-controls > div {
+  min-width: 0;
+  align-self: center;
+}
+.timeline-controls > label {
+  min-width: 0;
+}
+.timeline-controls input,
+.timeline-controls .subtle-button,
+#timeline-refresh {
+  box-sizing: border-box;
+  height: 33px;
+  min-height: 33px;
+  margin: 0;
+}
+.timeline-controls .subtle-button,
+#timeline-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: end;
+  padding: 0 12px;
+  white-space: nowrap;
+  line-height: 1;
+  font-size: 11px;
+}
+@media (max-width: 1280px) {
+  .timeline-controls {
+    grid-template-columns: minmax(140px, 1fr) minmax(160px, 1fr) auto auto;
+  }
+  .timeline-controls > div {
+    grid-column: 1 / -1;
+  }
+  .timeline-controls input,
+  .timeline-controls input[type='search'] {
+    width: 100%;
+    min-width: 0;
+  }
+}
+@media (max-width: 1050px) {
+  .timeline-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #timeline-clear {
+    justify-self: start;
+  }
+  #timeline-refresh {
+    justify-self: end;
+  }
+}

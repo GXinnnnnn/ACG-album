@@ -36,7 +36,7 @@ async function open(dataDir) {
   };
 }
 
-test('glass starts enabled and motion starts medium; valid choices survive restart', async (t) => {
+test('glass starts enabled and motion starts high; saved choices and local font survive restart', async (t) => {
   const data = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-appearance-'));
   let client;
   t.after(async () => {
@@ -47,7 +47,11 @@ test('glass starts enabled and motion starts medium; valid choices survive resta
   client = await open(data);
   let settings = (await client.call('init')).settings;
   assert.equal(settings.liquidGlass, true);
-  assert.equal(settings.motionLevel, 'medium');
+  assert.equal(settings.motionLevel, 'high');
+  assert.equal(settings.fontFamily, '');
+  for (const value of [null, 4, 'bad\nfont', 'x'.repeat(161)])
+    await assert.rejects(client.call('settings', { key: 'fontFamily', value }), /字体名称/);
+  await client.call('settings', { key: 'fontFamily', value: '  Microsoft YaHei UI  ' });
   for (const value of [0, 1, 'true', null])
     await assert.rejects(client.call('settings', { key: 'liquidGlass', value }), /布尔值/);
   for (const value of ['full', '', null, 1])
@@ -60,6 +64,9 @@ test('glass starts enabled and motion starts medium; valid choices survive resta
   settings = (await client.call('init')).settings;
   assert.equal(settings.liquidGlass, false);
   assert.equal(settings.motionLevel, 'high');
+  assert.equal(settings.fontFamily, 'Microsoft YaHei UI');
+  await client.call('settings', { key: 'fontFamily', value: '' });
+  assert.equal((await client.call('init')).settings.fontFamily, '');
   await client.call('settings', { key: 'motionLevel', value: 'low' });
   assert.equal((await client.call('init')).settings.motionLevel, 'low');
 });

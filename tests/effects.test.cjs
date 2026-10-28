@@ -37,28 +37,49 @@ function classes() {
   return {
     add: (name) => values.add(name),
     remove: (name) => values.delete(name),
+    contains: (name) => values.has(name),
     has: (name) => values.has(name)
   };
 }
-function card() {
-  const properties = new Map();
+function card(kind = 'album') {
+  const properties = new Map(),
+    parentProperties = new Map();
   const node = {
     classList: classes(),
     isConnected: true,
     reads: 0,
     properties,
+    parentProperties,
     style: {
-      setProperty: (name, value) => properties.set(name, value),
-      removeProperty: (name) => properties.delete(name)
+      setProperty: (name, value) => parentProperties.set(name, value),
+      removeProperty: (name) => parentProperties.delete(name)
     },
     closest() {
-      return this;
+      return kind === 'collection' && this.classList.contains('expanded') ? null : this;
     },
     contains(child) {
       return child === this || child?.parent === this;
     },
+    querySelector() {
+      return this.cover;
+    },
     getBoundingClientRect() {
-      this.reads++;
+      if (kind !== 'collection')
+        throw new Error('Album geometry must come from the cover, not the title/card');
+      node.reads++;
+      return { left: 10, top: 20, width: 320, height: 260 };
+    }
+  };
+  if (kind === 'collection') node.classList.add('collection-tile');
+  node.cover = {
+    parent: node,
+    isConnected: true,
+    style: {
+      setProperty: (name, value) => properties.set(name, value),
+      removeProperty: (name) => properties.delete(name)
+    },
+    getBoundingClientRect() {
+      node.reads++;
       return { left: 10, top: 20, width: 200, height: 300 };
     }
   };
@@ -111,14 +132,15 @@ function clean(node, f) {
   assert.equal(f.frames.size, 0);
   assert.equal(node.classList.has('effects-active'), false);
   assert.equal(node.properties.size, 0);
+  assert.equal(node.parentProperties.size, 0, 'Parent/title never receive tilt styles');
 }
 
 test('effects normalize settings and low/medium never schedule pointer work', () => {
   const f = fixture(),
     node = card();
   assert.equal(f.root.dataset.liquidGlass, 'on');
-  assert.equal(f.root.dataset.motion, 'medium');
-  for (const motionLevel of ['low', 'medium', 'unsupported', undefined]) {
+  assert.equal(f.root.dataset.motion, 'high');
+  for (const motionLevel of ['low', 'medium']) {
     f.apply({ motionLevel, liquidGlass: false });
     f.point('pointerover', node);
     f.point('pointermove', node);
@@ -126,9 +148,11 @@ test('effects normalize settings and low/medium never schedule pointer work', ()
     assert.equal(node.reads, 0);
     assert.equal(f.root.dataset.liquidGlass, 'off');
   }
-  f.apply({ liquidGlass: true, motionLevel: 'high' });
-  assert.equal(f.root.dataset.liquidGlass, 'on');
-  assert.equal(f.root.dataset.motion, 'high');
+  for (const motionLevel of ['unsupported', undefined, 'high']) {
+    f.apply({ liquidGlass: true, motionLevel });
+    assert.equal(f.root.dataset.liquidGlass, 'on');
+    assert.equal(f.root.dataset.motion, 'high');
+  }
 });
 
 test('native hide and minimize release effects even when renderer visibility stays visible', () => {
@@ -167,8 +191,9 @@ test('high motion owns one card and one event-driven RAF, with one geometry read
   assert.equal(a.reads, 1);
   f.tick();
   assert.equal(f.frames.size, 0, 'No idle or continuous animation loop');
-  assert.equal(a.properties.get('--effect-rx'), '5.00deg');
-  assert.equal(a.properties.get('--effect-ry'), '5.00deg');
+  assert.equal(a.properties.get('--effect-rx'), '9.00deg');
+  assert.equal(a.properties.get('--effect-ry'), '9.00deg');
+  assert.equal(a.parentProperties.size, 0, 'Only the cover receives the 3D rotation');
   f.point('pointerover', b);
   assert.equal(a.classList.has('effects-active'), false);
   assert.equal(a.properties.size, 0);
@@ -244,14 +269,42 @@ test('touch, dragging, reduced motion and removed virtual cards cannot retain ti
   node.isConnected = false;
   f.tick();
   clean(node, f);
+  node.isConnected = true;
+  f.point('pointerover', node);
+  node.cover.isConnected = false;
+  f.tick();
+  clean(node, f);
+  node.cover = null;
+  f.point('pointerover', node);
+  clean(node, f);
 });
 
-test('glass applies only to bounded floating surfaces and only active cards are promoted', () => {
+test('glass covers bounded floating surfaces and only active card surfaces are promoted', () => {
   assert.match(styles, /@supports \(backdrop-filter: blur\(1px\)\)/);
-  assert.match(styles, /:root\[data-liquid-glass='on'\][\s\S]*?\.sidebar-shell/);
-  assert.equal((styles.match(/backdrop-filter:\s*blur\(12px\)/g) || []).length, 1);
+  const glass = styles.match(
+    /:root\[data-liquid-glass='on'\][\s\S]*?backdrop-filter: blur\(18px\)/
+  )?.[0];
+  assert.ok(glass);
+  for (const selector of [
+    '.sidebar-shell',
+    '.context-menu',
+    '.album-select-list',
+    '.progress-panel',
+    '.toast',
+    '.modal'
+  ])
+    assert.ok(glass.includes(selector), selector);
+  assert.doesNotMatch(glass, /\.album-card|\.cover-shell|\.collection-tile/);
+  assert.equal((styles.match(/backdrop-filter:\s*blur\(18px\)/g) || []).length, 1);
+  assert.match(
+    styles,
+    /:root\[data-liquid-glass='off'\] \.context-menu\s*\{\s*backdrop-filter: none/
+  );
   assert.doesNotMatch(styles, /(?:url\(|feTurbulence|feDisplacementMap|WebGL)/i);
-  assert.match(styles, /\.effects-active\s*\{[^}]*will-change: transform;/);
+  assert.match(
+    styles,
+    /\.collection-tile:not\(\.expanded\)\.effects-active\s*\{[^}]*will-change: transform;/
+  );
   assert.match(
     styles,
     /@media \(prefers-reduced-motion: reduce\)[\s\S]*transform: none !important/
@@ -273,7 +326,10 @@ test('low mode disables only decorative surface motion and keeps scale/loading f
   );
   assert.match(styles, /--effect-duration: 120ms/);
   assert.match(styles, /transform: scale\(1\.008\)/);
-  assert.match(styles, /\.effects-active\s*\{[^}]*scale\(1\.065\)/);
+  assert.match(
+    styles,
+    /\.collection-tile:not\(\.expanded\)\.effects-active\s*\{[^}]*scale\(1\.065\)/
+  );
 });
 
 function themeFixture(level = 'medium', reduce = false) {
@@ -393,4 +449,181 @@ test('medium/high theme transitions finish cleanly and changing motion cancels a
     assert.ok(f.transitions[0].skips > 0);
     assert.deepEqual(f.saves, ['dark']);
   }
+});
+
+test('home collections tilt their whole surface while ordinary album titles remain anchored', () => {
+  const f = fixture(),
+    collection = card('collection'),
+    album = card();
+  f.apply({ motionLevel: 'high', liquidGlass: false });
+  f.point('pointerover', collection, { clientX: 330, clientY: 20 });
+  f.tick();
+  assert.equal(collection.parentProperties.get('--effect-rx'), '9.00deg');
+  assert.equal(collection.parentProperties.get('--effect-ry'), '9.00deg');
+  assert.equal(collection.properties.size, 0, 'collection image has no independent rotation');
+  assert.equal(collection.reads, 1);
+  const details = { parent: collection, closest: () => collection };
+  f.point('pointermove', details, { clientX: 10, clientY: 280 });
+  f.tick();
+  assert.equal(collection.reads, 1, 'moving into text reuses the same whole-card bounds');
+  assert.equal(collection.parentProperties.get('--effect-rx'), '-9.00deg');
+  assert.equal(collection.parentProperties.get('--effect-ry'), '-9.00deg');
+  f.point('pointerover', album);
+  f.tick();
+  assert.equal(collection.parentProperties.size, 0);
+  assert.equal(collection.classList.has('effects-active'), false);
+  assert.equal(album.parentProperties.size, 0, 'album titles still never rotate');
+  assert.ok(album.properties.size > 0, 'album cover alone rotates');
+  assert.equal(f.root.dataset.liquidGlass, 'off', 'glass off remains independent of motion');
+  f.document.emit('keydown', { key: 'Tab' });
+  clean(album, f);
+});
+
+test('expanded, low/medium and reduced-motion collections never acquire pointer rotation', () => {
+  for (const level of ['low', 'medium']) {
+    const f = fixture(),
+      collection = card('collection');
+    f.apply({ motionLevel: level });
+    f.point('pointerover', collection);
+    clean(collection, f);
+    assert.equal(collection.parentProperties.size, 0);
+  }
+  const f = fixture(),
+    collection = card('collection');
+  f.apply({ motionLevel: 'high' });
+  collection.classList.add('expanded');
+  f.point('pointerover', collection);
+  clean(collection, f);
+  collection.classList.remove('expanded');
+  f.reduced.matches = true;
+  f.point('pointerover', collection);
+  clean(collection, f);
+  f.reduced.matches = false;
+  f.point('pointerover', collection);
+  f.tick();
+  f.document.emit('scroll');
+  clean(collection, f);
+  assert.equal(collection.parentProperties.size, 0);
+  f.point('pointerover', collection);
+  collection.classList.add('expanded');
+  f.tick();
+  clean(collection, f);
+  assert.equal(
+    collection.parentProperties.size,
+    0,
+    'expanding before the pending frame cancels whole-card rotation'
+  );
+  assert.match(styles, /\.collection-tile:not\(\.expanded\):focus-within\s*\{[^}]*scale\(1\.018\)/);
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*:is\(\.album-card > \.cover-shell, \.collection-tile\)/
+  );
+});
+
+test('collection summary replaces the arrow and preserves pointer, keyboard, expand and context actions', async () => {
+  const appSource = fs.readFileSync(path.join(__dirname, '../src/ui/app.js'), 'utf8');
+  const start = appSource.indexOf('async function renderOverview(version)'),
+    end = appSource.indexOf('const grid = createVirtualGrid()', start);
+  assert.ok(start > 0 && end > start);
+  const navigations = [],
+    refreshed = [],
+    contexts = [],
+    attributes = new Map();
+  let removed = false;
+  const summary = {
+    classList: classes(),
+    setAttribute: (key, value) => attributes.set(key, value)
+  };
+  const cover = { style: {}, classList: { toggle() {} }, getAttribute: () => 'generated' };
+  const elements = {
+    h3: {},
+    '.collection-details p': {},
+    '.collection-open': { setAttribute() {} },
+    '.collection-image': { insertAdjacentHTML() {} },
+    img: cover,
+    '.category-enter': {
+      remove() {
+        removed = true;
+      }
+    },
+    '.category-expand': {},
+    '.collection-details > div': summary
+  };
+  const tile = {
+    dataset: { id: 'root' },
+    nextElementSibling: null,
+    querySelector: (selector) => elements[selector] || null
+  };
+  const target = { children: [tile], firstElementChild: tile };
+  const state = {
+    roots: [{ id: 'root', name: 'Generated collection', files: 4, folders: 2 }],
+    sort: 'name',
+    direction: 'asc',
+    loadVersion: 1,
+    overviewExpanded: new Set()
+  };
+  const context = vm.createContext({
+    $: () => target,
+    S: state,
+    fmt: String,
+    cardReviewMessage: () => '',
+    cardReviewBadge: () => '',
+    applyCoverCrop() {},
+    thumb: () => 'generated',
+    attempt: (action) => action(),
+    navigate: (args) => navigations.push(args.parent),
+    loadPage: (keep) => refreshed.push(keep),
+    showContext: (_event, node) => contexts.push(node.id)
+  });
+  vm.runInContext(appSource.slice(start, end), context);
+  await context.renderOverview(1);
+  assert.equal(removed, true);
+  assert.equal(summary.tabIndex, 0);
+  assert.equal(attributes.get('role'), 'button');
+  assert.equal(attributes.get('aria-label'), '打开分类 Generated collection');
+  let prevented = 0;
+  for (const key of ['Enter', ' ']) summary.onkeydown({ key, preventDefault: () => prevented++ });
+  assert.equal(prevented, 2);
+  assert.deepEqual(navigations, ['root', 'root']);
+  tile.onclick({ target: { closest: () => null } });
+  assert.equal(navigations.length, 3);
+  elements['.collection-open'].onclick();
+  tile.onclick({ target: { closest: () => elements['.collection-open'] } });
+  assert.equal(navigations.length, 4, 'native image button enters only once');
+  elements['.category-expand'].onclick();
+  tile.onclick({ target: { closest: () => elements['.category-expand'] } });
+  assert.equal(navigations.length, 4, 'expand does not also enter the collection');
+  assert.equal(state.overviewExpanded.has('root'), true);
+  assert.deepEqual(refreshed, [true]);
+  tile.oncontextmenu({});
+  assert.deepEqual(contexts, ['root']);
+});
+
+test('font metrics reflow and filter indicator update finish synchronously inside the typography anchor guard', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/ui/app.js'), 'utf8');
+  const start = source.indexOf("window.addEventListener('album:font-loaded'"),
+    end = source.indexOf('let renderFrame = 0;', start);
+  assert.ok(start > 0 && end > start);
+  const calls = [];
+  let loaded;
+  vm.runInNewContext(source.slice(start, end), {
+    window: {
+      addEventListener(name, callback) {
+        assert.equal(name, 'album:font-loaded');
+        loaded = callback;
+      }
+    },
+    grid: {
+      layout() {
+        calls.push('layout');
+      }
+    },
+    updateFilterIndicator() {
+      calls.push('indicator');
+    }
+  });
+  calls.push('capture');
+  loaded();
+  calls.push('restore');
+  assert.deepEqual(calls, ['capture', 'layout', 'indicator', 'restore']);
 });

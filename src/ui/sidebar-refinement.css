@@ -1,0 +1,89 @@
+/* Keep keyboard focus inside the rail controls rather than outside its clipping shell. */
+#sidebar-shell .nav-item:focus-visible,
+#sidebar-shell .import-button:focus-visible,
+#sidebar-shell #sidebar-pin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+/* Both shell states share the same footer tracks. Only the shell clip and labels change. */
+#sidebar-shell .sidebar {
+  padding-bottom: 10px;
+  background: transparent;
+}
+#sidebar-shell .sidebar-bottom {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-rows: repeat(2, 44px);
+  column-gap: 12px;
+  row-gap: 0;
+  padding: 8px 0 0;
+  border-top: 0;
+  background: transparent;
+}
+#sidebar-shell #settings-button {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+#sidebar-shell #sidebar-pin {
+  position: static;
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 15px;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+#sidebar-shell #sidebar-copyright {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+#sidebar-shell:not(.is-open) #sidebar-copyright {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Draw the divider at the same inset as the controls, within the visible clip. */
+#sidebar-shell .sidebar-bottom::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--line);
+  pointer-events: none;
+  transition: width 220ms var(--ui-ease);
+}
+#sidebar-shell:not(.is-open) .sidebar-bottom::before {
+  width: 40px;
+}
+#sidebar-shell #settings-button > span:first-child {
+  display: grid;
+  place-items: center;
+}
+#sidebar-shell #settings-button svg,
+#sidebar-shell #sidebar-pin > svg {
+  display: block;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+@media (prefers-reduced-motion: reduce) {
+  #sidebar-shell .sidebar-bottom::before {
+    transition: none;
+  }
+}

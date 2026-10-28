@@ -1,6 +1,6 @@
 {
   "name": "acg-album",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "现代化 ACG 本地相册：关联 Bangumi 作品、角色与封面，让文件夹收藏更值得翻看。",
   "repository": {
@@ -54,12 +54,17 @@
     "files": [
       "src/**/*",
       "!src/demo/**/*",
+      "!src/vendor/libheif/**/*",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "src/demo",
         "to": "demo"
+      },
+      {
+        "from": "src/vendor/libheif",
+        "to": "codecs/libheif"
       }
     ],
     "extraFiles": [

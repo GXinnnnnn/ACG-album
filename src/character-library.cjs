@@ -22,7 +22,9 @@ function createCharacterLibrary(e) {
       db.exec(`ALTER TABLE nodes ADD COLUMN ${name} ${type}`);
   for (const [name, type] of [
     ['directory_kind', "TEXT NOT NULL DEFAULT 'work'"],
-    ['character_cover', "TEXT NOT NULL DEFAULT 'local-first'"]
+    ['character_cover', "TEXT NOT NULL DEFAULT 'local-first'"],
+    ['match_depth', 'INTEGER NOT NULL DEFAULT 1'],
+    ['auto_enabled', 'INTEGER NOT NULL DEFAULT 1']
   ])
     if (!q('PRAGMA table_info(root_match_policy)').some((column) => column.name === name))
       db.exec(`ALTER TABLE root_match_policy ADD COLUMN ${name} ${type}`);
@@ -49,6 +51,9 @@ function createCharacterLibrary(e) {
       p.kind !== 'character' ||
       !folder ||
       folder.kind !== 'folder' ||
+      folder.depth < 1 ||
+      folder.depth > (p.matchDepth || 1) ||
+      p.enabled === false ||
       folder.missing ||
       folder.manual_character ||
       folder.manual_subject ||

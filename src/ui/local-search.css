@@ -79,7 +79,8 @@
 }
 .local-search-dialog :is(button, input, select, summary):focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  /* Keep the entire ring inside fields next to the scroll container's clip. */
+  outline-offset: -3px;
 }
 .local-search-dialog #local-search-status {
   margin: 16px 0 12px;

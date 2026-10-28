@@ -8,6 +8,7 @@
     fine = window.matchMedia('(any-hover: hover) and (any-pointer: fine)'),
     selector = '.album-card:not(.card-skeleton), .collection-tile:not(.expanded)';
   let active = null,
+    surface = null,
     bounds = null,
     frame = 0,
     x = 0,
@@ -16,12 +17,12 @@
   function clear() {
     if (frame) window.cancelAnimationFrame(frame);
     frame = 0;
-    if (active) {
-      active.classList.remove('effects-active');
-      active.style.removeProperty('--effect-rx');
-      active.style.removeProperty('--effect-ry');
+    if (active) active.classList.remove('effects-active');
+    if (surface) {
+      surface.style.removeProperty('--effect-rx');
+      surface.style.removeProperty('--effect-ry');
     }
-    active = bounds = null;
+    active = surface = bounds = null;
   }
   function enabled(event) {
     return (
@@ -35,15 +36,22 @@
   }
   function paint() {
     frame = 0;
-    if (!active?.isConnected || document.hidden || reduced.matches || !fine.matches) {
+    if (
+      !active?.isConnected ||
+      !surface?.isConnected ||
+      (active.classList.contains('collection-tile') && active.classList.contains('expanded')) ||
+      document.hidden ||
+      reduced.matches ||
+      !fine.matches
+    ) {
       clear();
       return;
     }
     const clamp = (v) => Math.max(-1, Math.min(1, v)),
       dx = clamp(((x - bounds.left) / Math.max(1, bounds.width) - 0.5) * 2),
       dy = clamp(((y - bounds.top) / Math.max(1, bounds.height) - 0.5) * 2);
-    active.style.setProperty('--effect-rx', (-dy * 5).toFixed(2) + 'deg');
-    active.style.setProperty('--effect-ry', (dx * 5).toFixed(2) + 'deg');
+    surface.style.setProperty('--effect-rx', (-dy * 9).toFixed(2) + 'deg');
+    surface.style.setProperty('--effect-ry', (dx * 9).toFixed(2) + 'deg');
   }
   function follow(event) {
     if (!enabled(event)) {
@@ -57,8 +65,14 @@
     }
     if (card !== active) {
       clear();
-      bounds = card.getBoundingClientRect();
+      const targetSurface = card.classList.contains('collection-tile')
+        ? card
+        : card.querySelector(':scope > .cover-shell');
+      if (!targetSurface?.isConnected) return;
+      // Overview collections move as a unit; album titles stay outside the cover effect.
+      bounds = targetSurface.getBoundingClientRect();
       active = card;
+      surface = targetSurface;
       active.classList.add('effects-active');
     }
     x = event.clientX;
@@ -72,7 +86,7 @@
     const glass = settings.liquidGlass !== false ? 'on' : 'off',
       motion = ['low', 'medium', 'high'].includes(settings.motionLevel)
         ? settings.motionLevel
-        : 'medium',
+        : 'high',
       changed = root.dataset.liquidGlass !== glass || root.dataset.motion !== motion;
     clear();
     root.dataset.liquidGlass = glass;

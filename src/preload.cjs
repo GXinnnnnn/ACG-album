@@ -2,9 +2,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const allowed = new Set([
   'appInfo',
+  'systemFonts',
   'checkUpdate',
   'quit',
   'mediaInfo',
+  'prepareImagePreview',
   'mediaStats',
   'setPlace',
   'setAlbumKind',
@@ -16,6 +18,8 @@ const allowed = new Set([
   'searchLocalIndex',
   'list',
   'get',
+  'getRootMatchPolicy',
+  'setRootMatchPolicy',
   'ancestors',
   'patch',
   'confirmReview',

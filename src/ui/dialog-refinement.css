@@ -1,0 +1,51 @@
+@charset "UTF-8";
+/* Keep focus attached to the control silhouette. Darken the light-theme
+   accent just enough for contrast; the existing text token reverses this
+   automatically in dark mode. No geometry, font, or text-halo changes. */
+:root {
+  --control-focus-color: color-mix(in srgb, var(--accent) 78%, var(--text));
+}
+:root
+  :is(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='range'],
+      [type='color'],
+      [type='file'],
+      [type='button'],
+      [type='submit'],
+      [type='reset']
+    ),
+    textarea,
+    select,
+    .album-select-button
+  ):focus-visible {
+  outline: 2px solid var(--control-focus-color);
+  outline-offset: 0;
+}
+/* Search has one focus boundary around its complete rounded wrapper, rather
+   than a detached glow plus a second outline around the inner text box. */
+:root .search-wrap:focus-within {
+  outline: 2px solid var(--control-focus-color);
+  outline-offset: 0;
+  border-color: var(--control-focus-color);
+  box-shadow:
+    inset 0 0 0 1px var(--control-focus-color),
+    var(--float-shadow);
+}
+:root .search-wrap input:focus-visible,
+:root .modal .search-wrap input:focus-visible {
+  outline: none;
+}
+/* A one-pixel inset preserves all two pixels of keyboard focus in scrollable
+   dialog lists and tightly packed preference controls, without the old gap. */
+:root .modal :is(button, a, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--control-focus-color);
+  outline-offset: -1px;
+}
+@media (forced-colors: active) {
+  :root {
+    --control-focus-color: Highlight;
+  }
+}

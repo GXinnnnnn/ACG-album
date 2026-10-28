@@ -1,0 +1,165 @@
+@charset "UTF-8";
+/* A single shared WebGL2 renderer copies bounded full-surface optical layers.
+   CSS backdrop-filter below the layer still samples actual DOM pixels. The GPU
+   texture is only an image/theme proxy, never a screenshot of the interface. */
+:root {
+  --liquid-body-tint: rgba(247, 244, 255, 0.3);
+}
+:root[data-theme='dark'] {
+  --liquid-body-tint: rgba(30, 26, 46, 0.42);
+}
+/* A light dialog needs a milkier center over saturated covers. Descriptions
+   use --muted, while other secondary labels use --soft; neither changes the
+   opacity or compositing of the independent foreground text layer. */
+:root[data-theme='light'][data-liquid-glass='on'] .modal:not(.viewer) {
+  --liquid-body-tint: rgba(250, 248, 255, 0.56);
+  --soft: #44384f;
+  --muted: #44384f;
+}
+/* Lower the opaque-looking tint/highlight stack over the real DOM blur. This
+   also gives a translucent full-face material when WebGL is unavailable/lost.
+   Only the saved on state opts in; off restores the existing base surfaces. */
+@supports (backdrop-filter: blur(1px)) {
+  :root[data-liquid-glass='on']
+    :is(
+      .sidebar-shell,
+      .topbar > .brand,
+      .topbar > .navigation,
+      .topbar > .search-wrap,
+      .topbar > .header-actions,
+      .toolbar-right,
+      .back-to-top,
+      .context-menu,
+      .album-select-list,
+      .progress-panel,
+      .toast,
+      .modal:not(.viewer)
+    ) {
+    background:
+      linear-gradient(125deg, rgba(255, 255, 255, 0.09), transparent 60%),
+      linear-gradient(175deg, rgba(255, 255, 255, 0.04), transparent 80%), var(--liquid-body-tint);
+  }
+}
+/* Dialogs need a quieter center than a floating toolbar. This translucent
+   radial scrim thickens toward content and fades continuously back into the
+   existing liquid rim; the GPU optics and independent text stay above it. */
+@supports (backdrop-filter: blur(1px)) {
+  :root[data-liquid-glass='on'] .modal:not(.viewer) {
+    --modal-frost-center: rgba(250, 248, 255, 0.28);
+    --modal-frost-shoulder: rgba(250, 248, 255, 0.14);
+    --modal-frost-edge: rgba(250, 248, 255, 0.04);
+    background:
+      radial-gradient(
+        ellipse at 50% 50%,
+        var(--modal-frost-center) 0%,
+        var(--modal-frost-center) 24%,
+        var(--modal-frost-shoulder) 55%,
+        var(--modal-frost-edge) 80%,
+        transparent 100%
+      ),
+      linear-gradient(125deg, rgba(255, 255, 255, 0.09), transparent 60%),
+      linear-gradient(175deg, rgba(255, 255, 255, 0.04), transparent 80%), var(--liquid-body-tint);
+  }
+  :root[data-theme='dark'][data-liquid-glass='on'] .modal:not(.viewer) {
+    --modal-frost-center: rgba(30, 26, 46, 0.28);
+    --modal-frost-shoulder: rgba(30, 26, 46, 0.14);
+    --modal-frost-edge: rgba(30, 26, 46, 0.04);
+  }
+}
+:root [data-liquid-glass-host] {
+  isolation: isolate;
+}
+:root [data-liquid-static] {
+  position: relative;
+}
+:root .liquid-glass-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none !important;
+  user-select: none;
+  contain: strict;
+}
+:root .liquid-glass-canvas[hidden],
+:root[data-liquid-glass='off'] .liquid-glass-canvas {
+  display: none;
+}
+/* Image overlap remains event-driven and independent of GL/motion. A single
+   soft downward shadow replaces the former luminous rim; foreground colors,
+   fills and opacity remain independent from the material beneath them. */
+:root {
+  --glass-ink-shadow: rgba(25, 20, 37, 0.2);
+}
+:root[data-theme='dark'] {
+  --glass-ink-shadow: rgba(0, 0, 0, 0.3);
+}
+/* A nested popup starts a new inheritance boundary; its own image overlap
+   decides contrast, even when the parent dialog is image-backed. */
+:root
+  :where(
+    .sidebar-shell,
+    .topbar > .brand,
+    .topbar > .navigation,
+    .topbar > .search-wrap,
+    .topbar > .header-actions,
+    .toolbar-right,
+    .back-to-top,
+    .context-menu,
+    .album-select-list,
+    .progress-panel,
+    .toast,
+    .modal:not(.viewer)
+  ) {
+  --glass-text-shadow: none;
+  --glass-white-text-shadow: none;
+  text-shadow: var(--glass-text-shadow);
+}
+:root [data-glass-image-under] {
+  --glass-text-shadow: 0 1px 2px var(--glass-ink-shadow);
+  --glass-white-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  text-shadow: var(--glass-text-shadow);
+}
+:root
+  :where(
+    .sidebar-shell,
+    .topbar,
+    .toolbar-right,
+    .back-to-top,
+    .context-menu,
+    .album-select-list,
+    .progress-panel,
+    .toast,
+    .modal:not(.viewer)
+  )
+  :is(button, input, textarea, select, .album-select-option) {
+  text-shadow: var(--glass-text-shadow, none);
+}
+:root :is(.primary, .rail-action) {
+  text-shadow: var(--glass-white-text-shadow, none);
+}
+:root [data-glass-image-under] :is(input, textarea)::placeholder {
+  text-shadow: inherit;
+}
+:root
+  :where(
+    .sidebar-shell,
+    .topbar,
+    .toolbar-right,
+    .back-to-top,
+    .context-menu,
+    .album-select-list,
+    .progress-panel,
+    .toast,
+    .modal:not(.viewer)
+  )
+  svg {
+  filter: none;
+}
+/* The optical layer is static between invalidations. There is deliberately no
+   CSS animation or transition on it, including progress-panel contents. */
+:root[data-liquid-renderer='webgl2'][data-liquid-glass='on'] [data-liquid-glass-host] {
+  border-color: color-mix(in srgb, var(--liquid-edge) 75%, transparent);
+}

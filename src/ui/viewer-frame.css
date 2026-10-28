@@ -1,0 +1,183 @@
+@charset "UTF-8";
+/* The media viewer is a quiet, theme-aware photo surface, independent of the
+   library's liquid-glass switch. Only this hollow perimeter samples a backdrop;
+   the media and the individual controls never receive blur or refraction. */
+#viewer {
+  --viewer-background: #f3f3f3;
+  --viewer-ink: #202020;
+  --viewer-muted: #626262;
+  --viewer-frost: rgba(255, 255, 255, 0.28);
+  --viewer-edge: rgba(0, 0, 0, 0.07);
+  --viewer-button: rgba(243, 243, 243, 0.9);
+  --viewer-hover: rgba(0, 0, 0, 0.07);
+  --viewer-rim-top: 64px;
+  --viewer-rim-side: 12px;
+  --viewer-rim-bottom: 42px;
+  background: var(--viewer-background);
+  color: var(--viewer-ink);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  isolation: isolate;
+  color-scheme: light;
+}
+:root[data-theme='dark'] #viewer {
+  --viewer-background: #151515;
+  --viewer-ink: #f0f0f0;
+  --viewer-muted: #b5b5b5;
+  --viewer-frost: rgba(255, 255, 255, 0.035);
+  --viewer-edge: rgba(255, 255, 255, 0.09);
+  --viewer-button: rgba(28, 28, 28, 0.9);
+  --viewer-hover: rgba(255, 255, 255, 0.09);
+  color-scheme: dark;
+}
+#viewer::backdrop {
+  background: var(--viewer-background);
+  backdrop-filter: none;
+}
+#viewer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  padding: var(--viewer-rim-top) var(--viewer-rim-side) var(--viewer-rim-bottom);
+  border: 1px solid var(--viewer-edge);
+  background: var(--viewer-frost);
+  backdrop-filter: blur(10px) saturate(0.9);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+/* Older engines keep a quiet edge instead of placing an unmasked blur over
+   the center. Chromium/Electron supports the hollow mask above. */
+@supports not (mask-composite: exclude) {
+  #viewer::before {
+    background: transparent;
+    backdrop-filter: none;
+  }
+}
+#viewer :is(.viewer-top, .viewer-bottom, .viewer-arrow) {
+  z-index: 2;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  text-shadow: none;
+}
+#viewer .viewer-top {
+  height: var(--viewer-rim-top);
+  gap: 16px;
+  padding: 0 20px;
+  color: var(--viewer-ink);
+}
+#viewer .viewer-top > div:first-child {
+  flex: 1;
+  min-width: 0;
+  max-width: 42%;
+  gap: 12px;
+}
+#viewer .viewer-top strong {
+  color: var(--viewer-ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+#viewer #viewer-position {
+  flex-shrink: 0;
+  color: var(--viewer-muted);
+  white-space: nowrap;
+}
+#viewer :is(.icon-button, .viewer-button) {
+  flex-shrink: 0;
+  min-height: 36px;
+  color: var(--viewer-ink);
+  border-radius: 6px;
+}
+#viewer .viewer-button {
+  padding: 8px 9px;
+}
+#viewer :is(.icon-button, .viewer-button):hover {
+  background: var(--viewer-hover);
+}
+#viewer button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+#viewer .viewer-stage {
+  inset: var(--viewer-rim-top) calc(var(--viewer-rim-side) + 2px) var(--viewer-rim-bottom);
+  z-index: 0;
+}
+#viewer .viewer-stage :is(img, video) {
+  filter: none;
+  backdrop-filter: none;
+}
+#viewer .viewer-arrow {
+  top: calc(50% - 24px);
+  width: 40px;
+  height: 48px;
+  color: var(--viewer-ink);
+  border: 1px solid var(--viewer-edge);
+  border-radius: 6px;
+  background: var(--viewer-button);
+}
+#viewer .viewer-arrow:hover {
+  background: color-mix(in srgb, var(--viewer-hover), var(--viewer-background) 80%);
+}
+#viewer .viewer-arrow.prev {
+  left: 18px;
+}
+#viewer .viewer-arrow.next {
+  right: 18px;
+}
+#viewer .viewer-bottom {
+  height: var(--viewer-rim-bottom);
+  padding: 0 20px;
+  align-items: center;
+  gap: 24px;
+  color: var(--viewer-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+#viewer #viewer-path {
+  flex: 1;
+  min-width: 0;
+}
+#viewer #viewer-hint {
+  flex-shrink: 0;
+}
+@media (max-width: 760px) {
+  #viewer {
+    --viewer-rim-top: 104px;
+    --viewer-rim-side: 8px;
+  }
+  #viewer .viewer-top {
+    flex-wrap: wrap;
+    align-content: center;
+    gap: 4px;
+    padding: 8px 12px;
+  }
+  #viewer .viewer-top > div:first-child {
+    flex-basis: 100%;
+    max-width: 100%;
+  }
+  #viewer #viewer-actions {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  #viewer .viewer-bottom {
+    padding: 0 12px;
+  }
+  #viewer #viewer-hint {
+    display: none;
+  }
+}
+@media (forced-colors: active) {
+  #viewer::before {
+    border-color: CanvasText;
+    backdrop-filter: none;
+  }
+}

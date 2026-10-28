@@ -36,6 +36,18 @@ async function walk(dir) {
   for (const { file } of await walk(path.join(root, 'src'))) {
     const relative = path.relative(root, file).replaceAll('\\', '/');
     if (relative.startsWith('src/demo/')) continue;
+    if (relative.startsWith('src/vendor/libheif/')) {
+      const target = path.join(
+        installed,
+        'resources/codecs/libheif',
+        path.relative(path.join(root, 'src/vendor/libheif'), file)
+      );
+      assert.equal(hash(await fs.readFile(target)), hash(await fs.readFile(file)), relative);
+      report.sourceFiles++;
+      continue;
+    }
+    const privateFont = /^src\/assets\/fonts\/founder-lanting-yuan\/[^/]+\.ttf$/i.test(relative);
+    if (privateFont && !entries.includes(relative)) continue;
     assert.equal(hash(extract(relative)), hash(await fs.readFile(file)), relative);
     report.sourceFiles++;
   }

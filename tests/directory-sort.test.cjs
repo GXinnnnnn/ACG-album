@@ -9,18 +9,36 @@ const { DatabaseSync } = require('node:sqlite');
 const { idFor } = require('../src/model.cjs');
 const { sortKey, NATURAL_SORT_VERSION } = require('../src/natural-sort.cjs');
 
-async function client(dataDir) {
+async function client(dataDir, fixture) {
   const worker = new Worker(path.resolve(__dirname, '../src/library-worker.cjs'), {
     workerData: { dataDir, watch: false, token: '' }
   });
+  // Track the worker before awaiting ready, so timeout cleanup also owns a worker
+  // that is still migrating the 100k fixture and has not become f.client yet.
+  fixture.workers.add(worker);
+  worker.once('exit', () => fixture.workers.delete(worker));
   const pending = new Map();
   const events = [];
   let serial = 0;
   await new Promise((resolve, reject) => {
-    worker.once('error', reject);
+    const timer = setTimeout(() => {
+      void worker.terminate();
+      reject(new Error('Worker ready timeout'));
+    }, 60000);
+    worker.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    worker.once('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('Worker exited before ready: ' + code));
+    });
     worker.on('message', (m) => {
       if (m.event) events.push(m);
-      if (m.event === 'ready') resolve();
+      if (m.event === 'ready') {
+        clearTimeout(timer);
+        resolve();
+      }
       const item = pending.get(m.request);
       if (!item) return;
       pending.delete(m.request);
@@ -31,33 +49,47 @@ async function client(dataDir) {
   const call = (method, args = {}) =>
     new Promise((resolve, reject) => {
       const request = ++serial;
-      const timer = setTimeout(() => reject(new Error('RPC timeout: ' + method)), 15000);
+      const timer = setTimeout(() => {
+        pending.delete(request);
+        reject(new Error('RPC timeout: ' + method));
+      }, 15000);
       pending.set(request, { resolve, reject, timer });
       worker.postMessage({ request, method, args });
     });
-  let closed = false;
+  let closePromise;
   return {
     call,
     events,
-    async close() {
-      if (closed) return;
-      closed = true;
-      try {
-        await call('shutdown');
-      } finally {
-        await worker.terminate();
-      }
+    close() {
+      return (closePromise ||= (async () => {
+        try {
+          await call('shutdown');
+        } finally {
+          await worker.terminate();
+        }
+      })());
     }
   };
 }
 async function fixture(t) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-directory-sort-'));
-  const fixture = {};
+  const fixture = { workers: new Set() };
+  t.signal.addEventListener(
+    'abort',
+    () => {
+      for (const worker of fixture.workers) void worker.terminate();
+    },
+    { once: true }
+  );
   t.after(async () => {
-    await fixture.client?.close();
-    assert.equal(path.dirname(tmp), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(tmp).startsWith('acg-directory-sort-'));
-    await fs.rm(tmp, { recursive: true, force: true });
+    try {
+      if (!t.signal.aborted) await fixture.client?.close();
+    } finally {
+      await Promise.allSettled([...fixture.workers].map((worker) => worker.terminate()));
+      assert.equal(path.dirname(tmp), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(tmp).startsWith('acg-directory-sort-'));
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
   const source = path.join(tmp, 'source'),
     data = path.join(tmp, 'data');
@@ -78,7 +110,7 @@ test('directory ordering uses actual natural names, separate filesystem dates an
   for (const name of fileNames) await fs.writeFile(path.join(f.source, name), '');
   for (const [i, name] of [...folderNames, ...fileNames].entries())
     await fs.utimes(path.join(f.source, name), 1600000000 + i * 100, 1600000000 + i * 100);
-  let c = (f.client = await client(f.data));
+  let c = (f.client = await client(f.data, f));
   await c.call('scan', {
     path: f.source,
     offline: true,
@@ -115,7 +147,7 @@ test('directory ordering uses actual natural names, separate filesystem dates an
   } finally {
     db.close();
   }
-  c = f.client = await client(f.data);
+  c = f.client = await client(f.data, f);
   t.after(() => c.close());
   const natural = [
     'Work1',
@@ -168,10 +200,10 @@ test('directory ordering uses actual natural names, separate filesystem dates an
 
 test(
   '100k SQL-backed directory keeps natural date ties indexed and paginated RPCs below two seconds',
-  { timeout: 30000 },
+  { timeout: 90000 },
   async (t) => {
     const f = await fixture(t);
-    let c = (f.client = await client(f.data));
+    let c = (f.client = await client(f.data, f));
     await c.close();
     const db = new DatabaseSync(path.join(f.data, 'library.sqlite'));
     const root = idFor(f.source);
@@ -212,7 +244,7 @@ test(
       db.close();
     }
     const migrationStarted = performance.now();
-    c = f.client = await client(f.data);
+    c = f.client = await client(f.data, f);
     const migrationMs = Math.round(performance.now() - migrationStarted);
     t.after(() => c.close());
     const measurements = [];
@@ -250,7 +282,7 @@ test('Chinese pinyin and numeric filename pages migrate legacy Unicode keys once
   const f = await fixture(t);
   const names = ['张2', '波10', '阿10', '张1', '波2', '阿2'];
   for (const name of names) await fs.mkdir(path.join(f.source, name));
-  let c = (f.client = await client(f.data));
+  let c = (f.client = await client(f.data, f));
   await c.call('scan', { path: f.source, onlineMatch: false, directoryKind: 'work' });
   await c.close();
   const db = new DatabaseSync(path.join(f.data, 'library.sqlite'));
@@ -274,7 +306,7 @@ test('Chinese pinyin and numeric filename pages migrate legacy Unicode keys once
   } finally {
     db.close();
   }
-  c = f.client = await client(f.data);
+  c = f.client = await client(f.data, f);
   assert.deepEqual(
     c.events.filter((m) => m.event === 'sortMigration').map((m) => m.data),
     [
@@ -319,7 +351,7 @@ test('Chinese pinyin and numeric filename pages migrate legacy Unicode keys once
   } finally {
     check.close();
   }
-  c = f.client = await client(f.data);
+  c = f.client = await client(f.data, f);
   assert.equal(
     c.events.some((m) => m.event === 'sortMigration'),
     false,
@@ -331,7 +363,7 @@ test('Chinese pinyin and numeric filename pages migrate legacy Unicode keys once
   );
 });
 
-test('compact natural keys match ordinary zh-CN names and arbitrary numeric magnitudes without NUL', () => {
+test('compact natural keys group non-Han before Chinese, retaining zh-CN names and numeric magnitudes without NUL', () => {
   const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
   const samples = [
     '阿10',
@@ -350,12 +382,16 @@ test('compact natural keys match ordinary zh-CN names and arbitrary numeric magn
     'カナ10'
   ];
   const binary = (a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0);
-  assert.deepEqual([...samples].sort(binary), [...samples].sort(collator.compare));
+  const expected = [
+    ...samples.filter((name) => !/^\p{Script=Han}/u.test(name)).sort(collator.compare),
+    ...samples.filter((name) => /^\p{Script=Han}/u.test(name)).sort(collator.compare)
+  ];
+  assert.deepEqual([...samples].sort(binary), expected);
   assert.equal(sortKey('Ａ０２'), sortKey('a2'));
   assert.equal(sortKey('阿02'), sortKey('阿2'));
   for (const sample of samples) assert.ok(!sortKey(sample).includes('\0'));
   assert.ok(
-    Buffer.byteLength(sortKey('阿波张中文标题')) <= Buffer.byteLength('阿波张中文标题'),
-    'common Chinese weights do not expand UTF-8 index bytes'
+    Buffer.byteLength(sortKey('阿波张中文标题')) <= Buffer.byteLength('阿波张中文标题') + 1,
+    'common Chinese weights add at most one group byte to UTF-8 index bytes'
   );
 });

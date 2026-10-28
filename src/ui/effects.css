@@ -2,15 +2,19 @@
 /* Only these small floating surfaces sample the backdrop. Static material is
    unchanged when disabled or when backdrop-filter is unavailable. */
 :root {
-  --liquid-tint: rgba(251, 250, 255, 0.68);
-  --liquid-edge: rgba(255, 255, 255, 0.8);
-  --liquid-shade: rgba(87, 68, 119, 0.13);
+  --liquid-tint: rgba(247, 244, 255, 0.58);
+  --liquid-edge: rgba(255, 255, 255, 0.9);
+  --liquid-shade: rgba(87, 68, 119, 0.18);
   --effect-duration: 220ms;
 }
 :root[data-theme='dark'] {
-  --liquid-tint: rgba(30, 28, 43, 0.74);
-  --liquid-edge: rgba(237, 225, 255, 0.2);
+  --liquid-tint: rgba(30, 26, 46, 0.68);
+  --liquid-edge: rgba(237, 225, 255, 0.3);
   --liquid-shade: rgba(3, 2, 12, 0.3);
+}
+/* The legacy menu blur must also obey the saved off switch. */
+:root[data-liquid-glass='off'] .context-menu {
+  backdrop-filter: none;
 }
 @supports (backdrop-filter: blur(1px)) {
   :root[data-liquid-glass='on']
@@ -20,19 +24,23 @@
       .topbar > .navigation,
       .topbar > .search-wrap,
       .topbar > .header-actions,
-      .toolbar-left,
       .toolbar-right,
-      .back-to-top
+      .back-to-top,
+      .context-menu,
+      .album-select-list,
+      .progress-panel,
+      .toast,
+      .modal:not(.viewer)
     ) {
     background:
-      linear-gradient(125deg, rgba(255, 255, 255, 0.13), transparent 44%),
-      linear-gradient(175deg, rgba(255, 255, 255, 0.06), transparent 55%), var(--liquid-tint);
+      linear-gradient(125deg, rgba(255, 255, 255, 0.24), transparent 44%),
+      linear-gradient(175deg, rgba(255, 255, 255, 0.1), transparent 55%), var(--liquid-tint);
     border-color: var(--liquid-edge);
     box-shadow:
       inset 0 1px 0 var(--liquid-edge),
       inset 1px 0 0 rgba(255, 255, 255, 0.08),
       0 8px 26px var(--liquid-shade);
-    backdrop-filter: blur(12px) saturate(1.16);
+    backdrop-filter: blur(18px) saturate(1.35);
   }
 }
 
@@ -76,7 +84,8 @@
 }
 :root .album-card:not(.media-card) .card-bottom-overlay {
   left: 8px;
-  bottom: 4px;
+  bottom: 8px;
+  align-items: center;
 }
 :root .media-card .card-bottom-overlay {
   left: 8px;
@@ -88,11 +97,33 @@
   backdrop-filter: none;
 }
 
-/* Animate the card as a single surface; retain saved folder crop zoom without
-   stacking a second hover zoom on the image. No idle card gets will-change. */
-:root :is(.album-card, .collection-tile) {
+/* Album covers move with their overlays while album titles stay anchored.
+   Collapsed overview collections move as one image-and-details surface. */
+:root :is(.album-card, .collection-tile),
+:root :is(.album-card, .collection-tile):is(:hover, :focus-visible, :focus-within) {
   transform: none;
+  transition: none;
+}
+:root .collection-tile:not(.expanded) {
+  overflow: hidden;
   transform-origin: center;
+  transition: transform var(--effect-duration) cubic-bezier(0.2, 0.8, 0.2, 1);
+  cursor: pointer;
+}
+:root .collection-summary {
+  cursor: pointer;
+}
+:root .collection-tile > .collection-image {
+  transform: none;
+  transition: none;
+}
+:root :is(.album-card, .collection-tile):is(:hover, :focus-visible, :focus-within) {
+  z-index: 2;
+}
+:root .album-card > .cover-shell {
+  transform: none;
+  /* Grow upward from the lower edge to keep the anchored title readable. */
+  transform-origin: center bottom;
   transition: transform var(--effect-duration) cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 :root .album-card:is(:hover, :focus-visible) {
@@ -142,38 +173,39 @@
 :root[data-motion='low'] .brand:is(:hover, :focus-visible) {
   transform: none;
 }
-:root[data-motion='low'] .album-card:focus-visible,
+:root[data-motion='low'] .album-card:focus-visible > .cover-shell,
 :root[data-motion='low'] .collection-tile:not(.expanded):focus-within {
   transform: scale(1.008);
 }
-:root:is([data-motion='medium'], [data-motion='high']) .album-card:focus-visible,
+:root:is([data-motion='medium'], [data-motion='high']) .album-card:focus-visible > .cover-shell,
 :root:is([data-motion='medium'], [data-motion='high'])
   .collection-tile:not(.expanded):focus-within {
   transform: translateY(-2px) scale(1.018);
 }
 @media (hover: hover) and (pointer: fine) {
-  :root[data-motion='low']
-    :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)):hover {
+  :root[data-motion='low'] .album-card:not(.card-skeleton):hover > .cover-shell,
+  :root[data-motion='low'] .collection-tile:not(.expanded):hover {
     transform: scale(1.008);
   }
   :root:is([data-motion='medium'], [data-motion='high'])
-    :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)):hover {
+    .album-card:not(.card-skeleton):hover
+    > .cover-shell,
+  :root:is([data-motion='medium'], [data-motion='high']) .collection-tile:not(.expanded):hover {
     transform: translateY(-2px) scale(1.018);
   }
 }
-:root[data-motion='high']
-  :is(.album-card:not(.card-skeleton), .collection-tile:not(.expanded)).effects-active {
+:root[data-motion='high'] .album-card:not(.card-skeleton).effects-active > .cover-shell,
+:root[data-motion='high'] .collection-tile:not(.expanded).effects-active {
   transform: perspective(900px) translateY(-2px) rotateX(var(--effect-rx, 0deg))
     rotateY(var(--effect-ry, 0deg)) scale(1.065);
   transition-duration: 140ms;
   will-change: transform;
 }
-:root .collection-tile.expanded {
-  transform: none;
-}
 @media (prefers-reduced-motion: reduce) {
-  :root :is(.album-card, .collection-tile),
-  :root :is(.album-card, .collection-tile):is(:hover, :focus-visible, :focus-within) {
+  :root :is(.album-card > .cover-shell, .collection-tile),
+  :root
+    :is(.album-card, .collection-tile):is(:hover, :focus-visible, :focus-within)
+    > :is(.cover-shell, .collection-image) {
     transform: none !important;
     transition: none !important;
     will-change: auto !important;

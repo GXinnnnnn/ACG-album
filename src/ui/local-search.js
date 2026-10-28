@@ -65,6 +65,10 @@
       return activeDialog;
     }
     const returnFocus = document.activeElement;
+    const focusReturn = window.albumDialogInteraction?.rememberFocus(returnFocus) || {
+      element: returnFocus,
+      keyboard: !!returnFocus?.matches(':focus-visible')
+    };
     const parentDialog = returnFocus?.closest('dialog');
     const dialog = document.createElement('dialog');
     dialog.id = 'local-search-dialog';
@@ -209,17 +213,6 @@
     });
     const parentClosed = () => dialog.close();
     parentDialog?.addEventListener('close', parentClosed);
-    dialog.addEventListener('click', (event) => {
-      if (event.target !== dialog) return;
-      const rect = dialog.getBoundingClientRect();
-      if (
-        event.clientX < rect.left ||
-        event.clientX > rect.right ||
-        event.clientY < rect.top ||
-        event.clientY > rect.bottom
-      )
-        dialog.close();
-    });
     dialog.addEventListener(
       'close',
       () => {
@@ -229,7 +222,9 @@
         parentDialog?.removeEventListener('close', parentClosed);
         if (activeDialog === dialog) activeDialog = null;
         dialog.remove();
-        if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+        if (window.albumDialogInteraction) window.albumDialogInteraction.restoreFocus(focusReturn);
+        else if (returnFocus?.isConnected)
+          returnFocus.focus({ preventScroll: true, focusVisible: focusReturn.keyboard });
       },
       { once: true }
     );

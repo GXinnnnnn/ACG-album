@@ -15,6 +15,8 @@ function applyDisplaySettings() {
   if (details) {
     details.classList.toggle('active', S.settings.details !== false);
     details.setAttribute('aria-pressed', String(S.settings.details !== false));
+    details.setAttribute('aria-label', '显示卡片详情');
+    details.title = '切换相册附加信息、文件名、大小与日期';
   }
   $$('[data-density]').forEach((button) => {
     const selected = Number(button.dataset.density) === Number(S.settings.density);

@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { build, Platform, Arch } = require('electron-builder');
 const metadata = require('../package.json');
+const { publicFontFiles } = require('./public-font-package.cjs');
 const root = path.resolve(__dirname, '..');
 const indexRoot = path.resolve(
   process.env.ACG_INDEX_SOURCE || path.join(root, '..', '资料归档', 'local-index-pilot-2026-10-20')
@@ -88,6 +89,7 @@ async function sourceSnapshot() {
       publish: 'never',
       config: {
         ...metadata.build,
+        files: publicFontFiles(metadata.build.files),
         directories: { ...metadata.build.directories, output: out },
         artifactName: `ACG-album-Setup-${metadata.version}-${label}.` + '${ext}',
         extraMetadata: { searchEdition: variant },

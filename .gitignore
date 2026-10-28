@@ -18,6 +18,13 @@ node_modules/
 *.dmg
 *.AppImage
 
+# Private local Founder fonts: no public redistribution grant; keep originals on disk
+/src/assets/fonts/founder-lanting-yuan/regular.ttf
+/src/assets/fonts/founder-lanting-yuan/medium.ttf
+/src/assets/fonts/founder-lanting-yuan/semibold.ttf
+/src/assets/fonts/founder-lanting-yuan/bold.ttf
+/src/assets/fonts/founder-lanting-yuan/heavy.ttf
+
 # Imported original collections (never commit or reorganize)
 /ACG图片/
 /游戏图片/

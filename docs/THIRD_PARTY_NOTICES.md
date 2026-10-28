@@ -1,6 +1,6 @@
 # 第三方许可与致谢
 
-本文对应 ACG-album 1.1.1 的 Windows x64 依赖。作者代码采用 MIT，版权所有 © 2026 友利奈绪的胖次（[GXinnnnnn](https://github.com/GXinnnnnn)）；第三方组件继续适用各自许可。机器可读致谢位于 `src/assets/credits.json`，原始许可、NOTICE 和校验清单位于 `src/assets/licenses/`。
+本文对应 ACG-album 1.1.0 的 Windows x64 依赖；安装包以随包清单为准。作者代码采用 MIT，版权所有 © 2026 友利奈绪的胖次（[GXinnnnnn](https://github.com/GXinnnnnn)）；第三方组件继续适用各自许可。机器可读致谢位于 `src/assets/credits.json`，原始许可、NOTICE 和校验清单位于 `src/assets/licenses/`。
 
 ## 应用运行时
 
@@ -70,11 +70,25 @@ Portions of this software are copyright © The FreeType Project (www.freetype.or
 - [build-win64-mxe v8.17.3 构建树](https://github.com/libvips/build-win64-mxe/tree/v8.17.3)，包含构建配置、组件来源和补丁；原始 [Windows x64 web static 发行包](https://github.com/libvips/build-win64-mxe/releases/download/v8.17.3/vips-dev-w64-web-8.17.3-static.zip)。
 - [libvips v8.17.3 源码](https://github.com/libvips/libvips/tree/v8.17.3)。其他组件的确切来源见 `licenses/manifest.json` 与上述构建树。
 
-本版本原生组件的对应源码与构建材料另通过同一 Releases 下载页的 [ACG-album-1.1.1-native-sources.zip](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.1.1/ACG-album-1.1.1-native-sources.zip) 提供；文件内保留来源与校验清单。它是开发者使用的源码附件，不是第四种安装包。
+本版本原生组件的对应源码与构建材料另通过同一 Releases 下载页的 [ACG-album-1.1.0-native-sources.zip](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.1.0/ACG-album-1.1.0-native-sources.zip) 提供；文件内保留来源与校验清单。它是开发者使用的源码附件，不是第四种安装包。
 
 本应用不附加禁止为调试 LGPL 组件修改而进行逆向工程的条件。原生模块按构建配置解包在 `resources/app.asar.unpacked/node_modules/@img/` 下；替换修改后的兼容 DLL 需保持文件名、架构与 ABI。DLL 内静态组合的组件须通过对应构建链重建；这与仅替换单个动态库不同。
 
 已检查的 npm 原生包及官方 Windows zip 没有单独的书面源码提供承诺。本目录保存许可文本与获取入口，没有捏造发行者的 written offer。**对外分发二进制时，发行者仍须按适用的 LGPL / MPL 条款随附完整对应源码，或采用许可允许且实际可履行的源码提供方式；仅有本页上游链接不等于已交付对应源码。** 如修改依赖，必须保留版权、标记修改并同步提供对应的构建材料。本文清单依据所附版本表与上游通知；升级、换平台或启用其他编解码组件后应重新核验。
+
+## 独立 HEIC / HEVC 离线解码器
+
+1.1.0 新增 `libheif-js` 1.23.5 的 WASM 工厂与二进制，内含 libheif 1.23.5 和 libde265 1.0.15；它与上表 Sharp 所用的 libheif 1.20.2 分开加载。原生解码库采用 LGPL-3.0-or-later，包装层随附的 `LICENSE-wrapper` 为 LGPLv3；继续保留各内嵌组件的版权与许可。完整 upstream `LICENSE` 包含 LGPLv3、其引用的 GPLv3 及相关 MIT 通知，另保留包装层 `LICENSE-wrapper`。
+
+开发目录为 `src/vendor/libheif`；打包时整目录复制到 ASAR 外的 `resources/codecs/libheif`。随附四份对应代码和构建脚本压缩包：libheif-js、libheif-emscripten、固定提交的 libheif、libde265 1.0.15。未修改解码器或库代码；只从源码归档中移除了非构建用途的图片测试素材，原始来源、两组哈希和逐项移除记录见 `PROVENANCE.json`。未将审核用 HEIC 照片附入程序，也未将其标为 MIT 图像。
+
+构建入口、固定源码提交、Emscripten 3.1.61 参数及上游脚本见该目录 `README.md` 与源码归档。应用没有宣称已重新构建或验证逐位可复现。用户可在退出应用后，将 `libheif.js` 和 `libheif.wasm` 替换为接口兼容的修改版本，再重启应用；运行时不强制官方文件哈希，也不禁止为调试该组件修改而进行的逆向工程。应用使用本地文件启动独立工作线程，不从网络下载运行代码；适配器和线程入口源码为 `src/heif-decoder.cjs`、`src/heif-worker.cjs`。
+
+## 方正兰亭圆与公开字体分发
+
+维护者本机按用户请求保留现有的五种方正兰亭圆 GBK 字形，用于本地离线程序。原始文件未修改；版权为 `Copyright(c) Beijing Founder Electronics Co.,Ltd.2014`，不适用项目 MIT 许可。来源、大小与 SHA-256 记录位于 `src/assets/fonts/founder-lanting-yuan/PROVENANCE.json`。
+
+这些字体为方正专有字体；OS/2 的 `fsType=8` 表示 editable embedding，不能当作通用再分发授权。现有来源记录没有确认面向公众分发应用的独立授权，因此公开 Git 源码与 Standard / Lite / Full 安装器明确排除五个 TTF 文件。界面保留预设与本机字体选择，优先使用用户电脑已有的相应字体，缺少时回退系统字体；不通过网络下载字体。维护者的本地字体不会随公开发布删除。
 
 ## 开发工具
 

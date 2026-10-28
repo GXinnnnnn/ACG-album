@@ -1,6 +1,7 @@
 'use strict';
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { guardedAliases } = require('./verified-title-aliases.cjs');
 const IMAGE_EXT = new Set([
   '.jpg',
   '.jpeg',
@@ -162,9 +163,20 @@ function legacySearchPlan(name) {
       // words intact, and require long phrases for a Han/Japanese pair.
       const han = languages.indexOf('han');
       if (han < 0) return false;
+      const other = pair[1 - han];
+      const acronym = /^[A-Z]{2,6}$/.test(other);
+      const numbers = pair.map((part) => part.normalize('NFKC').match(/\d+/g) || []);
+      const sameNumbers =
+        numbers[0].length > 0 && JSON.stringify(numbers[0]) === JSON.stringify(numbers[1]);
       return (
-        letters(pair[han]) >= (languages[1 - han] === 'japanese' ? 6 : 4) &&
-        letters(pair[1 - han]) >= 4
+        (letters(pair[han]) >= (languages[1 - han] === 'japanese' ? 6 : 4) ||
+          (languages[1 - han] === 'latin' &&
+            letters(pair[han]) >= 2 &&
+            !/^(?:剧场版|劇場版|动画|動畫|电影|電影|漫画|漫畫|游戏|遊戲|小说|小說|真人版|特别篇|特別篇|重制版|重製版|完全版|完整版|续作|續作|外传|外傳)\d*$/.test(
+              keys[han]
+            ) &&
+            ((other.match(/\p{Script=Latin}+/gu) || []).length >= 2 || sameNumbers || acronym))) &&
+        (letters(other) >= 4 || (languages[1 - han] === 'latin' && acronym && letters(other) >= 2))
       );
     };
     const explicitPairs = [...complete.matchAll(new RegExp(boundary.source, 'gu'))]
@@ -185,12 +197,12 @@ function legacySearchPlan(name) {
         // extract runs from interleaved text or split Han/hiragana grammar.
         // Long Han/katakana runs retain the reported undelimited CN/JP case;
         // short ordinary names such as 機動戦士ガンダム remain a single query.
-        const han = '[\\p{Script=Han}\\p{N}々\\s]';
+        const han = '[\\p{Script=Han}\\p{N}々\\s:：\\-]';
         const latin = '[\\p{Script=Latin}\\p{N}\\s\\p{P}]';
         const kana = '[\\p{Script=Katakana}ー・\\p{N}\\s]';
         for (const [left, right, minimum] of [
-          [han, latin, 4],
-          [latin, han, 4],
+          [han, latin, 2],
+          [latin, han, 2],
           [han, kana, 6],
           [kana, han, 6]
         ]) {
@@ -355,6 +367,7 @@ function subjectNames(subject) {
       [
         subject.name,
         subject.name_cn,
+        ...guardedAliases(subject),
         ...(Array.isArray(subject.aliases) ? subject.aliases : []),
         ...aliases
       ]

@@ -3,10 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { normalize, searchPlan, searchStages, similarity } = require('./model.cjs');
+const { guardedAliases, lookup: verifiedAliases } = require('./verified-title-aliases.cjs');
+const { normalize, searchPlan, searchStages, similarity, subjectNames } = require('./model.cjs');
 const {
   rankSubjects,
   rankImportSubjects,
+  rankVerifiedSeriesMembers,
+  seriesSideStory,
+  installment,
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE
 } = require('./matching.cjs');
@@ -214,8 +218,436 @@ function createLocalIndex({ localIndexPath, resourcesPath = process.resourcesPat
   };
 }
 
+function exactSubjectRows(db, types, key, budget) {
+  const placeholders = types.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT subject_id,key FROM name_keys INDEXED BY name_keys_type_key WHERE type IN (${placeholders}) AND key=? ORDER BY subject_id LIMIT ?`
+    )
+    .all(...types, key, budget);
+  for (const record of verifiedAliases(key, normalize)) {
+    if (
+      !types.includes(record.type) ||
+      rows.length >= budget ||
+      rows.some((row) => row.subject_id === record.id)
+    )
+      continue;
+    const row = db
+      .prepare(`SELECT ${SUBJECT_COLUMNS} FROM subjects WHERE id=? AND type=?`)
+      .get(record.id, record.type);
+    if (row && guardedAliases(hydrate(row)).some((alias) => normalize(alias) === key))
+      rows.push({ subject_id: record.id, key });
+  }
+  return rows;
+}
+function oneLatinTypo(query, archived) {
+  const a = normalize(query),
+    b = normalize(archived);
+  if (
+    /^[A-Z]{2,6}$/.test(String(query).normalize('NFKC').trim()) ||
+    !/^[\p{Script=Latin}0-9]+$/u.test(a) ||
+    !/^[\p{Script=Latin}0-9]+$/u.test(b) ||
+    (a.match(/\p{Script=Latin}/gu) || []).length < 6 ||
+    (b.match(/\p{Script=Latin}/gu) || []).length < 6 ||
+    a === b ||
+    Math.abs(a.length - b.length) > 1 ||
+    JSON.stringify(a.match(/\d+/g) || []) !== JSON.stringify(b.match(/\d+/g) || [])
+  )
+    return false;
+  let i = 0,
+    j = 0,
+    edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (++edits > 1) return false;
+    if (a.length >= b.length) i++;
+    if (b.length >= a.length) j++;
+  }
+  return edits + (a.length - i) + (b.length - j) === 1;
+}
+function volumeAfterStem(name, stem) {
+  const value = String(name || '').normalize('NFKC');
+  const key = normalize(stem);
+  let end = 0;
+  while (end < value.length && normalize(value.slice(0, end)).length < key.length) end++;
+  if (normalize(value.slice(0, end)) !== key) return null;
+  const match = /^(?:vol(?:ume)?\.?\s*(\d{1,2})|第\s*(\d{1,2})\s*卷|卷\s*(\d{1,2}))(.*)$/iu.exec(
+    value.slice(end).trim()
+  );
+  if (!match) return null;
+  const tail = match[4];
+  if (tail.trim() && !/^(?:\s+|\s*[:：—–~-]\s*)\p{L}[\p{L}\p{N}\p{P}\p{S}\s]{0,47}$/u.test(tail))
+    return null;
+  if (seriesSideStory(tail) || /\b(?:edition|remaster(?:ed)?|remake|season|part)\b/i.test(tail))
+    return null;
+  return Number(match[1] ?? match[2] ?? match[3]);
+}
+function bilingualVolumeFamily(db, group, types, limit, budget) {
+  const parts = group.parts;
+  if (
+    parts.length !== 2 ||
+    parts.some(
+      (part) =>
+        /^[A-Z]{2,6}$/.test(part.normalize('NFKC').trim()) ||
+        /\p{N}/u.test(part) ||
+        installment(part).number !== null
+    ) ||
+    !parts.some((part) => (part.match(/\p{Script=Han}/gu) || []).length >= 4) ||
+    !parts.some((part) => (part.match(/\p{Script=Latin}/gu) || []).length >= 6)
+  )
+    return null;
+  const placeholders = types.map(() => '?').join(',');
+  let retrievedRows = 0;
+  const incomplete = () => ({
+    selected: null,
+    selectedMatch: null,
+    candidates: [],
+    complete: false,
+    truncated: true,
+    retrievedRows,
+    maxRows: MAX_ROWS,
+    types,
+    terms: [group.whole, ...parts],
+    titleGroups: [group],
+    candidatesTruncated: false,
+    queryHits: {},
+    warnings: ['incomplete-family-recall'],
+    selectionReason: 'incomplete-recall'
+  });
+  const rowsByPart = [];
+  for (const part of parts) {
+    const key = normalize(part);
+    const rows = db
+      .prepare(
+        `SELECT subject_id,key,name FROM name_keys WHERE type IN (${placeholders}) AND key>=? AND key<? LIMIT ?`
+      )
+      .all(...types, key, key + '\uffff', budget - retrievedRows);
+    retrievedRows += rows.length;
+    if (retrievedRows >= budget) return incomplete();
+    rowsByPart.push(rows);
+  }
+  const evidence = rowsByPart.map((rows, i) => {
+    const byId = new Map();
+    for (const row of rows) {
+      const volume = volumeAfterStem(row.name, parts[i]);
+      if (volume === null) continue;
+      if (!byId.has(row.subject_id)) byId.set(row.subject_id, []);
+      byId.get(row.subject_id).push({ volume, name: row.name, key: row.key });
+    }
+    return byId;
+  });
+  const ids = [...evidence[0].keys()].filter((id) => evidence[1].has(id));
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) return incomplete();
+  if (ids.length < 2) return null;
+  const subjects = db
+    .prepare(
+      `SELECT ${SUBJECT_COLUMNS} FROM subjects WHERE id IN (${ids.map(() => '?')}) AND type IN (${placeholders})`
+    )
+    .all(...ids, ...types)
+    .map(hydrate);
+  if (subjects.length !== ids.length) return incomplete();
+  const members = subjects
+    .filter((subject) => !subjectNames(subject).some(seriesSideStory))
+    .map((subject) => {
+      const numbers = new Set(
+        evidence.flatMap((side) => side.get(subject.id).map((item) => item.volume))
+      );
+      return { subject, volume: numbers.size === 1 ? [...numbers][0] : NaN };
+    });
+  const ranked = rankVerifiedSeriesMembers(members, types);
+  return {
+    ...ranked,
+    candidates: ranked.candidates.slice(0, limit),
+    complete: true,
+    truncated: false,
+    retrievedRows,
+    maxRows: MAX_ROWS,
+    types,
+    terms: [group.whole, ...parts],
+    titleGroups: [group],
+    candidatesTruncated: members.length > limit,
+    queryHits: Object.fromEntries(
+      ids.map((id) => [id, evidence.flatMap((side) => side.get(id).map((item) => item.key))])
+    ),
+    warnings: [],
+    familyEvidence: members.map(({ subject, volume }) => ({
+      id: subject.id,
+      volume,
+      names: evidence.map((side) => side.get(subject.id).map((item) => item.name))
+    }))
+  };
+}
+
+// A concatenated translation is not a fuzzy title fragment: both complete
+// names must resolve to the same unique typed subject. Query that bounded exact
+// identity domain before the much broader FTS OR recall can consume its budget.
+function exactBilingualSubject(
+  db,
+  plan,
+  types,
+  limit,
+  importing,
+  wholePhase,
+  budget,
+  allowSeriesRepresentative
+) {
+  if (wholePhase.titleGroups.length) return null;
+  const phases = searchStages(plan);
+  const grouped = phases.filter(
+    (phase) =>
+      phase.titleGroups.length === 1 &&
+      normalize(phase.titleGroups[0].whole) === normalize(wholePhase.terms[0])
+  );
+  if (!grouped.length) return null;
+  const placeholders = types.map(() => '?').join(',');
+  const cache = new Map();
+  let retrievedRows = 0,
+    complete = true;
+  function exact(term) {
+    const key = normalize(term);
+    if (cache.has(key)) return cache.get(key);
+    if (retrievedRows >= budget) {
+      complete = false;
+      return [];
+    }
+    const rows = exactSubjectRows(db, types, key, budget - retrievedRows);
+    retrievedRows += rows.length;
+    if (retrievedRows >= budget) complete = false;
+    cache.set(key, rows);
+    return rows;
+  }
+  // An actual archived whole name keeps precedence over inferred translations.
+  if (wholePhase.terms.some((term) => exact(term).length) || !complete) return null;
+  for (const phase of grouped) {
+    const group = phase.titleGroups[0];
+    if (group.parts.length !== 2) continue;
+    const parts = [...group.parts];
+    let editionTranslation = null;
+    for (let i = 0; i < parts.length; i++) {
+      const marked =
+        /\s+(Remastered|Remake|(?:Complete|Special|Definitive|Ultimate|Deluxe)\s+Edition)$/i.exec(
+          parts[i]
+        );
+      if (!marked || !/\p{Script=Han}/u.test(parts[1 - i])) continue;
+      const foreignRows = exact(parts[i]);
+      if (!foreignRows.length || !complete) continue;
+      const qualified = parts[1 - i] + ' ' + marked[1];
+      const qualifiedRows = exact(qualified);
+      if (
+        complete &&
+        qualifiedRows.some((row) =>
+          foreignRows.some((foreign) => foreign.subject_id === row.subject_id)
+        )
+      ) {
+        editionTranslation = { original: parts[1 - i], qualified, qualifier: marked[1] };
+        parts[1 - i] = qualified;
+      }
+    }
+    let neutralEdition = null;
+    for (let i = 0; i < parts.length; i++) {
+      const original = parts[i];
+      if (!exact(original).length && /\s+Complete Edition$/i.test(original)) {
+        // Do not merge a separately archived edition: this fallback requires
+        // no exact identity for its full English name and two exact base names.
+        parts[i] = original.replace(/\s+Complete Edition$/i, '').trim();
+        neutralEdition = { original, base: parts[i] };
+      }
+    }
+    let spellingCorrection = null;
+    for (let i = 0; i < parts.length; i++) {
+      if (exact(parts[i]).length || !/^[\p{Script=Han}\p{N}]+$/u.test(normalize(parts[1 - i])))
+        continue;
+      const anchorIds = [...new Set(exact(parts[1 - i]).map((row) => Number(row.subject_id)))];
+      if (
+        !complete ||
+        !anchorIds.length ||
+        anchorIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+      )
+        continue;
+      const anchors = db
+        .prepare(
+          `SELECT ${SUBJECT_COLUMNS} FROM subjects WHERE id IN (${anchorIds.map(() => '?')}) AND type IN (${placeholders})`
+        )
+        .all(...anchorIds, ...types)
+        .map(hydrate);
+      if (anchors.length !== anchorIds.length) {
+        complete = false;
+        break;
+      }
+      const repairs = new Map(
+        anchors
+          .flatMap((subject) => subjectNames(subject))
+          .filter((name) => oneLatinTypo(parts[i], name))
+          .map((name) => [normalize(name), name])
+      );
+      if (repairs.size === 1) {
+        const corrected = [...repairs.values()][0];
+        if (exact(corrected).length && complete) {
+          spellingCorrection = { original: parts[i], corrected };
+          parts[i] = corrected;
+        }
+      }
+    }
+    const rowsByPart = parts.map(exact);
+    if (!complete) continue;
+    if (rowsByPart.every((rows) => !rows.length)) {
+      const family = allowSeriesRepresentative
+        ? bilingualVolumeFamily(db, group, types, limit, budget - retrievedRows)
+        : null;
+      if (family)
+        return {
+          ...family,
+          retrievedRows: retrievedRows + family.retrievedRows,
+          threshold: importing ? IMPORT_MIN_CONFIDENCE : MIN_CONFIDENCE,
+          stages: [
+            { terms: wholePhase.terms, titleGroups: [], complete: true, scope: 'exact-whole' },
+            {
+              terms: family.terms,
+              titleGroups: family.titleGroups,
+              complete: family.complete,
+              scope: 'bilingual-volume-family',
+              retrievedRows: retrievedRows + family.retrievedRows
+            }
+          ]
+        };
+      continue;
+    }
+    const common = rowsByPart
+      .map((rows) => new Set(rows.map((row) => Number(row.subject_id))))
+      .reduce((a, b) => new Set([...a].filter((id) => b.has(id))));
+    if (![...common].every((id) => Number.isSafeInteger(id) && id > 0)) continue;
+    const ids = [
+      ...new Set(rowsByPart.flatMap((rows) => rows.map((row) => Number(row.subject_id))))
+    ];
+    if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) continue;
+    const subjects = db
+      .prepare(
+        `SELECT ${SUBJECT_COLUMNS} FROM subjects WHERE id IN (${ids.map(() => '?')}) AND type IN (${placeholders})`
+      )
+      .all(...ids, ...types)
+      .map(hydrate);
+    if (subjects.length !== ids.length) continue;
+    const hits = new Map();
+    rowsByPart.forEach((rows, i) =>
+      rows.forEach((row) => {
+        if (!hits.has(Number(row.subject_id))) hits.set(Number(row.subject_id), new Set());
+        hits.get(Number(row.subject_id)).add(normalize(parts[i]));
+      })
+    );
+    const titleGroups = [{ ...group, parts }],
+      terms = [...new Set([group.whole, ...parts])];
+    const rank = importing ? rankImportSubjects : rankSubjects;
+    const ranked = rank(terms, subjects, types, {
+      complete: true,
+      titleGroups,
+      queryHits: hits,
+      series: plan.series
+    });
+    if (!common.size && !ranked.selected) {
+      // An exact numbered translation can legitimately verify the other
+      // language's unnumbered family. It still needs that term's real FTS hit;
+      // do not let this exact-only preflight suppress the existing proof path.
+      const needsFamilyRecall = subjects.some((subject) => {
+        const names = subjectNames(subject);
+        const numbers = new Set(
+          parts
+            .filter(
+              (part) =>
+                names.some((name) => normalize(name) === normalize(part)) &&
+                hits.get(subject.id)?.has(normalize(part))
+            )
+            .map(installment)
+            .map((part) => part.number)
+            .filter((number) => number !== null)
+        );
+        if (numbers.size !== 1) return false;
+        const number = [...numbers][0];
+        return parts.some((part) => {
+          const query = installment(part);
+          if (query.number !== null) return false;
+          const family = names
+            .map(installment)
+            .filter((name) => name.base === query.base && name.number !== null);
+          return family.length > 0 && family.every((name) => name.number === number);
+        });
+      });
+      if (needsFamilyRecall) return null;
+    }
+    const score =
+      ranked.selected && ranked.candidates.find((item) => item.id === ranked.selected.id)?.match;
+    const editionConflict = group.parts.some(
+      (part) =>
+        /\b(?:edition|remastered|remake)\s*$/i.test(part) &&
+        subjects.some(
+          (subject) =>
+            subject.id !== ranked.selected?.id &&
+            [subject.name, subject.name_cn].some((name) => normalize(name) === normalize(part))
+        )
+    );
+    const selected =
+      common.size === 1 &&
+      !editionConflict &&
+      ranked.selected &&
+      common.has(ranked.selected.id) &&
+      score === 1
+        ? ranked.selected
+        : null;
+    if (!selected && !ranked.candidates.some((item) => item.match === 1)) continue;
+    return {
+      ...ranked,
+      selected,
+      selectedMatch: selected ? score : null,
+      candidates: ranked.candidates.slice(0, limit),
+      complete: true,
+      truncated: false,
+      types,
+      terms,
+      titleGroups,
+      queryHits: Object.fromEntries([...hits].map(([id, keys]) => [id, [...keys]])),
+      retrievedRows,
+      maxRows: MAX_ROWS,
+      candidatesTruncated: subjects.length > limit,
+      selectionReason: selected
+        ? 'exact-bilingual-identity'
+        : editionConflict
+          ? 'conflicting-edition-identity'
+          : 'ambiguous-bilingual-identity',
+      threshold: importing ? IMPORT_MIN_CONFIDENCE : MIN_CONFIDENCE,
+      stages: [
+        { terms: wholePhase.terms, titleGroups: [], complete: true, scope: 'exact-whole' },
+        {
+          terms,
+          titleGroups,
+          complete: true,
+          retrievedRows,
+          scope: 'exact-bilingual',
+          ...(neutralEdition ? { neutralEdition } : {}),
+          ...(spellingCorrection ? { spellingCorrection } : {}),
+          ...(editionTranslation ? { editionTranslation } : {})
+        }
+      ],
+      warnings: []
+    };
+  }
+  return null;
+}
 function searchSubjects(db, { query, types, limit }, importing) {
   const plan = searchPlan(query);
+  const original = String(query).normalize('NFKC');
+  const parentheticalNumber = [
+    ...original.matchAll(/(?:\(\s*([ivxlc]{1,8})\s*\)|\[\s*([ivxlc]{1,8})\s*\])/giu)
+  ].some(([, round, square]) => installment('Series ' + (round || square)).number !== null);
+  const allowSeriesRepresentative =
+    !parentheticalNumber &&
+    !/\p{N}/u.test(original) &&
+    installment(original).number === null &&
+    !/(?:第\s*[一二三四五六七八九十百〇零]+\s*[卷部作章季期]|(?:vol(?:ume)?\.?|卷)\s*[一二三四五六七八九十百〇零ivxlc]+(?:\s|[)\]】]|$))/iu.test(
+      original
+    );
   const placeholders = types.map(() => '?').join(',');
   const subjects = new Map(),
     hits = new Map(),
@@ -270,6 +702,24 @@ function searchSubjects(db, { query, types, limit }, importing) {
     ranked.candidates.some((x) => (importing ? x.match > threshold : x.match >= threshold));
   for (const phase of searchStages(plan)) {
     if (!phase.terms.length) continue;
+    // Only inspect translations of this hypothesis, after all earlier main
+    // titles have had their normal exact/fuzzy admission opportunity.
+    const exactBilingual = exactBilingualSubject(
+      db,
+      plan,
+      types,
+      limit,
+      importing,
+      phase,
+      MAX_ROWS - retrievedRows,
+      allowSeriesRepresentative
+    );
+    if (exactBilingual)
+      return {
+        ...exactBilingual,
+        retrievedRows: retrievedRows + exactBilingual.retrievedRows,
+        stages: [...stages, ...exactBilingual.stages]
+      };
     // Notes are independent fallback hypotheses, just as in the production worker.
     terms = phase.terms;
     titleGroups = phase.titleGroups || [];
@@ -278,13 +728,7 @@ function searchSubjects(db, { query, types, limit }, importing) {
     const keys = [...new Set(terms.map(normalize).filter(Boolean))];
     for (const key of keys) {
       if (retrievedRows >= MAX_ROWS) break;
-      take(
-        db
-          .prepare(
-            `SELECT subject_id,key FROM name_keys INDEXED BY name_keys_type_key WHERE type IN (${placeholders}) AND key=? ORDER BY subject_id LIMIT ?`
-          )
-          .all(...types, key, MAX_ROWS - retrievedRows)
-      );
+      take(exactSubjectRows(db, types, key, MAX_ROWS - retrievedRows));
     }
     ranked = rerank();
     // Exact recall alone omits numbered sequels and close fuzzy competitors.

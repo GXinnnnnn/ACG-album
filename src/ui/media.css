@@ -228,7 +228,7 @@
 .viewer-top .viewer-button {
   white-space: nowrap;
 }
-.viewer-top > div:last-child {
+#viewer-actions {
   display: flex;
   align-items: center;
   gap: 4px;

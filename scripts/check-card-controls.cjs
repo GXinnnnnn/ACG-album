@@ -259,7 +259,7 @@ async function seed(collections) {
       'opening a real imported directory carries its ID into the bulk query',
       async () => {
         const tile = page.locator(`#category-overview .collection-tile[data-id="${parent}"]`);
-        await tile.locator('.category-enter').click();
+        await tile.locator('.collection-open').click();
         await page.waitForFunction(
           (parent) => S.parent === parent && grid.active && grid.cards.size > 0,
           parent
@@ -315,26 +315,41 @@ async function seed(collections) {
       }
     );
     await check(
-      'home clear includes the 12 expanded preview cards and preserves unshown child albums',
+      'home clear includes both fitted preview rows and preserves unshown child albums',
       async () => {
         await page.evaluate(() => navigate({}));
         const tile = page.locator(
           `#category-overview .collection-tile[data-id="${idFor(overview)}"]`
         );
         await tile.locator('.category-expand').click();
-        await expect(tile.locator('.collection-preview .album-card')).toHaveCount(12);
+        const expectedPreviewCount = await tile
+          .locator('.collection-preview')
+          .evaluate(
+            (preview, total) =>
+              Math.min(
+                total,
+                2 * getComputedStyle(preview).gridTemplateColumns.trim().split(/\s+/).length
+              ),
+            previewFolders.length
+          );
+        await expect(tile.locator('.collection-preview .album-card')).toHaveCount(
+          expectedPreviewCount
+        );
         const previewIds = await tile
           .locator('.collection-preview .album-card')
           .evaluateAll((cards) => cards.map((card) => card.dataset.id));
-        await expect(tile.locator('.card-review')).toHaveCount(13);
+        await expect(tile.locator('.card-review')).toHaveCount(expectedPreviewCount + 1);
         await page.locator('#density-button').click();
         await shot('home-preview-before');
+        const expectedCleared = previewIds.length + (await page.evaluate(() => S.roots.length));
         await page.locator('#clear-page-review').click();
-        await expect(page.locator('#page-review-status')).toContainText('15 个文件夹封面');
+        await expect(page.locator('#page-review-status')).toContainText(
+          `${expectedCleared} 个文件夹封面`
+        );
         await expect(page.locator('#category-overview .card-review')).toHaveCount(0);
         for (const id of previewIds) assert.equal((await rpc('get', { id })).confirmed, 1);
         const hidden = previewFolders.filter((folder) => !previewIds.includes(idFor(folder)));
-        assert.equal(hidden.length, 2);
+        assert.equal(hidden.length, previewFolders.length - expectedPreviewCount);
         for (const folder of hidden)
           assert.equal((await rpc('get', { id: idFor(folder) })).confirmed, 0);
         assert.equal((await rpc('get', { id: idFor(unrelated) })).confirmed, 0);

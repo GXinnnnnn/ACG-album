@@ -443,6 +443,79 @@ async function send(type, data) {
   );
   await frames();
 }
+async function sendRepeated(type, data, count = 100) {
+  const marker = crypto.randomUUID();
+  await app.evaluate(
+    ({ BrowserWindow }, { type, data, count, marker }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      for (let i = 0; i < count; i++)
+        contents.send('library:event', { type, data: { ...data, experienceProbe: marker } });
+    },
+    { type, data, count, marker }
+  );
+  await page.waitForFunction(
+    ({ marker, count }) =>
+      __importExperience.events.filter((event) => event.data.experienceProbe === marker).length ===
+      count,
+    { marker, count }
+  );
+  await frames();
+}
+async function observeProgress() {
+  await page.evaluate(() => {
+    const panel = document.querySelector('#progress-panel');
+    const metrics = {
+      fieldMutations: { title: 0, path: 0, directory: 0 },
+      states: [],
+      visibility: []
+    };
+    const fields = Object.fromEntries(
+      ['title', 'path', 'directory'].map((name) => [
+        name,
+        document.querySelector('#progress-' + name)
+      ])
+    );
+    const collect = (records) => {
+      for (const record of records) {
+        for (const [name, field] of Object.entries(fields))
+          if (field?.contains(record.target)) metrics.fieldMutations[name]++;
+        if (record.target !== panel || record.type !== 'attributes') continue;
+        if (record.attributeName === 'data-state')
+          metrics.states.push({
+            from: record.oldValue,
+            to: panel.dataset.state,
+            ms: performance.now()
+          });
+        if (record.attributeName === 'hidden')
+          metrics.visibility.push({
+            wasHidden: record.oldValue !== null,
+            hidden: panel.hidden,
+            ms: performance.now()
+          });
+      }
+    };
+    const observer = new MutationObserver(collect);
+    observer.observe(panel, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeOldValue: true
+    });
+    window.__progressDomProbe = { metrics, observer, collect };
+  });
+}
+async function progressObservations(stop = false) {
+  return page.evaluate((stop) => {
+    const probe = window.__progressDomProbe;
+    probe.collect(probe.observer.takeRecords());
+    if (stop) {
+      probe.observer.disconnect();
+      delete window.__progressDomProbe;
+    }
+    return probe.metrics;
+  }, stop);
+}
 async function panelSnapshot() {
   return page.evaluate(() => {
     const find = (s) => document.querySelector(s),
@@ -475,6 +548,9 @@ async function panelSnapshot() {
       title: title.textContent,
       directory: directory?.textContent,
       directoryTitle: directory?.title,
+      directoryHidden: directory?.hidden,
+      detail: find('#progress-detail').textContent,
+      path: find('#progress-path').textContent,
       cancelHidden: find('#cancel-import').hidden,
       busy: panel.getAttribute('aria-busy'),
       bounds: bounds(panel),
@@ -694,6 +770,191 @@ async function syntheticProgress() {
   };
   return { samples: samples.length, staleGetIgnored: true, scanRetainsDirectory: true };
 }
+async function syntheticProgressStability() {
+  const scan = {
+    active: true,
+    root: idFor(collection),
+    current: albums[8].folder,
+    images: 9,
+    folders: 9,
+    errors: 0
+  };
+  const work = {
+    active: true,
+    id: albums[8].id,
+    completed: 1,
+    remaining: 39,
+    total: 40,
+    discovering: false
+  };
+  await send('online', work);
+  await send('progress', { ...scan, active: false, phase: '完成' });
+  await expect(page.locator('#progress-directory')).toHaveText(albums[8].name);
+  await expect(page.locator('#progress-title')).toHaveText('正在检索作品简介');
+  const initial = await panelSnapshot();
+  await observeProgress();
+  await sendRepeated('online', work);
+  const repeated = await progressObservations(true);
+  assert.deepEqual(
+    repeated.fieldMutations,
+    { title: 0, path: 0, directory: 0 },
+    '100 identical events must not rewrite unchanged title, path or directory DOM'
+  );
+  assert.deepEqual(repeated.states, []);
+  assert.deepEqual(repeated.visibility, []);
+
+  // An actual delayed production get must preserve the last resolved label.
+  await holdGet(albums[9].id);
+  let delayed;
+  try {
+    await send('online', { ...work, id: albums[9].id });
+    await poll(
+      'held lookup for retained directory label',
+      async () => (await nativeProbe()).held > 0
+    );
+    delayed = await panelSnapshot();
+    assert.equal(delayed.directory, initial.directory);
+    assert.equal(delayed.directoryHidden, false);
+    assert.equal(delayed.title, initial.title);
+  } finally {
+    await releaseGets();
+  }
+  await expect(page.locator('#progress-directory')).toHaveText(albums[9].name);
+  const resumed = { ...work, id: albums[9].id };
+  const idle = { active: false, completed: 40, remaining: 0, total: 40, discovering: false };
+  await observeProgress();
+  // Both messages are scheduled in one main-process call to avoid an automation
+  // round trip accidentally consuming the renderer's 300ms settling window.
+  const marker = crypto.randomUUID();
+  await app.evaluate(
+    async ({ BrowserWindow }, { idle, resumed, marker }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      contents.send('library:event', {
+        type: 'online',
+        data: { ...idle, experienceProbe: marker, probePhase: 'idle' }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      contents.send('library:event', {
+        type: 'online',
+        data: { ...resumed, experienceProbe: marker, probePhase: 'resumed' }
+      });
+    },
+    { idle, resumed, marker }
+  );
+  await page.waitForFunction(
+    (marker) =>
+      __importExperience.events.some(
+        (event) => event.data.experienceProbe === marker && event.data.probePhase === 'resumed'
+      ),
+    marker
+  );
+  await frames();
+  const briefIdle = await progressObservations(true);
+  assert.deepEqual(briefIdle.states, [], 'A brief idle must not enter complete before new work');
+  assert.deepEqual(briefIdle.visibility, [], 'A brief idle must not hide or reopen the panel');
+  assert.equal(briefIdle.fieldMutations.title, 0, 'A brief idle must not flash a completion title');
+  await expect(page.locator('#progress-title')).toHaveText('正在检索作品简介');
+  const interval = await page.evaluate(
+    (marker) =>
+      __importExperience.events
+        .filter((event) => event.data.experienceProbe === marker)
+        .map((event) => ({ phase: event.data.probePhase, ms: event.ms })),
+    marker
+  );
+  assert.equal(interval.length, 2);
+  assert.ok(
+    interval[1].ms - interval[0].ms < 300,
+    'Synthetic idle must actually remain inside the 300ms settling window'
+  );
+
+  // Real panel dimensions are measured after layout, with quantity digit growth
+  // and a long synthetic path. No files are scanned at this generated path.
+  const dimensions = [];
+  const longPath = path.join(collection, '超长目录名称_'.repeat(40));
+  for (const sample of [
+    scan,
+    { ...scan, images: 99999, folders: 9999, errors: 99 },
+    { ...scan, current: longPath, images: 999999999, folders: 9999999, errors: 9999 }
+  ]) {
+    await send('progress', sample);
+    const value = await panelSnapshot();
+    assert.equal(value.title, '正在检索作品简介');
+    if (dimensions.length) {
+      for (const key of ['x', 'y', 'width', 'height'])
+        assert.ok(
+          Math.abs(value.bounds[key] - dimensions[0].bounds[key]) < 0.5,
+          'Panel ' + key + ' stays stable across quantity digits and long directory labels'
+        );
+      stablePanel(dimensions[0], value);
+    }
+    dimensions.push(value);
+  }
+  assert.equal(
+    dimensions.at(-1).directoryTitle,
+    longPath,
+    'The full long directory remains available as a title'
+  );
+  await shot('synthetic_progress_stable_digits_long_path');
+  await send('progress', { ...scan, active: false, phase: '完成' });
+  await expect(page.locator('#progress-directory')).toHaveText(albums[9].name);
+  await observeProgress();
+  await send('online', idle);
+  await expect.poll(async () => (await panelSnapshot()).state, { timeout: 3000 }).toBe('complete');
+  const complete = await panelSnapshot();
+  assert.equal(complete.hidden, false);
+  assert.equal(complete.title, '作品检索完成');
+  await sendRepeated('online', idle);
+  // Observe the application's real six-second hide timer; no timer is patched.
+  await expect
+    .poll(async () => (await panelSnapshot()).hidden, { timeout: 9000, intervals: [100, 200] })
+    .toBe(true);
+  await sendRepeated('online', idle);
+  await page.waitForTimeout(450); // Past the completion settling window, not an animation driver.
+  const final = await panelSnapshot();
+  assert.equal(
+    final.hidden,
+    true,
+    'Already hidden completion must not reopen on repeated idle events'
+  );
+  const completion = await progressObservations(true);
+  assert.equal(
+    completion.states.filter((event) => event.to === 'complete').length,
+    1,
+    'One stable completion transition'
+  );
+  assert.equal(
+    completion.visibility.filter((event) => event.hidden).length,
+    1,
+    'One completion hide'
+  );
+  assert.equal(
+    completion.visibility.filter((event) => !event.hidden).length,
+    0,
+    'No idle-triggered reopen'
+  );
+  report.samples.syntheticStability = {
+    note: 'Synthetic main-process progress events; MutationObserver and real panel layout; delayed real get IPC; actual 300ms settle and six-second hide timers, without source/timer patches.',
+    initial,
+    repeated,
+    delayed,
+    briefIdle,
+    interval,
+    dimensions,
+    complete,
+    completion,
+    final
+  };
+  return {
+    identicalEvents: 100,
+    unchangedTitlePathMutations: 0,
+    retainedDirectoryWhileGetPending: true,
+    briefIdleMs: interval[1].ms - interval[0].ms,
+    stableGeometrySamples: dimensions.length,
+    stableCompletionTransitions: 1,
+    hideCount: 1,
+    idleReopenedPanel: false
+  };
+}
 async function appearanceMatrix() {
   const result = [];
   for (const width of [980, 1600]) {
@@ -865,6 +1126,10 @@ async function closeApp() {
     await check(
       'synthetic scan/online interleaving keeps DOM/style and rejects stale directory replies',
       syntheticProgress
+    );
+    await check(
+      'synthetic repeated progress keeps DOM and geometry stable, retains labels and settles completion once',
+      syntheticProgressStability
     );
     await check(
       'light/dark at 980/1600 retain card rounding, capsule, left-eight overlay and unified progress',

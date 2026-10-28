@@ -403,6 +403,8 @@ test('access pause keeps newly saved local identity pending, sweeps remaining lo
     characterCover: 'local-first',
     networkEnabled: true,
     enabled: true,
+    // Durable work stamps include the root scope, including its default depth.
+    matchDepth: 1,
     types: [4],
     revision: 1
   });

@@ -23,7 +23,8 @@ const EXTERNAL_HOSTS = new Set([
   'sharp.pixelplumbing.com',
   'www.libvips.org',
   'libvips.github.io',
-  'developers.google.com'
+  'developers.google.com',
+  'www.foundertype.com'
 ]);
 function openExternal(value) {
   const url = new URL(String(value || ''));
@@ -91,7 +92,11 @@ function publicReleaseHead(url) {
   });
 }
 
-function registerApplicationHandlers({ call, getWindow }) {
+function registerApplicationHandlers({
+  call,
+  getWindow,
+  systemFonts = require('./fonts.cjs').systemFonts
+}) {
   Menu.setApplicationMenu(null);
   let popup = null;
   const emit = (action) => {
@@ -101,6 +106,11 @@ function registerApplicationHandlers({ call, getWindow }) {
   };
   const repository = async () =>
     effectiveRepository((await call('init')).settings?.githubRepository);
+  ipcMain.handle('library:systemFonts', (_event, args = {}) => {
+    if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length)
+      throw new Error('读取本机字体不接受参数。');
+    return systemFonts();
+  });
   ipcMain.handle('library:quit', () => app.quit());
   ipcMain.handle('library:appInfo', async () => ({
     name: app.getName(),

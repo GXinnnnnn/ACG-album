@@ -419,14 +419,50 @@ async function go() {
 }
 async function surfaceSnapshot() {
   return page.evaluate(() => {
+    // Render actual peripheral components with local, paused sample content.
+    paintProgress({
+      title: '玻璃材质检查',
+      detail: '本地隔离样例',
+      directory: 'Folder_000',
+      active: false,
+      paused: true,
+      percent: 42,
+      label: '42%'
+    });
+    showActionMenu(
+      { preventDefault() {}, clientX: innerWidth - 260, clientY: 260, target: document.body },
+      [{ label: '本地菜单样例', icon: 'folder', fn() {} }],
+      '外观检查菜单'
+    );
+    toast('本地浮层玻璃样例');
+    const navigation = document.querySelector('.topbar > .navigation.glass');
+    const filters = navigation?.querySelector(':scope > .navigation-filters');
+    if (!navigation || !filters)
+      throw new Error('Filters must stay inside the single navigation glass surface');
+    if (
+      filters.classList.contains('glass') ||
+      getComputedStyle(filters).backdropFilter !== 'none' ||
+      filters.querySelector('.liquid-glass-canvas')
+    )
+      throw new Error('Navigation filters must not create overlapping CSS or GPU glass surfaces');
+    if (!document.querySelector('.toolbar > .toolbar-right.glass'))
+      throw new Error('Standalone toolbar settings retain their own glass surface');
     const selectors = [
       '.sidebar-shell',
       '.topbar > .brand',
       '.topbar > .navigation',
       '.topbar > .search-wrap',
       '.topbar > .header-actions',
-      '.toolbar-left',
-      '.toolbar-right'
+      '.toolbar > .toolbar-right',
+      '.back-to-top',
+      '.context-menu',
+      '.album-select-list',
+      '.progress-panel',
+      '.toast',
+      '.modal',
+      '.viewer-top',
+      '.viewer-bottom',
+      '.viewer-arrow'
     ];
     return selectors.map((selector) => {
       const element = document.querySelector(selector),
@@ -453,8 +489,11 @@ async function noCardBackdrop() {
 }
 async function matrix(selector) {
   return page.locator(selector).evaluate((card) => {
-    const style = getComputedStyle(card),
+    const surface = card.querySelector(':scope > .cover-shell, :scope > .collection-image'),
+      style = getComputedStyle(surface),
       m = new DOMMatrixReadOnly(style.transform);
+    if (getComputedStyle(card).transform !== 'none')
+      throw new Error('Card/title parent must remain stationary');
     return {
       transform: style.transform,
       is2D: m.is2D,
@@ -464,15 +503,28 @@ async function matrix(selector) {
       rx: (Math.atan2(m.m23, m.m22) * 180) / Math.PI,
       ry: (Math.atan2(m.m31, m.m11) * 180) / Math.PI,
       willChange: style.willChange,
-      inlineRX: card.style.getPropertyValue('--effect-rx'),
-      inlineRY: card.style.getPropertyValue('--effect-ry')
+      inlineRX: surface.style.getPropertyValue('--effect-rx'),
+      inlineRY: surface.style.getPropertyValue('--effect-ry')
     };
   });
+}
+async function titleBounds(selector) {
+  return page.locator(selector).evaluate((card) => {
+    const title = card.querySelector('.card-info, .collection-details');
+    const rect = title.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+}
+function stationaryTitle(before, after) {
+  for (const key of ['x', 'y', 'width', 'height'])
+    near(after[key], before[key], 0.1, 'Stationary title ' + key);
 }
 async function hover(selector, tilt = false) {
   const card = page.locator(selector);
   await expect(card).toBeVisible();
-  const rect = await card.boundingBox();
+  const rect = await card
+    .locator(':scope > .cover-shell, :scope > .collection-image')
+    .boundingBox();
   assert.ok(rect && rect.width > 0 && rect.height > 0);
   await page.mouse.move(rect.x + rect.width / 2, rect.y + Math.min(rect.height / 2, 150), {
     steps: 5
@@ -492,7 +544,9 @@ async function inactive() {
   );
   const stale = await page.evaluate(
     () =>
-      [...document.querySelectorAll('.album-card,.collection-tile')].filter(
+      [
+        ...document.querySelectorAll('.album-card,.collection-tile,.cover-shell,.collection-image')
+      ].filter(
         (card) =>
           card.style.getPropertyValue('--effect-rx') ||
           card.style.getPropertyValue('--effect-ry') ||
@@ -502,22 +556,24 @@ async function inactive() {
   assert.equal(stale, 0, 'No stale tilt styles or permanent card promotion');
 }
 async function activeHigh(selector = folderSelector()) {
+  const title = await titleBounds(selector);
   await hover(selector, true);
   await expect
     .poll(async () => {
       const value = await matrix(selector);
       return (
         !value.is2D &&
-        Math.abs(value.rx) > 2 &&
-        Math.abs(value.ry) > 2 &&
+        Math.abs(value.rx) > 4 &&
+        Math.abs(value.ry) > 4 &&
         Math.abs(value.scale - 1.065) < 0.002
       );
     })
     .toBe(true);
   const value = await matrix(selector);
   assert.match(value.transform, /^matrix3d\(/);
-  assert.ok(Math.abs(value.rx) <= 5.05 && Math.abs(value.ry) <= 5.05, JSON.stringify(value));
-  near(value.scale, 1.065, 0.003, 'High mode uses 6.5 percent whole-card scale');
+  assert.ok(Math.abs(value.rx) <= 9.2 && Math.abs(value.ry) <= 9.2, JSON.stringify(value));
+  near(value.scale, 1.065, 0.003, 'High mode uses 6.5 percent cover scale');
+  stationaryTitle(title, await titleBounds(selector));
   assert.equal(await page.locator('.effects-active').count(), 1);
   assert.equal(
     await page.locator(selector).evaluate((el) => el.classList.contains('effects-active')),
@@ -532,15 +588,15 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
     await fixtures();
     await launch();
     await check(
-      'fresh profile defaults glass on and motion medium; real settings controls persist off and low',
+      'fresh profile defaults glass on and motion high; real settings controls persist off and low',
       async () => {
         const initial = (await rpc('init')).settings;
         assert.equal(initial.liquidGlass, true);
-        assert.equal(initial.motionLevel, 'medium');
+        assert.equal(initial.motionLevel, 'high');
         await page.waitForFunction(
           () =>
             document.documentElement.dataset.liquidGlass === 'on' &&
-            document.documentElement.dataset.motion === 'medium'
+            document.documentElement.dataset.motion === 'high'
         );
         await expect(page.locator('.collection-path')).toHaveCount(1);
         await noCardBackdrop();
@@ -548,7 +604,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
         await expect(page.locator('.card-favorite')).toHaveCount(1);
         await appearance();
         await expect(page.locator('#liquid-glass')).toBeChecked();
-        await expect(page.locator('#motion-level')).toHaveValue('medium');
+        await expect(page.locator('#motion-level')).toHaveValue('high');
         await shot('settings_default_glass_on');
         await effect('liquidGlass', false);
         await effect('motionLevel', 'low');
@@ -581,7 +637,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
       }
     );
     await check(
-      'light and dark glass use 12px blur only on small floating surfaces; disabling restores material',
+      'light and dark peripheral glass includes real menus, progress and toast; off restores static material',
       async () => {
         const samples = [];
         for (const mode of ['light', 'dark']) {
@@ -595,11 +651,12 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           await closeDialog();
           const glass = await surfaceSnapshot();
           for (const surface of glass) {
-            assert.match(surface.backdrop, /blur\(12px\)/, JSON.stringify(surface));
-            assert.ok(
-              surface.area > 0 && surface.area < surface.viewportArea * 0.45,
-              'Backdrop is limited to a floating component'
-            );
+            assert.match(surface.backdrop, /blur\(18px\)/, JSON.stringify(surface));
+            if (surface.area > 0)
+              assert.ok(
+                surface.area < surface.viewportArea * 0.85,
+                'Backdrop stays bounded to a component instead of the viewport'
+              );
           }
           await noCardBackdrop();
           await shot('glass_' + mode);
@@ -622,6 +679,11 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           );
           samples.push({ theme: mode, static: before, glass, restored: after });
         }
+        await page.evaluate(() => {
+          hideContext();
+          document.querySelector('#progress-panel').hidden = true;
+          document.querySelector('#toast-region').replaceChildren();
+        });
         await theme('light');
         await effect('liquidGlass', true);
         await closeDialog();
@@ -679,6 +741,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           }
           await go();
           const before = await metrics();
+          const title = await titleBounds(folderSelector());
           await hover(folderSelector());
           await expect
             .poll(async () => Math.abs((await matrix(folderSelector())).scale - scale) < 0.003)
@@ -689,6 +752,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
           near(value.rx, 0, 0.01, level + ' rotation X');
           near(value.ry, 0, 0.01, level + ' rotation Y');
           assert.equal(value.inlineRX, '');
+          stationaryTitle(title, await titleBounds(folderSelector()));
           await inactive();
           const after = await metrics();
           assert.equal(after.effectsRequested, before.effectsRequested);
@@ -699,7 +763,7 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
       }
     );
     await check(
-      'high uses 6.5 percent mouse matrix3d with noticeable tilt within five degrees and one active card',
+      'high moves only the cover with 6.5 percent scale and nine degree tilt; title stays fixed',
       async () => {
         await effect('motionLevel', 'high');
         await go();
@@ -796,14 +860,20 @@ const metrics = () => page.evaluate(() => window.__appearanceMetrics());
             bottom: parseFloat(overlay.bottom),
             ratingRadius: parseFloat(getComputedStyle(rating).borderRadius),
             ratingHeight: rating.getBoundingClientRect().height,
-            ratingText: rating.textContent
+            ratingText: rating.textContent,
+            centers: [...card.querySelector('.card-bottom-overlay').children].map((element) => {
+              const rect = element.getBoundingClientRect();
+              return rect.y + rect.height / 2;
+            })
           };
         });
         assert.equal(folder.radius, 16);
         assert.equal(folder.coverRadius, folder.radius);
         assert.equal(folder.gradientRadius, folder.coverRadius - 1);
         assert.equal(folder.left, 8);
-        assert.equal(folder.bottom, 4);
+        assert.equal(folder.bottom, 8);
+        for (const center of folder.centers)
+          near(center, folder.centers[0], 0.5, 'Count, icon and rating vertical center');
         assert.equal(folder.ratingText, '★ 8.6');
         assert.ok(folder.ratingRadius >= folder.ratingHeight / 2, 'Rating corners form a capsule');
         await shot('folder_aligned_corners_pill_rating');

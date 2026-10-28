@@ -1,0 +1,217 @@
+/* Prefer installed faces. URLs are optional private, local-only copies and are
+   excluded from public packages. Missing faces use the system fallback stack.
+   The original files declare weight 400; map each real face explicitly. */
+@font-face {
+  font-family: 'ACG Lanting Yuan';
+  src:
+    local('方正兰亭圆_GBK'),
+    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'ACG Lanting Yuan';
+  src:
+    local('方正兰亭圆_GBK_准'),
+    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'ACG Lanting Yuan';
+  src:
+    local('方正兰亭圆_GBK_中'),
+    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'ACG Lanting Yuan';
+  src:
+    local('方正兰亭圆_GBK_中粗'),
+    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 700 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'ACG Lanting Yuan';
+  src:
+    local('方正兰亭圆_GBK_特'),
+    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: '方正兰亭圆_GBK';
+  src:
+    local('方正兰亭圆_GBK'),
+    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: '方正兰亭圆_GBK_准';
+  src:
+    local('方正兰亭圆_GBK_准'),
+    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: '方正兰亭圆_GBK_中';
+  src:
+    local('方正兰亭圆_GBK_中'),
+    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: '方正兰亭圆_GBK_中粗';
+  src:
+    local('方正兰亭圆_GBK_中粗'),
+    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: '方正兰亭圆_GBK_特';
+  src:
+    local('方正兰亭圆_GBK_特'),
+    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+:root {
+  font-family:
+    '方正兰亭圆_GBK_中', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+}
+.font-picker .font-local-entry {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+}
+.font-picker [data-font-back] {
+  min-height: 44px;
+  margin-bottom: 12px;
+}
+:root[data-font-state='loading'] #font-current::after {
+  content: ' · 正在加载…';
+  color: var(--soft);
+}
+:root[data-font-state='fallback'] #font-current::after {
+  content: ' · 暂用后备字体';
+  color: var(--soft);
+}
+.font-picker {
+  width: min(600px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+}
+.font-picker .modal-top {
+  align-items: flex-start;
+}
+.font-picker .modal-top p {
+  margin: 8px 0 0;
+  color: var(--soft);
+  font-size: 13px;
+}
+.font-picker label {
+  display: block;
+  margin-bottom: 8px;
+}
+#font-options {
+  display: grid;
+  gap: 4px;
+  max-height: min(340px, calc(100dvh - 310px));
+  min-height: 88px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  margin-top: 14px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.font-option {
+  min-height: 44px;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+  transition:
+    color 130ms ease,
+    background-color 130ms ease;
+}
+.font-option:hover {
+  background: var(--surface-hover);
+}
+.font-option[aria-selected='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.font-option:focus-visible {
+  outline-offset: -2px;
+}
+.font-status {
+  min-height: 20px;
+  color: var(--soft);
+  font-size: 12px;
+}
+#font-current {
+  overflow-wrap: anywhere;
+}
+.search-wrap > span {
+  display: inline-grid;
+  place-items: center;
+}
+.search-wrap > span > svg {
+  display: block;
+  transform: translateY(-1px);
+}
+.filter-tabs {
+  position: relative;
+  isolation: isolate;
+}
+.filter-tabs::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 0;
+  top: var(--filter-y, 4px);
+  width: var(--filter-width, 0px);
+  height: var(--filter-height, 28px);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+  transform: translateX(var(--filter-x, 0px));
+  pointer-events: none;
+}
+.filter-tabs[data-indicator-ready]::before {
+  transition:
+    transform 190ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    width 190ms ease;
+}
+.navigation .filter-tabs button,
+.navigation .filter-tabs button.active,
+.navigation .filter-tabs button:hover {
+  background: transparent;
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .filter-tabs[data-indicator-ready]::before {
+    transition: none;
+  }
+}
+:root[data-motion='low'] .filter-tabs[data-indicator-ready]::before {
+  transition: none;
+}

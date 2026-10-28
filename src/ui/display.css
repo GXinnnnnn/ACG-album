@@ -14,6 +14,8 @@
 }
 .toolbar-right {
   gap: 7px;
+  /* Match the edge-to-icon centers: 15 + 8px at left, 8 + 15px at right. */
+  padding-inline: 15px 8px;
 }
 .card-size-label {
   font-size: 11px;
@@ -71,7 +73,7 @@
   aspect-ratio: 16/10;
 }
 .collection-preview {
-  grid-template-columns: repeat(auto-fill, minmax(0, min(100%, var(--card-width))));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-width)), 1fr));
   gap: 19px;
 }
 .collection-preview .card-title {
@@ -79,6 +81,9 @@
 }
 .collection-preview .card-subtitle {
   font-size: 10px;
+}
+:root[data-media-details='off'] .album-card:not(.media-card) .card-subtitle {
+  display: none;
 }
 :root[data-card-size='compact'] .collection-details {
   padding: 14px;
@@ -95,6 +100,14 @@
 }
 :root[data-card-size='compact'] .cover-shell {
   border-radius: 14px;
+}
+:root[data-card-size='compact'] .album-card:not(.media-card) .card-bottom-overlay {
+  gap: 4px;
+  font-size: 12px;
+}
+:root[data-card-size='compact'] .album-card:not(.media-card) .card-bottom-overlay > svg {
+  width: 16px;
+  height: 16px;
 }
 :root[data-card-size='large'] .media-card .card-title {
   font-size: 13px;

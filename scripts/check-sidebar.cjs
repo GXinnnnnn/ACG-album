@@ -278,7 +278,11 @@ const percentile = (xs, p) =>
       await page.waitForFunction(() => sidebarOpen);
       await settled();
       await page.locator('#rail-tree').click();
+      await page.waitForFunction(() => sidebarOpen);
+      assert.equal(await page.evaluate(() => sidebarOpen), true);
+      await page.keyboard.press('Escape');
       await page.waitForFunction(() => !sidebarOpen);
+      assert.equal(await page.evaluate(() => sidebarOpen), false);
       report.clickMode = true;
       await page.evaluate(() => saveSetting('sidebarMode', 'expanded'));
       await settled();

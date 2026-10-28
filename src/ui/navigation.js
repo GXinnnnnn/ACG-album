@@ -9,7 +9,8 @@ const folderTree = {
   generation: 0
 };
 let sidebarTimer,
-  sidebarOpen = false;
+  sidebarOpen = false,
+  sidebarUnpinnedMode = 'auto';
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const sidebarHasKeyboardFocus = () =>
   $('#sidebar-shell').contains(document.activeElement) &&
@@ -20,15 +21,15 @@ function setSidebarOpen(open) {
   sidebarOpen = open;
   $('#sidebar-shell').classList.toggle('is-open', open);
   $('#sidebar-details').inert = !open;
-  $('#sidebar-pin').inert = !open;
+  // Pinning remains available in the collapsed rail at the same screen position.
+  $('#sidebar-pin').inert = false;
   $('#sidebar-copyright').inert = !open;
   $('#rail-tree').setAttribute('aria-expanded', String(open));
-  $('#rail-tree').title = open ? '收起文件夹树' : '展开文件夹树';
+  $('#rail-tree').title = '展开文件夹树';
   $('#rail-tree').setAttribute('aria-label', $('#rail-tree').title);
   if (
     !open &&
     ($('#sidebar-details').contains(document.activeElement) ||
-      document.activeElement.id === 'sidebar-pin' ||
       $('#sidebar-copyright').contains(document.activeElement))
   )
     $('#rail-tree').focus({ preventScroll: true });
@@ -50,6 +51,7 @@ function scheduleSidebar(open, delay) {
 }
 function applyNavigationSettings() {
   const mode = S.settings.sidebarMode || 'auto';
+  if (mode !== 'expanded') sidebarUnpinnedMode = mode;
   $('.app-shell').dataset.sidebar = mode;
   $$('.user-name').forEach((el) => (el.textContent = S.settings.nickname || '新朋友'));
   $$('.user-avatar').forEach(
@@ -122,6 +124,50 @@ async function toggleTree(n) {
   folderTree.open.add(n.id);
   folderTree.openNodes.set(n.id, n);
   if (!folderTree.pages.has(n.id)) await fetchTreePage(n);
+  else renderFolderTree();
+}
+function folderTreeEntryRoot() {
+  const normalize = (path) =>
+      String(path || '')
+        .replaceAll('/', '\\')
+        .replace(/\\+$/, '')
+        .toLowerCase(),
+    current = S.current,
+    currentPath = normalize(current?.path);
+  let contextual = S.roots.find((n) => n.id === current?.id);
+  if (!contextual && currentPath)
+    for (const n of S.roots) {
+      const path = normalize(n.path);
+      if (
+        path &&
+        (currentPath === path || currentPath.startsWith(path + '\\')) &&
+        (!contextual || path.length > normalize(contextual.path).length)
+      )
+        contextual = n;
+    }
+  const visible = S.roots.slice(folderTree.rootOffset, folderTree.rootOffset + 12);
+  return (
+    contextual ||
+    visible.find((n) => n.folders > 0 && folderTree.open.has(n.id)) ||
+    visible.find((n) => n.folders > 0) ||
+    S.roots.find((n) => n.folders > 0) ||
+    visible[0] ||
+    S.roots[0]
+  );
+}
+async function openFolderTree() {
+  setSidebarOpen(true);
+  const n = folderTreeEntryRoot();
+  if (!n) {
+    renderFolderTree();
+    return;
+  }
+  folderTree.rootOffset = Math.floor(S.roots.indexOf(n) / 12) * 12;
+  // Opening the shell is separate from expanding a real directory branch.
+  // The action is idempotent after hover and while an existing page is loading.
+  if (n.folders > 0 && !folderTree.open.has(n.id)) await toggleTree(n);
+  else if (n.folders > 0 && !folderTree.pages.has(n.id) && !folderTree.loading.has(n.id))
+    await fetchTreePage(n);
   else renderFolderTree();
 }
 function treePager(parent, n, offset, total, pageSize, root = false) {
@@ -362,7 +408,7 @@ sidebarShell.addEventListener('pointerenter', () => {
 });
 sidebarShell.addEventListener('pointerleave', () => scheduleSidebar(false, 160));
 sidebarShell.addEventListener('focusin', (e) => {
-  if (e.target.closest('#sidebar-details,#sidebar-pin')) setSidebarOpen(true);
+  if (e.target.closest('#sidebar-details')) setSidebarOpen(true);
 });
 sidebarShell.addEventListener('focusout', () => scheduleSidebar(false, 160));
 sidebarShell.addEventListener('keydown', (e) => {
@@ -371,10 +417,14 @@ sidebarShell.addEventListener('keydown', (e) => {
     setSidebarOpen(false);
   }
 });
-$('#rail-tree').onclick = () => setSidebarOpen(!sidebarOpen);
+// Hover can reveal the shell first; a click still expands a directory's children.
+$('#rail-tree').onclick = () => attempt(openFolderTree);
 $('#sidebar-pin').onclick = () =>
   attempt(() =>
-    saveSetting('sidebarMode', S.settings.sidebarMode === 'expanded' ? 'auto' : 'expanded')
+    saveSetting(
+      'sidebarMode',
+      S.settings.sidebarMode === 'expanded' ? sidebarUnpinnedMode : 'expanded'
+    )
   );
 $('#profile-button').onclick = () => attempt(() => settingsModal('profile'));
 $('#collapse-all').onclick = () => {

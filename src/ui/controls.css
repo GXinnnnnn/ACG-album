@@ -205,7 +205,7 @@ select.album-select-source {
     background-color 150ms ease;
 }
 .settings-tabs button:hover {
-  background: var(--surface-hover, var(--surface));
+  background: transparent;
   color: var(--text);
 }
 .settings-tabs button.active {

@@ -1,10 +1,11 @@
 'use strict';
 
 // SQLite cannot use Intl.Collator directly. Persist compact character weights
-// so ordinary Chinese names keep pinyin order while SQL retains indexed pages.
-// This approximates whole-string collation: expansions/contractions and rare
+// plus a one-byte group: symbols/numbers/non-Han names first, Han names last.
+// Chinese names retain pinyin order while SQL retains indexed pages. This
+// approximates whole-string collation: expansions/contractions and rare
 // supplementary-plane characters do not have the complete OS collation rules.
-const NATURAL_SORT_VERSION = `zh-cn-bmp-v1:${process.versions.icu}`;
+const NATURAL_SORT_VERSION = `zh-cn-grouped-bmp-v2:${process.versions.icu}`;
 let weights;
 const encodeWeight = (rank) => {
   let code = rank + 32;
@@ -39,12 +40,7 @@ function characterWeights() {
   }
   return weights;
 }
-function sortKey(value) {
-  const text = String(value ?? '')
-    .normalize('NFKC')
-    .toLowerCase();
-  if (!text) return '';
-  const table = characterWeights();
+function weightedKey(text, table) {
   let key = '';
   for (const token of text.match(/\d+|[^\d]/gu) || []) {
     if (/^\d/.test(token)) {
@@ -59,5 +55,23 @@ function sortKey(value) {
     }
   }
   return key;
+}
+function sortKey(value) {
+  const text = String(value ?? '')
+    .normalize('NFKC')
+    .toLowerCase();
+  if (!text) return '';
+  const table = characterWeights(),
+    start = text.search(/[\p{L}\p{N}]/u),
+    body = start > 0 ? text.slice(start) : text,
+    group = /^\p{Script=Han}/u.test(body) ? '1' : '0';
+  // Leading brackets/emoji/whitespace decorate a name rather than moving
+  // [中文] into the English group or ahead of every undecorated Chinese name.
+  // Symbol-only names retain their original collation in the first group.
+  const key = group + weightedKey(body, table);
+  // Break decoration ties only after the meaningful name. This delimiter is
+  // below every character weight and contains no NUL; normal names cost just
+  // the group byte, and case/leading-zero equivalents still share one key.
+  return start > 0 ? key + '\u0001' + weightedKey(text, table) : key;
 }
 module.exports = { sortKey, NATURAL_SORT_VERSION };

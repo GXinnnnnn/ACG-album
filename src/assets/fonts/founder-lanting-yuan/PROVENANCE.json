@@ -1,0 +1,62 @@
+{
+  "source": "Existing user-local Windows font files, copied byte for byte at the direct user request for this unpublished local app. No font was downloaded, installed, subsetted or modified.",
+  "copyright": "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014",
+  "license": "Proprietary Founder font rights, not project MIT. OS/2 fsType=8 declares editable embedding; it is not a general redistribution license. This record does not establish a separate public application-distribution grant.",
+  "variants": [
+    {
+      "file": "regular.ttf",
+      "family": "方正兰亭圆_GBK",
+      "weight": 400,
+      "bytes": 11489604,
+      "sha256": "7d9d0e138dfbaad5979deee122863ed38e0203fe5c4a6d9db797c1c72cb6e51c",
+      "fsType": 8,
+      "copyright": [
+        "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014"
+      ]
+    },
+    {
+      "file": "medium.ttf",
+      "family": "方正兰亭圆_GBK_准",
+      "weight": 500,
+      "bytes": 11514288,
+      "sha256": "8db30eb4c4bd06c6c13c9d3dac80ca1e3f200bf63f54fcce8304dacc1da6fc57",
+      "fsType": 8,
+      "copyright": [
+        "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014"
+      ]
+    },
+    {
+      "file": "semibold.ttf",
+      "family": "方正兰亭圆_GBK_中",
+      "weight": 600,
+      "bytes": 11526320,
+      "sha256": "5974ca472f08f95acaa97690e36680f55a15ffaaac2dc5ac06c40f45eb735ae1",
+      "fsType": 8,
+      "copyright": [
+        "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014"
+      ]
+    },
+    {
+      "file": "bold.ttf",
+      "family": "方正兰亭圆_GBK_中粗",
+      "weight": 700,
+      "bytes": 11517532,
+      "sha256": "bc740841806bc18357e2ce3bc647803e93cdc087abc4008a3e6f112345e2fba5",
+      "fsType": 8,
+      "copyright": [
+        "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014"
+      ]
+    },
+    {
+      "file": "heavy.ttf",
+      "family": "方正兰亭圆_GBK_特",
+      "weight": 900,
+      "bytes": 11261712,
+      "sha256": "79200fafb86d48e04d29c13d31991137ac89eafc9cfb9767420bdbabc82add10",
+      "fsType": 8,
+      "copyright": [
+        "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014"
+      ]
+    }
+  ]
+}
