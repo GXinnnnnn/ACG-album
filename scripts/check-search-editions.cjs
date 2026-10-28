@@ -300,7 +300,20 @@ async function check(variant) {
     const moved = path.join(isolated, 'fixture-moved');
     assert.equal(path.dirname(path.resolve(fixtureAlbum)), path.resolve(fixtureRoot));
     assert.equal(path.dirname(path.resolve(moved)), path.resolve(isolated));
-    await fsp.rename(fixtureAlbum, moved);
+    // Imported thumbnails may briefly hold Windows file handles after the scan
+    // RPC resolves. Bound the wait, then retry only transient sharing failures.
+    await page.waitForFunction(() => [...document.images].every((image) => image.complete));
+    const moveDeadline = performance.now() + 5000;
+    for (;;) {
+      try {
+        await fsp.rename(fixtureAlbum, moved);
+        break;
+      } catch (error) {
+        if (!['EPERM', 'EBUSY'].includes(error.code) || performance.now() >= moveDeadline)
+          throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     const pruned = await page.evaluate((id) => window.album.call('refresh', { id }), imported.root);
     assert.equal(pruned.cancelled, false);
     assert.equal(pruned.errors, 0);

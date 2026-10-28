@@ -675,7 +675,11 @@ async function controlledPaste(key, value) {
           );
         } else
           assert.ok(
-            glyphs.fonts.some((item) => item.isCustomFont && item.glyphCount >= 4),
+            glyphs.fonts.some(
+              (item) =>
+                /FZLanTingYuan-DB-GBK|方正兰亭圆_GBK_中/i.test(item.familyName) &&
+                item.glyphCount >= 4
+            ),
             JSON.stringify(glyphs)
           );
         report.font = { ...font, glyphs };
