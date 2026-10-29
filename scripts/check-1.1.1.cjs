@@ -8,7 +8,9 @@ const { randomUUID, createHash } = require('node:crypto');
 const sharp = require('sharp');
 const { idFor } = require('../src/model.cjs');
 const root = path.resolve(__dirname, '..');
-const stage = path.join(path.dirname(root), '资料归档', 'release-1.1.1-20261029');
+const stage =
+  process.env.ACG_CHECK_STAGE ||
+  path.join(path.dirname(root), '资料归档', 'release-1.1.1-20261029');
 const executable = process.env.ACG_EXECUTABLE
   ? path.resolve(process.env.ACG_EXECUTABLE)
   : require('electron');
@@ -397,6 +399,20 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
         theme: document.documentElement.dataset.theme,
         renderer: document.documentElement.dataset.liquidRenderer,
         modal: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        shell: {
+          settings: modal.classList.contains('settings-dialog'),
+          gutter: getComputedStyle(modal).scrollbarGutter,
+          border:
+            parseFloat(getComputedStyle(modal).borderLeftWidth) +
+            parseFloat(getComputedStyle(modal).borderRightWidth),
+          clientWidth: modal.clientWidth,
+          canvas: (() => {
+            const box = modal.querySelector('.liquid-glass-canvas')?.getBoundingClientRect();
+            return box
+              ? { left: box.left - rect.left, right: rect.right - box.right, width: box.width }
+              : null;
+          })()
+        },
         rectangles,
         gaussian: svg.querySelector('feGaussianBlur')?.getAttribute('stdDeviation'),
         scrollbarColor: style.scrollbarColor,
@@ -423,16 +439,39 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
   const rectangle = sample.rectangles[0];
   assert.equal(rectangle.rx, '18');
   assert.equal(sample.gaussian, '9');
-  assert.ok(+rectangle.x >= 12 && +rectangle.y >= 12);
-  assert.ok(+rectangle.x + +rectangle.width <= sample.modal.width - 11.5);
-  assert.ok(+rectangle.y + +rectangle.height <= sample.modal.height - 11.5);
+  const gaps = [
+    +rectangle.x,
+    +rectangle.y,
+    sample.modal.width - +rectangle.x - +rectangle.width,
+    sample.modal.height - +rectangle.y - +rectangle.height
+  ];
+  assert.ok(gaps.every((gap) => gap >= 9.5));
+  assert.ok(Math.max(...gaps) - Math.min(...gaps) < 0.1, `Equal frost insets: ${gaps}`);
+  if (sample.shell.settings) {
+    assert.ok(
+      gaps.every((gap) => Math.abs(gap - 18) < 0.1),
+      `Refined settings rim: ${gaps}`
+    );
+    assert.equal(
+      sample.shell.gutter,
+      'auto',
+      'Non-scrolling settings shell must not reserve a second scrollbar'
+    );
+    assert.ok(Math.abs(sample.modal.width - sample.shell.clientWidth - sample.shell.border) < 0.5);
+    assert.ok(sample.shell.canvas);
+    assert.ok(
+      Math.abs(sample.shell.canvas.left - sample.shell.canvas.right) < 0.5,
+      'Optical canvas reaches both shell edges equally'
+    );
+  }
   assert.equal(sample.renderer, 'webgl2');
   assert.equal(sample.stats.gpu.status, 'webgl2');
   assert.equal(sample.stats.gpu.error, '');
   assert.ok(sample.stats.gpu.draws > 0);
   assert.ok(sample.gl.length > 0, 'Instrumented actual WebGL2 context exists');
   for (const context of sample.gl) assert.deepEqual(context, { error: 0, lost: false });
-  assert.ok(sample.descriptions.length > 0);
+  if (!sample.shell.settings || /appearance|metadata/.test(label))
+    assert.ok(sample.descriptions.length > 0);
   const inks =
     sample.theme === 'dark'
       ? ['rgb(200, 194, 213)', 'rgb(222, 219, 233)']
@@ -466,7 +505,7 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
         bounds = modal.getBoundingClientRect();
       const paragraph = [
         ...modal.querySelectorAll(
-          '.setting-row p,.updates-description,.about-description,.about-note'
+          '.setting-row p,.updates-description,.about-description,.about-note,.muted'
         )
       ].find((node) => {
         const rect = node.getBoundingClientRect();
@@ -552,7 +591,11 @@ async function themeDialogs(theme) {
   await page.locator('#settings-tab-metadata').click();
   await expect(page.locator('#settings-panel-metadata')).toBeVisible();
   await scrollEvidence(`${theme}-preferences-metadata`, '#settings-panel-metadata');
-  await page.locator('#settings-tab-application').click();
+  for (const tab of ['profile', 'cache', 'application']) {
+    await page.locator(`#settings-tab-${tab}`).click();
+    await expect(page.locator(`#settings-panel-${tab}`)).toBeVisible();
+    await scrollEvidence(`${theme}-preferences-${tab}`, `#settings-panel-${tab}`);
+  }
   await page.locator('#settings-updates').click();
   await expect(page.locator('[data-update-result] [data-update-status]')).toBeVisible();
   await expect(page.locator('[data-update-result] [data-update-status]')).not.toHaveAttribute(

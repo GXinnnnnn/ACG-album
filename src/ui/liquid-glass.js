@@ -72,23 +72,29 @@
     color = vec4(optical, alpha);
   }`;
   function dialogFrostBounds(rect, textRects) {
-    const inset = 12;
     const visible = textRects.map((r) => intersectRect(rect, r)).filter(Boolean);
-    const left = visible.length ? Math.min(...visible.map((r) => r.left)) - rect.left - 8 : 24;
-    const top = visible.length ? Math.min(...visible.map((r) => r.top)) - rect.top - 8 : 24;
-    const right = visible.length
-      ? Math.max(...visible.map((r) => r.right)) - rect.left + 8
-      : rect.width - 24;
-    const bottom = visible.length
-      ? Math.max(...visible.map((r) => r.bottom)) - rect.top + 8
-      : rect.height - 24;
-    const x = Math.max(inset, Math.min(left, rect.width - inset * 2));
-    const y = Math.max(inset, Math.min(top, rect.height - inset * 2));
+    // Keep the full-height center and equal insets on every side, with a
+    // further 2px rim so the material is slightly smaller than the local trial.
+    // The text envelope retains 10px clearance, including short panels.
+    const nearest = visible.length
+      ? Math.min(
+          ...visible.flatMap((r) => [
+            r.left - rect.left,
+            r.top - rect.top,
+            rect.right - r.right,
+            rect.bottom - r.bottom
+          ])
+        ) - 10
+      : 22;
+    const inset = Math.min(
+      Math.max(10, nearest),
+      Math.max(0, (Math.min(rect.width, rect.height) - 1) / 2)
+    );
     return {
-      x,
-      y,
-      width: Math.max(1, Math.min(rect.width - inset, right) - x),
-      height: Math.max(1, Math.min(rect.height - inset, bottom) - y)
+      x: inset,
+      y: inset,
+      width: Math.max(1, rect.width - inset * 2),
+      height: Math.max(1, rect.height - inset * 2)
     };
   }
   function frostMask(rect, frost, dark = false) {
