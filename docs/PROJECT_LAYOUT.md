@@ -1,6 +1,6 @@
 # 项目结构与职责
 
-ACG-album 1.1.0 是本地优先的 Windows Electron 应用。主进程与 worker 使用 CommonJS，界面使用原生 HTML、CSS、JavaScript。数据库扫描、图像处理与导出在后台工作线程运行；界面通过明确的 IPC 接口访问应用能力。
+ACG-album 1.1.1 是本地优先的 Windows Electron 应用。主进程与 worker 使用 CommonJS，界面使用原生 HTML、CSS、JavaScript。数据库扫描、图像处理与导出在后台工作线程运行；界面通过明确的 IPC 接口访问应用能力。
 
 ## 源码边界
 

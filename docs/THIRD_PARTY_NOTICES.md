@@ -1,6 +1,6 @@
 # 第三方许可与致谢
 
-本文对应 ACG-album 1.1.0 的 Windows x64 依赖；安装包以随包清单为准。作者代码采用 MIT，版权所有 © 2026 友利奈绪的胖次（[GXinnnnnn](https://github.com/GXinnnnnn)）；第三方组件继续适用各自许可。机器可读致谢位于 `src/assets/credits.json`，原始许可、NOTICE 和校验清单位于 `src/assets/licenses/`。
+本文对应 ACG-album 1.1.1 的 Windows x64 依赖；安装包以随包清单为准。作者代码采用 MIT，版权所有 © 2026 友利奈绪的胖次（[GXinnnnnn](https://github.com/GXinnnnnn)）；第三方组件继续适用各自许可。机器可读致谢位于 `src/assets/credits.json`，原始许可、NOTICE 和校验清单位于 `src/assets/licenses/`。
 
 ## 应用运行时
 
@@ -70,7 +70,7 @@ Portions of this software are copyright © The FreeType Project (www.freetype.or
 - [build-win64-mxe v8.17.3 构建树](https://github.com/libvips/build-win64-mxe/tree/v8.17.3)，包含构建配置、组件来源和补丁；原始 [Windows x64 web static 发行包](https://github.com/libvips/build-win64-mxe/releases/download/v8.17.3/vips-dev-w64-web-8.17.3-static.zip)。
 - [libvips v8.17.3 源码](https://github.com/libvips/libvips/tree/v8.17.3)。其他组件的确切来源见 `licenses/manifest.json` 与上述构建树。
 
-本版本原生组件的对应源码与构建材料另通过同一 Releases 下载页的 [ACG-album-1.1.0-native-sources.zip](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.1.0/ACG-album-1.1.0-native-sources.zip) 提供；文件内保留来源与校验清单。它是开发者使用的源码附件，不是第四种安装包。
+本版本原生组件的对应源码与构建材料另通过同一 Releases 下载页的 [ACG-album-1.1.1-native-sources.zip](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.1.1/ACG-album-1.1.1-native-sources.zip) 提供；文件内保留来源与校验清单。它是开发者使用的源码附件，不是第四种安装包。
 
 本应用不附加禁止为调试 LGPL 组件修改而进行逆向工程的条件。原生模块按构建配置解包在 `resources/app.asar.unpacked/node_modules/@img/` 下；替换修改后的兼容 DLL 需保持文件名、架构与 ABI。DLL 内静态组合的组件须通过对应构建链重建；这与仅替换单个动态库不同。
 
