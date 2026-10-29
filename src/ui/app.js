@@ -1971,6 +1971,21 @@ async function settingsModal(tab = 'appearance') {
   );
   return switchTab(tab);
 }
+async function showMetadataOnboarding() {
+  if (S.settings.metadataOnboardingSeen) return false;
+  // Existing libraries and saved credentials already have an established setup.
+  const configured = S.roots.length > 0 || (await api('tokenStatus')).saved;
+  await api('settings', { key: 'metadataOnboardingSeen', value: true });
+  S.settings.metadataOnboardingSeen = true;
+  if (configured || $('#modal').open) return false;
+  await settingsModal('metadata');
+  const panel = $('#settings-panel-metadata'),
+    input = $('#token-input');
+  if (!$('#modal').open || !panel || panel.hidden || !input) return false;
+  input.focus({ preventScroll: true });
+  panel.scrollTop = panel.scrollHeight;
+  return true;
+}
 const V = { args: null, index: 0, total: 0, node: null, serial: 0, scale: 1, native: false };
 async function openViewer(n, index = 0, inline = false) {
   V.args = { ...queryArgs(), filter: 'images' };
@@ -2161,7 +2176,7 @@ function paintProgress({
   if (!directoryLabel) {
     directoryLabel = document.createElement('span');
     directoryLabel.id = 'progress-directory';
-    $('#progress-title').after(directoryLabel);
+    $('.progress-details').after(directoryLabel);
   }
   if (directoryLabel.hidden !== !directory) directoryLabel.hidden = !directory;
   setProgressText(directoryLabel, directory.split(/[\\/]/).filter(Boolean).at(-1) || directory);
@@ -2225,7 +2240,8 @@ function renderOnlineProgress(data, settled = false) {
   if (preferScanSummary && !hasOnlineWork(data)) data = {};
   const remaining = Math.max(0, Number(data.remaining ?? data.pending) || 0),
     completed = Math.max(0, Number(data.completed) || 0),
-    total = Math.max(completed + remaining, Number(data.total) || 0),
+    // The worker reports the known workload even while discovery is still growing it.
+    total = completed + remaining,
     active = scanActive || hasOnlineWork(data),
     paused = !scanActive && !!data.paused,
     cancelled = !active && latestScanProgress?.phase?.startsWith('已取消');
@@ -2245,25 +2261,8 @@ function renderOnlineProgress(data, settled = false) {
             : total
               ? '作品检索完成'
               : '导入完成';
-  const scanDetail = latestScanProgress
-    ? `${fmt(latestScanProgress.images)} 个媒体项目 · ${fmt(latestScanProgress.folders)} 个目录${latestScanProgress.errors ? ' · ' + fmt(latestScanProgress.errors) + ' 项跳过' : ''}`
-    : '';
-  const matchDetail = data.discovering
-    ? `正在整理待检索目录 · 已处理 ${fmt(completed)} 项 · 待处理 ${fmt(remaining)} 项以上`
-    : `本次已处理 ${fmt(completed)} / ${fmt(total)} 个文件夹 · 待处理 ${fmt(remaining)} 项`;
-  const detail = scanActive
-    ? `${scanDetail}${hasOnlineWork(data) ? '；' + matchDetail : ''}`
-    : !hasOnlineWork(data) && !total && latestScanProgress
-      ? scanDetail
-      : `${matchDetail}${latestScanProgress?.errors ? ' · ' + fmt(latestScanProgress.errors) + ' 项跳过' : ''}`;
-  const percent =
-    scanActive || data.discovering
-      ? null
-      : total
-        ? Math.min(100, Math.floor((completed / total) * 100))
-        : active
-          ? null
-          : 100;
+  const detail = `已处理 ${fmt(completed)} 项 | 待处理 ${fmt(remaining)} 项`;
+  const percent = total ? Math.floor((completed / total) * 100) : active ? null : 100;
   const current =
     data.paused === 'access'
       ? '请在偏好设置更新 Access Token，任务进度已保留'
@@ -2273,7 +2272,9 @@ function renderOnlineProgress(data, settled = false) {
           ? cleaning
             ? '正在分批清理旧索引，完成后继续导入；可继续浏览相册'
             : '作品简介在后台检索，可继续浏览相册'
-          : '可在「待确认项目」中核对未满分匹配';
+          : latestScanProgress?.errors
+            ? `导入跳过 ${fmt(latestScanProgress.errors)} 项，可查看属性或日志；可在「待确认项目」中核对匹配`
+            : '可在「待确认项目」中核对未满分匹配';
   paintProgress({
     title,
     detail,
@@ -2537,6 +2538,7 @@ document.addEventListener(
       await loadPage();
       if (!scanActive && !hasOnlineWork(latestOnlineProgress))
         $('#footer-status').textContent = '就绪';
+      await showMetadataOnboarding();
     }),
   { once: true }
 );

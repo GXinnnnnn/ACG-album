@@ -1,0 +1,54 @@
+/* Reserve every slot so changing names, counts and task states never resize the glass. */
+#progress-panel {
+  box-sizing: border-box;
+  width: 365px;
+  max-width: calc(100vw - 44px);
+  height: 180px;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 26px 4px 20px 20px 18px;
+  align-content: space-between;
+  gap: 8px;
+}
+#progress-panel[hidden] {
+  display: none;
+}
+#progress-panel .progress-top,
+#progress-panel .progress-details {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+#progress-panel .progress-top strong {
+  flex: 1 1 0;
+}
+#progress-panel .progress-track {
+  margin: 0;
+}
+#progress-panel .progress-track > div {
+  transition: none;
+}
+#progress-panel #progress-directory {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  line-height: 20px;
+  text-align: left;
+}
+#progress-panel #progress-path {
+  min-width: 0;
+  margin: 0;
+  line-height: 18px;
+}
+#progress-panel #progress-directory[hidden],
+#progress-panel .progress-spinner[hidden],
+#progress-panel #cancel-import[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  #progress-panel .progress-spinner {
+    animation: none;
+  }
+}

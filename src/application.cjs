@@ -1,6 +1,8 @@
 'use strict';
 
 const { app, ipcMain, Menu, net, shell } = require('electron');
+const { createUpdater } = require('./update-service.cjs');
+const { releaseAssets, readLimited } = require('./update-release.cjs');
 const {
   validRepository,
   OFFICIAL_REPOSITORY,
@@ -106,6 +108,21 @@ function registerApplicationHandlers({
   };
   const repository = async () =>
     effectiveRepository((await call('init')).settings?.githubRepository);
+  const updater = createUpdater({
+    app,
+    fetch: (...args) => net.fetch(...args),
+    getLibrary: () => call('init'),
+    notify: (data) => {
+      const win = getWindow();
+      if (win && !win.isDestroyed())
+        win.webContents.send('library:event', { type: 'update', data });
+    }
+  });
+  ipcMain.handle('library:updateInfo', () => updater.info());
+  ipcMain.handle('library:updateStatus', () => updater.snapshot());
+  ipcMain.handle('library:downloadUpdate', (_event, args) => updater.download(args));
+  ipcMain.handle('library:cancelUpdate', () => updater.cancel());
+  ipcMain.handle('library:installUpdate', (_event, args) => updater.install(args));
   ipcMain.handle('library:systemFonts', (_event, args = {}) => {
     if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length)
       throw new Error('读取本机字体不接受参数。');
@@ -122,6 +139,7 @@ function registerApplicationHandlers({
     credits: require('./assets/credits.json')
   }));
   ipcMain.handle('library:checkUpdate', async () => {
+    updater.setRelease(null);
     const repo = await repository(),
       currentVersion = app.getVersion();
     const base = { repository: repo, currentVersion };
@@ -130,6 +148,8 @@ function registerApplicationHandlers({
     let response;
     try {
       response = await net.fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        credentials: 'omit',
+        redirect: 'error',
         headers: {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
@@ -144,7 +164,8 @@ function registerApplicationHandlers({
           : '无法连接 GitHub，请检查网络后重试。'
       );
     }
-    if (response.status === 404) return { ...base, status: 'unknown', url: releasesUrl };
+    if (response.status === 404)
+      return updater.setRelease({ ...base, status: 'unknown', url: releasesUrl, assets: [] });
     if ([403, 429].includes(response.status)) {
       // Public release redirects remain usable when the unauthenticated API is
       // rate limited. Follow redirects for Electron and trust only this repo's
@@ -187,7 +208,7 @@ function registerApplicationHandlers({
     if (!response.ok) throw new Error(`GitHub 更新检查失败（${response.status}）。`);
     let release;
     try {
-      release = await response.json();
+      release = JSON.parse(await readLimited(response));
       if (!release || typeof release !== 'object' || Array.isArray(release)) throw new Error();
     } catch {
       throw new Error('更新服务返回了无法识别的数据，请稍后再试。');
@@ -208,19 +229,26 @@ function registerApplicationHandlers({
         url = candidate.href;
     } catch {}
     if (!latest || !current || release.draft || release.prerelease)
-      return { ...base, status: 'unknown', latestVersion: String(release.tag_name || ''), url };
+      return updater.setRelease({
+        ...base,
+        status: 'unknown',
+        latestVersion: String(release.tag_name || ''),
+        url,
+        assets: []
+      });
     let comparison = 0;
     for (let i = 0; i < 3; i++)
       if (latest[i] !== current[i]) {
         comparison = latest[i] > current[i] ? 1 : -1;
         break;
       }
-    return {
+    return updater.setRelease({
       ...base,
       status: comparison > 0 ? 'available' : 'current',
       latestVersion: latest.join('.'),
-      url
-    };
+      url,
+      assets: releaseAssets(release, repo, latest.join('.'))
+    });
   });
   ipcMain.handle('application:menu', (_, args = {}) => {
     const win = getWindow();

@@ -23,7 +23,8 @@ const { APP_NAME, resolveDataDirectory, resolveUserDataDirectory } = require('./
 const profile = resolveUserDataDirectory({
   appData: app.getPath('appData'),
   currentUserData: app.getPath('userData'),
-  dataDir: process.env.ACG_DATA_DIR
+  dataDir: process.env.ACG_DATA_DIR,
+  userDataDir: process.env.ACG_USER_DATA_DIR
 });
 fs.mkdirSync(profile, { recursive: true });
 app.setPath('userData', profile);

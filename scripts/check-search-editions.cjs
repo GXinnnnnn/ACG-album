@@ -86,7 +86,12 @@ async function check(variant) {
   const originalIndex = await fsp.stat(index);
   const errors = [];
   const profile = path.join(isolated, 'profile');
-  const env = { ...process.env, ACG_TEST: '1', ACG_DATA_DIR: profile };
+  const env = {
+    ...process.env,
+    ACG_TEST: '1',
+    ACG_DATA_DIR: profile,
+    ACG_USER_DATA_DIR: path.join(profile, 'chromium-profile')
+  };
   for (const key of Object.keys(env))
     if (['ELECTRON_RUN_AS_NODE', 'ACG_LOCAL_INDEX_PATH'].includes(key.toUpperCase()))
       delete env[key];
@@ -112,6 +117,30 @@ async function check(variant) {
     page.on('pageerror', (e) => errors.push(e.message));
     await page.waitForSelector('#local-search-button', { timeout: 60000 });
     report.launchMs = Math.round(performance.now() - started);
+    // Exercise the real fresh-profile guide before continuing the existing packaged checks.
+    await page.waitForFunction(
+      () =>
+        typeof S !== 'undefined' && S.loadVersion > 0 && S.settings.metadataOnboardingSeen === true,
+      null,
+      { timeout: 60000 }
+    );
+    await page.waitForSelector('#modal[open] #settings-panel-metadata:not([hidden])');
+    await page.waitForFunction(() => document.activeElement?.id === 'token-input');
+    assert.equal(
+      await page.locator('#settings-tab-metadata').getAttribute('aria-selected'),
+      'true'
+    );
+    assert.equal(await page.locator('#token-input').isVisible(), true);
+    const onboarding = await page.evaluate(() => window.album.call('init'));
+    assert.equal(onboarding.settings.metadataOnboardingSeen, true);
+    report.onboarding = { metadataOpened: true, tokenFocused: true, markerPersisted: true };
+    await page.click('#modal-close');
+    await page.waitForSelector('#modal', { state: 'hidden' });
+    report.checks.push(
+      'fresh-profile metadata guidance opens, focuses token and persists once marker before dismissal'
+    );
+    report.userData = await app.evaluate(({ app }) => app.getPath('userData'));
+    assert.equal(path.resolve(report.userData), path.join(profile, 'chromium-profile'));
     assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
     assert.equal(await app.evaluate(({ app }) => app.getVersion()), metadata.version);
     const status = await page.evaluate(() => window.album.call('localIndexStatus'));

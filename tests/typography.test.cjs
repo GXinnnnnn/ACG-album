@@ -36,7 +36,14 @@ function harness({
       this.children = [];
       this.attributes = {};
       this.dataset = {};
-      this.style = {};
+      this.style = {
+        setProperty(name, value) {
+          this[name] = String(value);
+        },
+        getPropertyValue(name) {
+          return this[name] || '';
+        }
+      };
       this.listeners = {};
       this.value = '';
       this.hidden = false;
@@ -252,6 +259,10 @@ test('empty default loads the bundled middle face while explicit regular and loc
     });
   assert.equal(await h.apply({ fontFamily: '' }), true);
   assert.match(h.document.documentElement.style.fontFamily, /^"方正兰亭圆_GBK_中"/);
+  assert.match(
+    h.document.documentElement.style.getPropertyValue('--secondary-font-family'),
+    /^"方正兰亭圆_GBK_中粗"/
+  );
   assert.equal(loads.length, 1);
   assert.match(loads[0].font, /"方正兰亭圆_GBK_中"/);
   assert.ok(loads.every((entry) => /相册/.test(entry.sample)));
@@ -262,6 +273,10 @@ test('empty default loads the bundled middle face while explicit regular and loc
   assert.match(loads.at(-1).font, /"方正兰亭圆_GBK"/);
   await h.apply({ fontFamily: '本地手动选择' });
   assert.match(h.document.documentElement.style.fontFamily, /^"本地手动选择"/);
+  assert.match(
+    h.document.documentElement.style.getPropertyValue('--secondary-font-family'),
+    /^"本地手动选择"/
+  );
   assert.equal(h.events.filter((event) => event.type === 'album:font-loaded').length, 3);
 });
 

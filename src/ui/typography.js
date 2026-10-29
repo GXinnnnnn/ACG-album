@@ -47,6 +47,12 @@
     const version = ++generation,
       snapshot = capture();
     document.documentElement.style.fontFamily = stack;
+    // The named presets are static font faces. Use the adjacent real weight for
+    // secondary ink rather than requesting a weight their 100..900 alias cannot render.
+    const preset = builtins.indexOf(effective(family));
+    const inkFamily =
+      preset >= 0 ? builtins[Math.min(preset + 1, builtins.length - 1)] : effective(family);
+    document.documentElement.style.setProperty('--secondary-font-family', fontStack(inkFamily));
     document.documentElement.dataset.fontState = 'loading';
     if (!document.fonts?.load) {
       document.documentElement.dataset.fontState = 'fallback';

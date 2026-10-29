@@ -28,6 +28,7 @@
   uniform float dark;
   uniform float strength;
   uniform vec4 material;
+  uniform vec4 frost;
   in vec2 uv;
   out vec4 color;
   float shape(vec2 p) {
@@ -60,8 +61,40 @@
     // A nonzero body floor keeps the whole surface optical, not just its rim.
     // Wide shoulders blend the stronger lens edge into this frosted interior.
     float alpha = mask * (material.z + shoulder * 0.08 + fresnel * 0.32 + specular * 0.22 + sheen * material.w);
+    // One rounded content rectangle, independent of individual settings rows.
+    // Suppress the scene proxy toward its frosted center from all four sides.
+    if (frost.z > 0.0) {
+      vec2 point = vec2(uv.x * size.x, (1.0 - uv.y) * size.y);
+      vec2 q = abs(point - frost.xy) - frost.zw + vec2(18.0);
+      float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 18.0;
+      alpha *= mix(0.12, 1.0, smoothstep(-6.0, 24.0, distance));
+    }
     color = vec4(optical, alpha);
   }`;
+  function dialogFrostBounds(rect, textRects) {
+    const inset = 12;
+    const visible = textRects.map((r) => intersectRect(rect, r)).filter(Boolean);
+    const left = visible.length ? Math.min(...visible.map((r) => r.left)) - rect.left - 8 : 24;
+    const top = visible.length ? Math.min(...visible.map((r) => r.top)) - rect.top - 8 : 24;
+    const right = visible.length
+      ? Math.max(...visible.map((r) => r.right)) - rect.left + 8
+      : rect.width - 24;
+    const bottom = visible.length
+      ? Math.max(...visible.map((r) => r.bottom)) - rect.top + 8
+      : rect.height - 24;
+    const x = Math.max(inset, Math.min(left, rect.width - inset * 2));
+    const y = Math.max(inset, Math.min(top, rect.height - inset * 2));
+    return {
+      x,
+      y,
+      width: Math.max(1, Math.min(rect.width - inset, right) - x),
+      height: Math.max(1, Math.min(rect.height - inset, bottom) - y)
+    };
+  }
+  function frostMask(rect, frost, dark = false) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${rect.width}" height="${rect.height}" viewBox="0 0 ${rect.width} ${rect.height}"><defs><filter id="f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="9"/></filter></defs><rect x="${frost.x}" y="${frost.y}" width="${frost.width}" height="${frost.height}" rx="18" fill="${dark ? '#1a1825' : '#faf8ff'}" fill-opacity="${dark ? 0.86 : 0.82}" filter="url(#f)"/></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  }
   function materialProfile(width, height) {
     const halfSpan = Math.max(1, Math.min(width, height) * 0.5);
     return {
@@ -204,7 +237,8 @@
           'radius',
           'dark',
           'strength',
-          'material'
+          'material',
+          'frost'
         ])
           uniforms[name] = gl.getUniformLocation(program, name);
         texture = gl.createTexture();
@@ -302,6 +336,14 @@
           material.shoulderWidth,
           material.bodyAlpha,
           material.sheenAlpha
+        );
+        const frost = options.frost;
+        gl.uniform4f(
+          uniforms.frost,
+          frost ? frost.x + frost.width / 2 : 0,
+          frost ? frost.y + frost.height / 2 : 0,
+          frost ? frost.width / 2 : 0,
+          frost ? frost.height / 2 : 0
         );
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         if (target.width !== pixels.width) target.width = pixels.width;
@@ -525,6 +567,51 @@
       canvas.tabIndex = -1;
       return canvas;
     }
+    function measureDialogFrost(host, rect) {
+      if (!host.matches?.('.modal:not(.viewer)') || !doc.createTreeWalker) return null;
+      const textRects = [];
+      const walker = doc.createTreeWalker(host, 4);
+      const range = doc.createRange();
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (
+          !node.textContent.trim() ||
+          node.parentElement.closest('script,style,[hidden],.liquid-glass-canvas')
+        )
+          continue;
+        range.selectNodeContents(node);
+        for (const box of range.getClientRects()) {
+          let clipped = intersectRect(rect, box);
+          for (
+            let parent = node.parentElement;
+            clipped && parent && parent !== host;
+            parent = parent.parentElement
+          ) {
+            const style = win.getComputedStyle(parent);
+            if (style.visibility === 'hidden' || style.display === 'none') {
+              clipped = null;
+              break;
+            }
+            if (
+              /(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowY + style.overflowX)
+            )
+              clipped = intersectRect(clipped, parent.getBoundingClientRect());
+          }
+          if (clipped) textRects.push(clipped);
+        }
+      }
+      for (const field of host.querySelectorAll('input,textarea,select')) {
+        if (field.getClientRects().length) textRects.push(field.getBoundingClientRect());
+      }
+      return dialogFrostBounds(rect, textRects);
+    }
+    function syncFrost(rows) {
+      for (const row of rows) {
+        if (!row.frost) continue;
+        const mask = frostMask(row.rect, row.frost, row.dark);
+        if (row.host.style.getPropertyValue('--dialog-frost-image') !== mask)
+          row.host.style.setProperty('--dialog-frost-image', mask);
+      }
+    }
     function measureSurfaces() {
       const rows = [],
         viewerOpen = !!doc.querySelector('.viewer[open]');
@@ -555,6 +642,7 @@
           host,
           rect,
           radius: Math.min(rawRadius, rect.width / 2, rect.height / 2),
+          frost: measureDialogFrost(host, rect),
           dark: root.dataset.theme === 'dark',
           isStatic: style.position === 'static'
         });
@@ -564,6 +652,7 @@
     }
     function discover() {
       const rows = measureSurfaces();
+      syncFrost(rows);
       const active = new Set(rows.map((row) => row.host));
       for (const [host, canvas] of hosts)
         if (!host.isConnected || !active.has(host)) {
@@ -734,6 +823,7 @@
       ensureEngine();
       phase.ensureMs = win.performance.now() - start;
       if (!engine.ready()) {
+        syncFrost(measureSurfaces());
         refreshLegibility();
         return;
       }
@@ -771,6 +861,7 @@
             { width: win.innerWidth, height: win.innerHeight },
             {
               radius: row.radius,
+              frost: row.frost,
               dark: row.dark,
               light: row.host === hotHost ? pointer : [-0.65, 0.8],
               dpr: win.devicePixelRatio || 1,
@@ -808,7 +899,12 @@
           )
             changed = true;
         } else if (
-          [...record.addedNodes, ...record.removedNodes].some(
+          record.target?.parentElement?.closest('.modal:not(.viewer)') ||
+          record.target?.closest?.('.modal:not(.viewer)')
+        ) {
+          changed = true;
+        } else if (
+          [...(record.addedNodes || []), ...(record.removedNodes || [])].some(
             (node) => node.nodeType === 1 && !node.classList?.contains('liquid-glass-canvas')
           )
         )
@@ -819,6 +915,7 @@
     observer.observe(doc.body, {
       subtree: true,
       childList: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ['hidden', 'open', 'class']
     });
@@ -983,6 +1080,8 @@
   return {
     budget,
     materialProfile,
+    dialogFrostBounds,
+    frostMask,
     scheduler,
     createRenderer,
     imageSampler,

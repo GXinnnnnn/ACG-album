@@ -146,6 +146,7 @@ const defaults = {
   density: 222,
   ratio: 'poster',
   autoMatch: true,
+  metadataOnboardingSeen: false,
   watchChanges: true,
   subjectDepth: 1,
   categoryType: 0,
@@ -3140,6 +3141,8 @@ const methods = {
       throw new Error('头像格式无效。');
     if (key === 'sidebarMode' && !['auto', 'expanded', 'compact'].includes(value))
       throw new Error('侧栏模式无效。');
+    if (key === 'metadataOnboardingSeen' && typeof value !== 'boolean')
+      throw new Error('首次引导标记应为布尔值。');
     if (key === 'liquidGlass' && typeof value !== 'boolean')
       throw new Error('玻璃材质开关应为布尔值。');
     if (key === 'motionLevel' && !['low', 'medium', 'high'].includes(value))

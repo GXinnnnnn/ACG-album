@@ -158,9 +158,13 @@ function resolveDataDirectory({
 function resolveUserDataDirectory({
   appData,
   dataDir,
+  userDataDir,
   currentUserData,
   existsSync = fs.existsSync
 }) {
+  // An update restarts with both original locations: an explicit Chromium
+  // profile must not be silently replaced by dataDir/chromium-profile.
+  if (userDataDir) return path.resolve(userDataDir);
   if (dataDir) return path.join(path.resolve(dataDir), 'chromium-profile');
   const canonical = path.join(appData, APP_NAME);
   return (

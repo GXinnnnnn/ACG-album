@@ -260,7 +260,7 @@
       ],
       available: [
         '发现新版本',
-        `当前版本 ${current}${latest ? `，可用版本 ${latest}` : ''}。下载后请自行确认并安装。`
+        `当前版本 ${current}${latest ? `，可用版本 ${latest}` : ''}。请选择安装包，下载校验后再决定安装。`
       ],
       unknown: [
         '暂时无法判断更新',
@@ -277,7 +277,7 @@
   window.showUpdates = async function showUpdates() {
     const context = mount(
       '检查更新',
-      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">默认从官方仓库 GXinnnnnn/ACG-album 检查正式 Release，也可保留或填写自定义 GitHub 仓库。找到更新后，在系统默认浏览器中查看发布说明并下载。</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/ACG-album" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址；留空则使用官方仓库 GXinnnnnn/ACG-album。有效的自定义仓库会保留。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com/GXinnnnnn/ACG-album" data-about-external="https://github.com/GXinnnnnn/ACG-album">官方 GitHub 仓库${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><p class="updates-footnote">更新由你决定，下载安装包后手动安装。${externalLink(`https://github.com/${officialRepository}/releases`, '前往官方发布页', 'about-inline-link')}<span data-update-release></span></p></div>`,
+      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">打开面板时自动同步 GitHub 最新正式 Release 与实际安装包。默认跟随当前 Standard / Lite / Full 版本；下载并通过 SHA-256 校验后，由你点击安装。</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/ACG-album" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址；留空则使用官方仓库 GXinnnnnn/ACG-album。有效的自定义仓库会保留。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com/GXinnnnnn/ACG-album" data-about-external="https://github.com/GXinnnnnn/ACG-album">官方 GitHub 仓库${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><div data-update-assets></div><div data-update-transfer role="status" aria-live="polite"></div><p class="updates-footnote">安装前检查程序与资料路径，退出后用完整安装包更新当前目录并重新打开；保留 Token、已索引根目录、个人资料与设置。随包离线索引先备份，成功后替换为所选版本（Standard 不含离线索引），失败则恢复该索引。${externalLink(`https://github.com/${officialRepository}/releases`, '前往官方发布页', 'about-inline-link')}<span data-update-release></span></p></div>`,
       640
     );
     const input = context.find('#album-update-repository');
@@ -287,8 +287,114 @@
     let version = '';
     let checking = false;
     let ready = false;
-    const idleText = (repository) =>
-      `点击「保存并检查更新」，查询${repository === officialRepository ? '官方仓库' : `自定义仓库 ${repository}`}的最新正式发布。`;
+    let updateInfo = { currentEdition: 'standard', canInstall: false };
+    let latestResult = null;
+    let transfer = { phase: 'idle' };
+    const assetsHost = context.find('[data-update-assets]');
+    const transferHost = context.find('[data-update-transfer]');
+    const editionLabel = (value) =>
+      ({ standard: 'Standard', lite: 'Lite', full: 'Full' })[value] || 'Standard';
+    const sizeLabel = (bytes) => `${(Number(bytes || 0) / 1024 ** 2).toFixed(1)} MB`;
+    const busy = () => ['downloading', 'verifying', 'installing'].includes(transfer.phase);
+    function renderAssets() {
+      if (!latestResult || !['available', 'current'].includes(latestResult.status)) {
+        assetsHost.replaceChildren();
+        return;
+      }
+      const assets = Array.isArray(latestResult.assets) ? latestResult.assets : [];
+      const selected = assetsHost.querySelector('select')?.value || updateInfo.currentEdition;
+      const choices = ['standard', 'lite', 'full']
+        .map((edition) => {
+          const asset = assets.find((row) => row.edition === edition);
+          return `<option value="${edition}" ${edition === selected ? 'selected' : ''} ${!asset?.verifiable ? 'disabled' : ''}>${editionLabel(edition)} · ${asset ? `${sizeLabel(asset.size)}${asset.verifiable ? '' : ' · 未提供校验'}` : '未发布'}</option>`;
+        })
+        .join('');
+      const custom = latestResult.repository.toLowerCase() !== officialRepository.toLowerCase();
+      assetsHost.innerHTML = `<div class="updates-result-card"><label for="album-update-edition">完整安装包 · 当前 ${esc(editionLabel(updateInfo.currentEdition))}</label><select id="album-update-edition" class="field-input" ${busy() ? 'disabled' : ''}>${choices}</select><p class="field-help">${custom ? `自定义来源 ${esc(latestResult.repository)}：请自行确认发布者可信；校验仅验证文件与该仓库记录一致。` : 'Standard 不含离线检索库；Lite / Full 含对应离线检索库。'}${!updateInfo.canInstall ? ' 当前开发、测试或非 Windows 环境仅支持下载与查看发布页。' : ''}</p><button type="button" class="primary" data-update-download ${busy() || !assets.some((asset) => asset.verifiable) ? 'disabled' : ''}>下载完整安装包</button></div>`;
+      const select = assetsHost.querySelector('select');
+      // Never silently switch editions when the current edition is unavailable.
+      if (!assets.some((asset) => asset.edition === selected && asset.verifiable))
+        select.selectedIndex = -1;
+      const download = assetsHost.querySelector('[data-update-download]');
+      const unavailable = latestResult.status !== 'available';
+      if (unavailable) download.textContent = '当前版本无需更新';
+      download.disabled = busy() || unavailable || !select.value;
+      select.onchange = () => {
+        download.disabled = busy() || unavailable || !select.value;
+      };
+    }
+    function renderTransfer(state) {
+      transfer = state || { phase: 'idle' };
+      const phase = transfer.phase;
+      if (phase === 'idle') {
+        transferHost.replaceChildren();
+        return;
+      }
+      const active = ['downloading', 'verifying'].includes(phase);
+      const labels = {
+        downloading: '正在下载',
+        verifying: '正在校验 SHA-256',
+        ready: '下载完成，SHA-256 校验通过',
+        cancelled: '下载已取消，可重新下载',
+        error: '下载未完成，可重新下载',
+        installing: '正在退出相册并安装更新…'
+      };
+      const sameRelease =
+        latestResult?.repository === transfer.repository &&
+        latestResult?.latestVersion === transfer.version;
+      transferHost.innerHTML = `<div class="updates-result-card"><strong>${esc(labels[phase] || phase)}</strong><p>${esc(editionLabel(transfer.edition))} ${esc(transfer.version || '')}${active ? ` · ${sizeLabel(transfer.received)} / ${sizeLabel(transfer.total)}` : ''}</p>${active ? `<progress max="${Number(transfer.total) || 1}" value="${Number(transfer.received) || 0}" aria-label="安装包下载进度"></progress><button type="button" class="subtle-button" data-update-cancel>取消下载</button>` : ''}${phase === 'ready' ? `<p class="field-help" style="overflow-wrap:anywhere">安装目标：${esc(updateInfo.installationDirectory || '')}<br>保留资料：${esc(updateInfo.dataDirectory || '')}<br>保留配置：${esc(updateInfo.userDataDirectory || '')}</p><p>点击后先预检以上目录，通过后退出并运行完整安装包更新，再以当前资料重新打开；随包离线索引单独备份与替换。${transfer.repository?.toLowerCase() !== officialRepository.toLowerCase() ? '此安装包来自自定义仓库，请确认你信任其发布者。' : ''}</p><button type="button" class="primary" data-update-install ${!updateInfo.canInstall || !sameRelease ? 'disabled' : ''}>退出并安装 ${esc(editionLabel(transfer.edition))} ${esc(transfer.version)}</button>` : ''}${transfer.error ? `<p class="inline-error">${esc(transfer.error)}</p>` : ''}</div>`;
+      input.disabled = button.disabled = checking || busy();
+      renderAssets();
+    }
+    const stopUpdates = window.album.onEvent((event) => {
+      if (context.alive() && event?.type === 'update') renderTransfer(event.data);
+    });
+    context.signal.addEventListener('abort', () => stopUpdates?.(), { once: true });
+    assetsHost.addEventListener(
+      'click',
+      async (event) => {
+        if (!event.target.closest('[data-update-download]') || busy()) return;
+        const edition = assetsHost.querySelector('select')?.value;
+        if (!edition) return;
+        errorHost.textContent = '';
+        try {
+          await api('downloadUpdate', { edition });
+        } catch (error) {
+          if (context.alive()) errorHost.textContent = errorText(error);
+        }
+      },
+      { signal: context.signal }
+    );
+    transferHost.addEventListener(
+      'click',
+      async (event) => {
+        if (event.target.closest('[data-update-cancel]')) {
+          try {
+            await api('cancelUpdate');
+          } catch (error) {
+            if (context.alive()) errorHost.textContent = errorText(error);
+          }
+        }
+        if (!event.target.closest('[data-update-install]') || transfer.phase !== 'ready') return;
+        const installButton = transferHost.querySelector('[data-update-install]');
+        if (installButton.disabled) return;
+        installButton.disabled = true;
+        try {
+          await api('installUpdate', {
+            confirm: true,
+            repository: transfer.repository,
+            version: transfer.version,
+            edition: transfer.edition
+          });
+        } catch (error) {
+          if (context.alive()) {
+            errorHost.textContent = errorText(error);
+            renderTransfer(transfer);
+          }
+        }
+      },
+      { signal: context.signal }
+    );
     function updateReleaseLink(repository) {
       context.find('[data-update-release]').innerHTML =
         repository && repository !== officialRepository
@@ -301,61 +407,78 @@
         errorHost.textContent = '';
         input.removeAttribute('aria-invalid');
         resultHost.replaceChildren();
+        latestResult = null;
+        assetsHost.replaceChildren();
+        renderTransfer(transfer);
       },
       { signal: context.signal }
     );
-    context.find('[data-update-form]').addEventListener(
-      'submit',
-      async (event) => {
-        event.preventDefault();
-        if (checking || !ready || !context.alive()) return;
-        let repository;
-        try {
-          repository = normalizeRepository(input.value) || officialRepository;
-        } catch (error) {
-          errorHost.textContent = errorText(error);
-          input.setAttribute('aria-invalid', 'true');
-          input.focus();
-          return;
+    async function check(event) {
+      event.preventDefault();
+      if (checking || !ready || !context.alive()) return;
+      let repository;
+      try {
+        repository = normalizeRepository(input.value) || officialRepository;
+      } catch (error) {
+        errorHost.textContent = errorText(error);
+        input.setAttribute('aria-invalid', 'true');
+        input.focus();
+        return;
+      }
+      checking = true;
+      latestResult = null;
+      assetsHost.replaceChildren();
+      renderTransfer(transfer);
+      input.value = repository;
+      updateReleaseLink(repository);
+      input.disabled = button.disabled = true;
+      input.removeAttribute('aria-invalid');
+      errorHost.textContent = '';
+      button.textContent = '正在检查…';
+      context.find('[data-update-form]').setAttribute('aria-busy', 'true');
+      resultHost.textContent = '正在保存仓库设置并检查最新 Release…';
+      try {
+        if (!event.auto) await saveSetting('githubRepository', repository);
+        if (!context.alive()) return;
+        const result = await api('checkUpdate');
+        if (!context.alive()) return;
+        latestResult = result;
+        resultHost.innerHTML = renderUpdateResult(result, version, repository);
+        renderAssets();
+        renderTransfer(transfer);
+      } catch (error) {
+        if (!context.alive()) return;
+        resultHost.innerHTML = `<div class="updates-result-card" data-update-status="error"><strong>检查更新未完成</strong><p>GitHub API 暂时不可用或请求未成功。可重试，或直接前往发布页查看版本与安装包。</p>${externalLink(`https://github.com/${repository}/releases`, '前往发布页', 'subtle-button about-release-link')}</div>`;
+        errorHost.textContent = `检查未完成：${errorText(error)}`;
+      } finally {
+        checking = false;
+        if (context.alive()) {
+          input.disabled = button.disabled = busy();
+          button.innerHTML = svg('refresh') + '保存并检查更新';
+          context.find('[data-update-form]').removeAttribute('aria-busy');
         }
-        checking = true;
-        input.value = repository;
-        updateReleaseLink(repository);
-        input.disabled = button.disabled = true;
-        input.removeAttribute('aria-invalid');
-        errorHost.textContent = '';
-        button.textContent = '正在检查…';
-        context.find('[data-update-form]').setAttribute('aria-busy', 'true');
-        resultHost.textContent = '正在保存仓库设置并检查最新 Release…';
-        try {
-          await saveSetting('githubRepository', repository);
-          if (!context.alive()) return;
-          const result = await api('checkUpdate');
-          if (!context.alive()) return;
-          resultHost.innerHTML = renderUpdateResult(result, version, repository);
-        } catch (error) {
-          if (!context.alive()) return;
-          resultHost.innerHTML = `<div class="updates-result-card" data-update-status="error"><strong>检查更新未完成</strong><p>GitHub API 暂时不可用或请求未成功。可重试，或直接前往发布页查看版本与安装包。</p>${externalLink(`https://github.com/${repository}/releases`, '前往发布页', 'subtle-button about-release-link')}</div>`;
-          errorHost.textContent = `检查未完成：${errorText(error)}`;
-        } finally {
-          checking = false;
-          if (context.alive()) {
-            input.disabled = button.disabled = false;
-            button.innerHTML = svg('refresh') + '保存并检查更新';
-            context.find('[data-update-form]').removeAttribute('aria-busy');
-          }
-        }
-      },
-      { signal: context.signal }
-    );
+      }
+    }
+    context
+      .find('[data-update-form]')
+      .addEventListener('submit', check, { signal: context.signal });
     try {
-      const info = await api('appInfo');
+      const [info, installation, status] = await Promise.all([
+        api('appInfo'),
+        api('updateInfo'),
+        api('updateStatus')
+      ]);
       if (!context.alive()) return;
+      updateInfo = installation || updateInfo;
+      transfer = status || transfer;
       version = String(info?.version || '');
       context.find('[data-update-version]').textContent = `当前版本 ${version || '未知'}`;
       input.value = normalizeRepository(info?.repository) || officialRepository;
       updateReleaseLink(input.value);
-      resultHost.innerHTML = `<p class="about-note">${esc(idleText(input.value))}</p>`;
+      context.find('[data-update-version]').textContent =
+        `当前版本 ${version || '未知'} · ${editionLabel(updateInfo.currentEdition)}`;
+      resultHost.innerHTML = '<p class="about-note">正在同步最新 Release 与安装包…</p>';
+      renderTransfer(transfer);
     } catch (error) {
       if (!context.alive()) return;
       context.find('[data-update-version]').textContent = '当前版本暂不可用';
@@ -366,7 +489,9 @@
     } finally {
       if (context.alive()) {
         ready = true;
-        input.disabled = button.disabled = false;
+        input.disabled = button.disabled = busy();
+        await check({ preventDefault() {}, auto: true });
+        if (!context.alive()) return;
         // Do not steal focus if the user has already moved elsewhere in the dialog.
         if (
           [

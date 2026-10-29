@@ -8,14 +8,6 @@
 :root[data-theme='dark'] {
   --liquid-body-tint: rgba(30, 26, 46, 0.42);
 }
-/* A light dialog needs a milkier center over saturated covers. Descriptions
-   use --muted, while other secondary labels use --soft; neither changes the
-   opacity or compositing of the independent foreground text layer. */
-:root[data-theme='light'][data-liquid-glass='on'] .modal:not(.viewer) {
-  --liquid-body-tint: rgba(250, 248, 255, 0.56);
-  --soft: #44384f;
-  --muted: #44384f;
-}
 /* Lower the opaque-looking tint/highlight stack over the real DOM blur. This
    also gives a translucent full-face material when WebGL is unavailable/lost.
    Only the saved on state opts in; off restores the existing base surfaces. */
@@ -40,31 +32,25 @@
       linear-gradient(175deg, rgba(255, 255, 255, 0.04), transparent 80%), var(--liquid-body-tint);
   }
 }
-/* Dialogs need a quieter center than a floating toolbar. This translucent
-   radial scrim thickens toward content and fades continuously back into the
-   existing liquid rim; the GPU optics and independent text stay above it. */
-@supports (backdrop-filter: blur(1px)) {
-  :root[data-liquid-glass='on'] .modal:not(.viewer) {
-    --modal-frost-center: rgba(250, 248, 255, 0.28);
-    --modal-frost-shoulder: rgba(250, 248, 255, 0.14);
-    --modal-frost-edge: rgba(250, 248, 255, 0.04);
-    background:
-      radial-gradient(
-        ellipse at 50% 50%,
-        var(--modal-frost-center) 0%,
-        var(--modal-frost-center) 24%,
-        var(--modal-frost-shoulder) 55%,
-        var(--modal-frost-edge) 80%,
-        transparent 100%
-      ),
-      linear-gradient(125deg, rgba(255, 255, 255, 0.09), transparent 60%),
-      linear-gradient(175deg, rgba(255, 255, 255, 0.04), transparent 80%), var(--liquid-body-tint);
-  }
-  :root[data-theme='dark'][data-liquid-glass='on'] .modal:not(.viewer) {
-    --modal-frost-center: rgba(30, 26, 46, 0.28);
-    --modal-frost-shoulder: rgba(30, 26, 46, 0.14);
-    --modal-frost-edge: rgba(30, 26, 46, 0.04);
-  }
+/* A single continuous rounded rectangle contains all visible dialog text.
+   Its blurred mask blends from the four liquid edges into the quiet center;
+   no setting row or header owns a separate opacity block. Also works without GL. */
+:root[data-liquid-glass='on'] .modal:not(.viewer) {
+  --liquid-body-tint: rgba(250, 248, 255, 0.22);
+  --dialog-frost-fallback: rgba(250, 248, 255, 0.72);
+  isolation: isolate;
+  background:
+    var(
+        --dialog-frost-image,
+        linear-gradient(var(--dialog-frost-fallback), var(--dialog-frost-fallback))
+      )
+      center / 100% 100% no-repeat,
+    linear-gradient(125deg, rgba(255, 255, 255, 0.09), transparent 60%),
+    var(--liquid-body-tint);
+}
+:root[data-theme='dark'][data-liquid-glass='on'] .modal:not(.viewer) {
+  --liquid-body-tint: rgba(30, 26, 46, 0.27);
+  --dialog-frost-fallback: rgba(26, 24, 37, 0.78);
 }
 :root [data-liquid-glass-host] {
   isolation: isolate;

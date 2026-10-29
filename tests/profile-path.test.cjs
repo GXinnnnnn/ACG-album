@@ -360,6 +360,17 @@ test('Chromium resolution only checks current and canonical profile paths', (t) 
   assert.equal(resolveUserDataDirectory({ appData, existsSync: existing(unrelated) }), canonical);
 });
 
+test('update restart preserves distinct explicit data and Chromium locations without discovery', (t) => {
+  const { root, appData } = fixture(t);
+  const dataDir = path.join(root, 'existing-library');
+  const userDataDir = path.join(root, 'original-chromium');
+  assert.equal(
+    resolveUserDataDirectory({ appData, dataDir, userDataDir, existsSync: noScan }),
+    userDataDir
+  );
+  assert.equal(resolveUserDataDirectory({ appData, userDataDir, existsSync: noScan }), userDataDir);
+});
+
 test('explicit data overrides keep an isolated Chromium profile without scanning locations', (t) => {
   const { root, documents, appData } = fixture(t);
   const dataDir = path.join(root, 'custom-data');

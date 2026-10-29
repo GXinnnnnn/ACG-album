@@ -477,7 +477,14 @@ test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies b
       f.target(),
       { left: 10, bottom: 200, width: 300, height: 180 },
       { width: 1600, height: 900 },
-      { radius: 24, dark: false, light: [-0.5, 0.8], dpr: 2, strength: 1 }
+      {
+        radius: 24,
+        dark: false,
+        light: [-0.5, 0.8],
+        dpr: 2,
+        strength: 1,
+        frost: i ? { x: 24, y: 24, width: 252, height: 132 } : null
+      }
     );
   assert.equal(f.calls.filter((call) => call[0] === 'getContext').length, 1);
   assert.equal(f.calls.filter((call) => call[0] === 'drawArrays').length, 2);
@@ -486,7 +493,7 @@ test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies b
   assert.equal(renderer.stats().draws, 2);
   const material = materialProfile(300, 180);
   assert.deepEqual(
-    f.calls.filter((call) => call[0] === 'uniform4f'),
+    f.calls.filter((call) => call[0] === 'uniform4f' && call[1] === 'material'),
     Array.from({ length: 2 }, () => [
       'uniform4f',
       'material',
@@ -496,6 +503,14 @@ test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies b
       material.sheenAlpha
     ]),
     'Every surface receives the full-face material profile without extra draw calls'
+  );
+  assert.deepEqual(
+    f.calls.filter((call) => call[0] === 'uniform4f' && call[1] === 'frost'),
+    [
+      ['uniform4f', 'frost', 0, 0, 0, 0],
+      ['uniform4f', 'frost', 150, 90, 126, 66]
+    ],
+    'Only dialog content bounds suppress the optical layer toward the frosted center'
   );
   renderer.destroy();
   assert.equal(renderer.stats().status, 'destroyed');

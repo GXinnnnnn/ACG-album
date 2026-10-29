@@ -1,0 +1,103 @@
+@charset "UTF-8";
+/* Stronger secondary ink keeps the existing rounded type without a text halo. */
+:root {
+  --soft: #353342;
+  --muted: #454251;
+  --scroll-thumb: #9b8199;
+  --scroll-thumb-hover: #785b78;
+  --scroll-track: rgba(83, 58, 86, 0.06);
+}
+:root[data-theme='dark'] {
+  --soft: #dedbe9;
+  --muted: #c8c2d5;
+  --scroll-thumb: #81738f;
+  --scroll-thumb-hover: #b09bbd;
+  --scroll-track: rgba(218, 202, 238, 0.06);
+}
+body {
+  font-weight: 500;
+}
+:root
+  :is(
+    .muted,
+    .field-help,
+    .field-hint,
+    .about-author-heading > span,
+    .about-description,
+    .field-description,
+    .setting-row p,
+    .about-note,
+    .updates-description,
+    .updates-footnote,
+    .font-status,
+    .section-description,
+    .progress-details,
+    .progress-current,
+    .progress-directory,
+    #progress-directory,
+    .card-meta,
+    .sidebar-footer,
+    .sidebar-section-label,
+    .empty-state p
+  ) {
+  color: var(--muted);
+  font-family: var(--secondary-font-family, inherit);
+  font-weight: 550;
+}
+:root :is(input, textarea)::placeholder {
+  color: var(--muted);
+  opacity: 1;
+  font-weight: 500;
+}
+/* QR cards and the viewer retain their own fixed background polarity. */
+:root .about-qr-card > span {
+  color: #454251;
+  font-family: var(--secondary-font-family, inherit);
+  font-weight: 550;
+}
+:root :is(.viewer-top span, .viewer-bottom, #viewer-loading) {
+  color: #d4cfe0;
+  font-family: var(--secondary-font-family, inherit);
+  font-weight: 550;
+}
+/* Scrollable dialogs and nested lists share the current theme and accent.
+   A stable gutter also prevents controls moving when a panel gains a scrollbar. */
+:root .modal,
+:root .modal * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+:root .modal {
+  scrollbar-gutter: stable;
+}
+:root .modal::-webkit-scrollbar,
+:root .modal *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+:root .modal::-webkit-scrollbar-track,
+:root .modal *::-webkit-scrollbar-track {
+  background: var(--scroll-track);
+  border-radius: 99px;
+}
+:root .modal::-webkit-scrollbar-thumb,
+:root .modal *::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 99px;
+}
+:root .modal::-webkit-scrollbar-thumb:hover,
+:root .modal *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
+:root .modal::-webkit-scrollbar-corner,
+:root .modal *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+@media (forced-colors: active) {
+  :root .modal,
+  :root .modal * {
+    scrollbar-color: auto;
+  }
+}

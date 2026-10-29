@@ -18,12 +18,22 @@ function harness({ reducedMotion = false } = {}) {
   const timers = new Map();
   const requests = [];
   const animations = [];
-  let timerId = 0;
+  let timerId = 0,
+    mutations = 0,
+    created = 0;
   function element() {
     const attributes = new Map();
-    let text = '';
+    let text = '',
+      hidden = false,
+      title = '';
     return {
-      hidden: false,
+      get hidden() {
+        return hidden;
+      },
+      set hidden(value) {
+        hidden = value;
+        mutations++;
+      },
       textWrites: 0,
       get textContent() {
         return text;
@@ -31,21 +41,50 @@ function harness({ reducedMotion = false } = {}) {
       set textContent(value) {
         text = String(value);
         this.textWrites++;
+        mutations++;
       },
-      title: '',
-      dataset: {},
-      style: {},
+      get title() {
+        return title;
+      },
+      set title(value) {
+        title = value;
+        mutations++;
+      },
+      dataset: new Proxy(
+        {},
+        {
+          set(target, key, value) {
+            target[key] = value;
+            mutations++;
+            return true;
+          }
+        }
+      ),
+      style: new Proxy(
+        {},
+        {
+          set(target, key, value) {
+            target[key] = value;
+            mutations++;
+            return true;
+          }
+        }
+      ),
       setAttribute(name, value) {
         attributes.set(name, String(value));
+        mutations++;
       },
       removeAttribute(name) {
         attributes.delete(name);
+        mutations++;
       },
       getAttribute(name) {
         return attributes.get(name) ?? null;
       },
       after(child) {
+        child.insertedAfter = this;
         elements.set('#' + child.id, child);
+        mutations++;
       },
       animate() {
         const animation = {
@@ -64,6 +103,7 @@ function harness({ reducedMotion = false } = {}) {
     '#progress-panel',
     '#progress-title',
     '#progress-detail',
+    '.progress-details',
     '#progress-path',
     '#progress-percent',
     '#progress-bar',
@@ -75,7 +115,12 @@ function harness({ reducedMotion = false } = {}) {
   elements.get('#progress-bar').parentElement = element();
   const context = vm.createContext({
     $: (selector) => elements.get(selector) || null,
-    document: { createElement: element },
+    document: {
+      createElement() {
+        created++;
+        return element();
+      }
+    },
     scanActive: false,
     pendingImport: {},
     progressHideTimer: null,
@@ -108,7 +153,9 @@ function harness({ reducedMotion = false } = {}) {
           timer.action();
         }
     },
-    timerCount: () => timers.size
+    timerCount: () => timers.size,
+    mutationCount: () => mutations,
+    createdCount: () => created
   };
 }
 
@@ -128,9 +175,10 @@ test('scan and matching events keep one title, preserve counts and leave cancel 
   assert.equal(h.get('#cancel-import').hidden, false);
   assert.equal(h.context.pendingImport.sawProgress, true);
   h.online({ active: true, id: 'first', completed: 3, remaining: 4, total: 7 });
-  assert.match(h.get('#progress-detail').textContent, /35 个媒体项目/);
-  assert.match(h.get('#progress-detail').textContent, /2 项跳过/);
-  assert.match(h.get('#progress-detail').textContent, /3 \/ 7/);
+  assert.equal(h.get('#progress-detail').textContent, '已处理 3 项 | 待处理 4 项');
+  assert.equal(h.get('#progress-directory').insertedAfter, h.get('.progress-details'));
+  assert.equal(h.get('#progress-bar').parentElement.getAttribute('aria-valuenow'), '42');
+  assert.equal(h.get('#progress-path').textContent, '作品简介在后台检索，可继续浏览相册');
   assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
   assert.equal(h.get('#progress-directory').textContent, '相册A');
   assert.equal(h.get('#cancel-import').hidden, false);
@@ -140,6 +188,32 @@ test('scan and matching events keep one title, preserve counts and leave cancel 
   assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
   assert.equal(h.get('#cancel-import').hidden, true);
   assert.equal(h.timerCount(), 0, 'must not hide while matching continues');
+});
+
+test('discovery and scanning snapshots use only completed plus remaining for the determinate progress', () => {
+  const h = harness();
+  h.scan({ active: true, images: 80, folders: 12, current: '/generated/current' });
+  const track = h.get('#progress-bar').parentElement;
+  assert.equal(
+    track.getAttribute('aria-valuenow'),
+    null,
+    'scan counts do not predict a match total'
+  );
+  h.online({ active: true, discovering: true, completed: 2, remaining: 6, total: 999 });
+  assert.equal(track.getAttribute('aria-valuenow'), '25');
+  assert.equal(h.get('#progress-bar').style.width, '25%');
+  assert.equal(h.get('#progress-detail').textContent, '已处理 2 项 | 待处理 6 项');
+  h.online({ active: true, discovering: true, completed: 3, remaining: 17, total: 999 });
+  assert.equal(
+    track.getAttribute('aria-valuenow'),
+    '15',
+    'newly discovered work updates the true denominator'
+  );
+  h.scan({ active: false, images: 80, folders: 12 });
+  h.online({ active: true, discovering: false, completed: 11, remaining: 9, total: 3 });
+  assert.equal(track.getAttribute('aria-valuenow'), '55');
+  assert.equal(h.get('#progress-percent').textContent, '55%');
+  assert.equal(h.animations.filter((animation) => !animation.cancelled).length, 0);
 });
 
 test('matching directory follows latest folder ID and discards stale asynchronous results', async () => {
@@ -190,7 +264,7 @@ test('access pause and retry keep recovery messages and the correct accessible p
   assert.equal(h.get('#cancel-import').hidden, false);
 });
 
-test('scan-only cancellation preserves skipped counts and reduced-motion never starts an animation', () => {
+test('scan-only cancellation never invents matching totals and reduced-motion never starts an animation', () => {
   const h = harness({ reducedMotion: true });
   h.scan({ active: true, current: '/generated/photo', images: 1, folders: 1 });
   assert.equal(h.animations.length, 0);
@@ -199,7 +273,8 @@ test('scan-only cancellation preserves skipped counts and reduced-motion never s
   h.flushTimers(300);
   assert.equal(h.get('#progress-title').textContent, '导入已取消');
   assert.equal(h.get('#progress-percent').textContent, '已取消');
-  assert.match(h.get('#progress-detail').textContent, /3 项跳过/);
+  assert.equal(h.get('#progress-detail').textContent, '已处理 0 项 | 待处理 0 项');
+  assert.match(h.get('#progress-path').textContent, /导入跳过 3 项/);
   assert.equal(h.get('#progress-panel').getAttribute('aria-busy'), 'false');
   h.flushTimers();
   assert.equal(h.get('#progress-panel').hidden, true);
@@ -222,33 +297,42 @@ for (const cancelled of [false, true]) {
     });
     h.flushTimers(300);
     assert.equal(h.get('#progress-title').textContent, cancelled ? '导入已取消' : '导入完成');
-    assert.match(h.get('#progress-detail').textContent, /22 个媒体项目 · 4 个目录 · 2 项跳过/);
-    assert.doesNotMatch(h.get('#progress-detail').textContent, /3 \/ 3/);
+    assert.equal(h.get('#progress-detail').textContent, '已处理 0 项 | 待处理 0 项');
     // The next real online batch must still replace the local completion.
     h.online({ active: true, completed: 0, remaining: 2, total: 2 });
-    assert.match(h.get('#progress-detail').textContent, /0 \/ 2/);
+    assert.equal(h.get('#progress-detail').textContent, '已处理 0 项 | 待处理 2 项');
     assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
   });
 }
 
-test('repeated active snapshots do not rewrite unchanged progress text', () => {
+test('repeated active snapshots keep progress nodes and do not rewrite unchanged text, attributes or styles', () => {
   const h = harness();
   const snapshot = { active: true, id: 'same', completed: 2, remaining: 8, total: 10 };
   h.online(snapshot);
   const selectors = [
     '#progress-title',
     '#progress-detail',
+    '.progress-details',
     '#progress-path',
     '#progress-percent',
     '#footer-status'
   ];
-  const counts = selectors.map((selector) => h.get(selector).textWrites);
+  const counts = selectors.map((selector) => h.get(selector).textWrites),
+    mutations = h.mutationCount(),
+    directory = h.get('#progress-directory');
   for (let i = 0; i < 100; i++) h.online({ ...snapshot });
   assert.deepEqual(
     selectors.map((selector) => h.get(selector).textWrites),
     counts
   );
   assert.equal(h.requests.length, 1);
+  assert.equal(
+    h.mutationCount(),
+    mutations,
+    'unchanged snapshots must not mutate text, styles or attributes'
+  );
+  assert.equal(h.get('#progress-directory'), directory, 'the directory slot stays connected');
+  assert.equal(h.createdCount(), 1, 'only the initial directory slot is created');
 });
 
 test('completion settling accepts the latest idle totals without extending its deadline', () => {
@@ -258,7 +342,7 @@ test('completion settling accepts the latest idle totals without extending its d
   h.online({ active: false, completed: 10, remaining: 0, total: 10 });
   assert.equal(h.timerCount(), 1);
   h.flushTimers(300);
-  assert.match(h.get('#progress-detail').textContent, /10 \/ 10/);
+  assert.equal(h.get('#progress-detail').textContent, '已处理 10 项 | 待处理 0 项');
   assert.equal(h.get('#progress-percent').textContent, '100%');
   assert.equal(h.timerCount(), 1, 'only the final hide timer remains');
 });
@@ -303,13 +387,13 @@ test('reimport waiting on removed index cleanup exposes the cleanup stage withou
   assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
 });
 
-test('indeterminate motion restarts after pause and other maintenance progress clears the directory label', () => {
+test('unknown workload motion restarts after pause and other maintenance progress clears the directory label', () => {
   const h = harness();
-  h.online({ active: true, discovering: true, remaining: 2 });
+  h.online({ active: true, discovering: true, remaining: 0 });
   assert.equal(h.animations.length, 1);
   h.online({ active: false, paused: 'access', remaining: 2 });
   assert.equal(h.animations[0].cancelled, true);
-  h.online({ active: true, discovering: true, remaining: 2 });
+  h.online({ active: true, discovering: true, remaining: 0 });
   assert.equal(h.animations.length, 2);
   h.context.paintProgress({
     title: '正在整理文件名称排序',
