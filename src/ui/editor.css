@@ -141,8 +141,8 @@
   flex-shrink: 0;
 }
 #media-editor :is(button, input, select):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: 2px solid var(--control-focus-color, var(--accent));
+  outline-offset: -2px;
 }
 #media-editor .me-sr-only {
   position: absolute;
@@ -283,8 +283,8 @@
   font-variant-numeric: tabular-nums;
 }
 #media-editor input::placeholder {
-  color: var(--soft);
-  opacity: 0.8;
+  color: var(--placeholder);
+  opacity: 1;
   font-size: 12px;
 }
 #media-editor select option {
@@ -301,6 +301,21 @@
 }
 #media-editor input:disabled {
   cursor: default;
+}
+#media-editor .me-range-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+#media-editor .me-range-control input {
+  margin: 0;
+}
+#media-editor .me-range-control button {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 #media-editor .me-presets {
   display: flex;

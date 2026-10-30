@@ -47,37 +47,41 @@
 /* Cover and card share a silhouette. Inset overlays follow the cover's 1px
    border so their lower corners do not cut across its clipping curve. */
 :root .album-card {
-  --card-radius: 16px;
+  --card-radius: var(--user-card-radius, 16px);
   border-radius: var(--card-radius);
 }
 :root[data-card-size] .cover-shell {
   border-radius: var(--card-radius, 16px);
 }
 :root .collection-preview .album-card {
-  --card-radius: 12px;
+  --card-radius: var(--user-card-radius, 16px);
 }
 :root .album-card .cover-gradient {
-  border-radius: 0 0 calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px);
+  border-radius: 0 0 max(0px, calc(var(--card-radius) - 1px))
+    max(0px, calc(var(--card-radius) - 1px));
 }
 :root .collection-tile,
 :root .intro-panel {
-  border-radius: 18px;
+  border-radius: var(--user-card-radius, 16px);
 }
 :root .collection-image {
-  border-radius: 17px 17px 0 0;
+  border-radius: max(0px, calc(var(--user-card-radius, 16px) - 1px))
+    max(0px, calc(var(--user-card-radius, 16px) - 1px)) 0 0;
 }
 :root .collection-preview {
-  border-radius: 0 0 17px 17px;
+  border-radius: 0 0 max(0px, calc(var(--user-card-radius, 16px) - 1px))
+    max(0px, calc(var(--user-card-radius, 16px) - 1px));
 }
 :root .media-card {
-  --card-radius: 6px;
+  --card-radius: var(--user-card-radius, 16px);
 }
 :root .media-card,
 :root .media-card .cover-shell {
   border-radius: var(--card-radius);
 }
 :root .media-hover {
-  border-radius: 0 0 calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px);
+  border-radius: 0 0 max(0px, calc(var(--card-radius) - 1px))
+    max(0px, calc(var(--card-radius) - 1px));
 }
 :root .card-rating {
   border-radius: 999px;

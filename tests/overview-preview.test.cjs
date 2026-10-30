@@ -197,13 +197,15 @@ function fixture(width = 960, density = 222) {
   };
 }
 
-test('overview geometry fits both complete rows without a preset-width trailing strip', () => {
+test('overview geometry retains requested widths in top-left rows with bounded trailing space', () => {
   for (const width of [120, 320, 960, 1180, 1920, 3448, 3840]) {
     for (const density of [158, 186, 222]) {
       const result = geometry(width, density);
       assert.equal(result.limit, result.columns * 2);
-      assert.ok(Math.abs(result.columns * result.width + (result.columns - 1) * 19 - width) < 1e-7);
-      assert.ok(result.width >= Math.min(width, density));
+      const occupied = result.columns * result.width + (result.columns - 1) * 19;
+      assert.equal(result.width, Math.min(width, density));
+      assert.ok(occupied <= width + 1e-7);
+      assert.ok(width - occupied < density + 19);
       assert.ok(result.columns >= 1);
     }
   }
@@ -257,7 +259,7 @@ test('resize and density changes replenish rows; pixel-only resizing reuses data
   await f.frame();
   assert.equal(f.requests.length, 1);
   assert.equal(f.preview.firstElementChild, retained);
-  assert.ok(retained.width > geometry(960, 222).width);
+  assert.equal(retained.width, 222, 'Pixel-only resize retains requested size and DOM');
   f.preview.clientWidth = 3448 + 36;
   f.observers[0].callback();
   await f.frame();

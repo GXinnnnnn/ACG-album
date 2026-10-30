@@ -53,7 +53,7 @@
       const titleId = `info-child-title-${++childSerial}`;
       dialog.setAttribute('aria-labelledby', titleId);
       dialog.style.width = width + 'px';
-      dialog.innerHTML = `<div class="modal-top"><div><span class="eyebrow">ACG-album</span><h2 id="${titleId}">${esc(title)}</h2></div><button class="icon-button info-dialog-close" aria-label="关闭并返回上一级" data-icon="x"></button></div><div>${html}</div>`;
+      dialog.innerHTML = `<div class="modal-top"><div><span class="eyebrow">ACG-album</span><h2 id="${titleId}">${esc(title)}</h2></div><button class="icon-button info-dialog-close" aria-label="关闭并返回上一级" data-icon="x"></button></div><div class="info-dialog-body">${html}</div>`;
       document.body.append(dialog);
       hydrateIcons(dialog);
       dialog.querySelector('.info-dialog-close').onclick = () => dialog.close();

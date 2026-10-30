@@ -89,9 +89,10 @@
         : 'high',
       changed = root.dataset.liquidGlass !== glass || root.dataset.motion !== motion;
     clear();
-    root.dataset.liquidGlass = glass;
-    root.dataset.motion = motion;
-    if (changed) window.dispatchEvent(new Event('album-effects-change'));
+    if (!changed) return;
+    if (root.dataset.liquidGlass !== glass) root.dataset.liquidGlass = glass;
+    if (root.dataset.motion !== motion) root.dataset.motion = motion;
+    window.dispatchEvent(new Event('album-effects-change'));
   }
 
   document.addEventListener('pointerover', follow, { passive: true });

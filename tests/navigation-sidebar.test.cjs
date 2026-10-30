@@ -229,6 +229,7 @@ function fixture({ roots = [root], mode = 'auto', current = null, pages, defer =
     outside,
     document,
     requests,
+    context,
     errors,
     settings,
     row,
@@ -400,4 +401,61 @@ test('keyboard focus and context menus protect tree browsing from pointerleave c
   pointer.shell.dispatch('focusout');
   pointer.runTimers();
   assert.equal(pointer.nav.isOpen, false);
+});
+
+test('unchanged tree snapshots retain row identity, open pages, focus and scroll', async () => {
+  const f = fixture();
+  await f.tree.onclick();
+  const row = f.row('child-a'),
+    rootRow = f.row('root'),
+    link = row.querySelector('.category-link'),
+    requests = f.requests.length;
+  link.focus();
+  f.host.scrollTop = 87;
+  for (let i = 0; i < 100; i++) {
+    f.S.roots = f.S.roots.map((n) => ({ ...n, subject_id: i, metadata: { updated: i } }));
+    f.nav.renderFolderTree();
+  }
+  assert.equal(f.row('root'), rootRow);
+  assert.equal(f.row('child-a'), row);
+  assert.equal(f.document.activeElement, link);
+  assert.equal(f.host.scrollTop, 87);
+  assert.equal(f.requests.length, requests);
+  assert.equal(f.nav.folderTree.pages.size, 1);
+  let contextual;
+  f.context.showContext = (_, node) => {
+    contextual = node;
+  };
+  f.context.api = async (method, args) => {
+    assert.equal(method, 'get');
+    assert.equal(args.id, root.id);
+    return { ...f.S.roots[0], subject_id: 102 };
+  };
+  await rootRow.oncontextmenu({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(contextual.subject_id, 102, 'retained handlers read authoritative metadata');
+  const childRow = f.row('child-a');
+  f.context.api = async () => ({
+    ...children[0],
+    match_review: 1,
+    subject_id: 42,
+    cover: 'online'
+  });
+  await childRow.oncontextmenu({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(contextual.match_review, 1, 'paged child confirmation uses current match state');
+  assert.equal(contextual.cover, 'online', 'crop actions receive the current cover');
+  assert.equal(f.row('child-a'), childRow, 'metadata lookup preserves the visible tree');
+});
+
+test('visible tree changes still update selection, labels, directory counts and pagination', async () => {
+  const f = fixture();
+  await f.tree.onclick();
+  const old = f.row('root');
+  f.S.roots = [{ ...root, name: 'Renamed', folders: 3 }];
+  f.S.current = { ...children[0] };
+  f.nav.renderFolderTree();
+  assert.notEqual(f.row('root'), old);
+  assert.match(f.row('root').querySelector('.category-link').innerHTML, /Renamed/);
+  assert.equal(f.row('child-a').getAttribute('aria-selected'), 'true');
+  assert.equal(f.row('root').getAttribute('aria-expanded'), 'true');
+  assert.equal(f.requests.length, 1, 'content update keeps cached directory pages');
 });

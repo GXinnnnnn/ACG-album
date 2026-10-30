@@ -11,7 +11,11 @@ const { idFor } = require('../src/model.cjs');
 
 // All HTTP is replaced before the real worker loads. A separate MessagePort
 // lets tests hold responses while exercising ordinary worker commands.
-async function client(dataDir, respond, { fastClock = true, token = 'isolated-test-token' } = {}) {
+async function client(
+  dataDir,
+  respond,
+  { fastClock = true, token = 'isolated-test-token', localIndexPath } = {}
+) {
   const { port1, port2 } = new MessageChannel();
   const worker = new Worker(
     `
@@ -51,6 +55,7 @@ async function client(dataDir, respond, { fastClock = true, token = 'isolated-te
       eval: true,
       workerData: {
         dataDir,
+        localIndexPath,
         watch: false,
         token,
         fastClock,
@@ -186,6 +191,165 @@ function responder(subject = entry(), image) {
     return { json: subject };
   };
 }
+
+// The first API page can carry stale titles. Detail responses are authoritative,
+// so both entry points must recall the later page before making a decision.
+test('same-name automatic and manual recall verify the later-page exact subject', async () => {
+  const f = await fixture();
+  const correct = entry();
+  const stale = { ...entry(41), collection: { collect: 10000 } };
+  const c = await client(f.data, (request) => {
+    if (request.body) {
+      const offset = Number(new URL(request.url).searchParams.get('offset'));
+      return { json: { data: [offset ? correct : stale], offset, limit: 1, total: 2 } };
+    }
+    if (request.url.endsWith('/41'))
+      return { json: { ...stale, name: 'Unrelated Tale', name_cn: '' } };
+    return responder(correct, f.png)(request);
+  });
+  try {
+    await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+    await c.idle();
+    const automatic = await c.call('get', { id: f.id });
+    const manual = await c.call('match', { id: f.id });
+    assert.equal(manual.candidates[0]?.id, correct.id);
+    assert.equal(manual.candidates[0]?.match, 1);
+    assert.equal(automatic.subject_id, correct.id);
+    assert.equal(automatic.match_confidence, 1);
+    assert.equal(automatic.manual_subject, 0);
+    assert.equal(
+      c.requests.filter((r) => r.body).length,
+      2,
+      'manual reuses the same bounded recall'
+    );
+  } finally {
+    await c.close();
+    await cleanup(f);
+  }
+});
+
+test('same-name later-page ambiguity stays unbound in automatic and manual recall', async () => {
+  const chinese = '天选庶民的真命之选',
+    japanese = 'セレクトオブリージュ';
+  const f = await fixture(chinese + japanese);
+  const subjects = [41, 42].map((id) => ({ ...entry(id), name: japanese, name_cn: chinese }));
+  const c = await client(f.data, (request) => {
+    if (request.body) {
+      if (![chinese, japanese].includes(request.body.keyword))
+        return { json: { data: [], total: 0 } };
+      const offset = Number(new URL(request.url).searchParams.get('offset'));
+      return { json: { data: [subjects[offset]], offset, limit: 1, total: 2 } };
+    }
+    if (request.url.endsWith('/persons')) return { json: [] };
+    return { json: subjects.find((s) => request.url.endsWith('/' + s.id)) };
+  });
+  try {
+    await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+    await c.idle();
+    assert.equal((await c.call('get', { id: f.id })).subject_id, null);
+    const manual = await c.call('match', { id: f.id });
+    assert.deepEqual(manual.candidates.map((s) => s.id).sort(), [41, 42]);
+    assert.ok(manual.candidates.every((s) => s.match === 1));
+    assert.equal(manual.needs_selection, true);
+  } finally {
+    await c.close();
+    await cleanup(f);
+  }
+});
+
+test('same-name later-page access failure preserves pending work and retries after access replacement', async () => {
+  const f = await fixture();
+  const correct = entry();
+  const stale = entry(41);
+  const c = await client(f.data, (request) => {
+    if (request.body) {
+      const offset = Number(new URL(request.url).searchParams.get('offset'));
+      if (offset && request.originalAccess) return { status: 403, json: {} };
+      return { json: { data: [offset ? correct : stale], offset, limit: 1, total: 2 } };
+    }
+    if (request.url.endsWith('/41'))
+      return { json: { ...stale, name: 'Unrelated Tale', name_cn: '' } };
+    return responder(correct, f.png)(request);
+  });
+  try {
+    await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+    await c.idle();
+    assert.equal((await c.call('get', { id: f.id })).subject_id, null);
+    const paused = await c.call('syncStatus');
+    assert.equal(paused.paused, 'access');
+    assert.equal(paused.pending, 1);
+    const after = c.events.length;
+    await c.call('token', { value: 'replacement-test-token' });
+    await c.idle(after);
+    assert.equal((await c.call('get', { id: f.id })).subject_id, correct.id);
+    assert.equal((await c.call('syncStatus')).pending, 0);
+    assert.equal(c.requests.filter((r) => r.body && r.originalAccess).length, 2);
+    assert.equal(c.requests.filter((r) => r.body && !r.originalAccess).length, 2);
+  } finally {
+    await c.close();
+    await cleanup(f);
+  }
+});
+
+test('same-name local identity and local-miss online fallback agree for automatic and manual matching', async (t) => {
+  for (const mode of ['offline-hit', 'online-fallback'])
+    await t.test(mode, async () => {
+      const f = await fixture();
+      const filename = path.join(f.tmp, 'subjects.sqlite');
+      const db = new DatabaseSync(filename);
+      db.exec(`
+      CREATE TABLE subjects(id INTEGER PRIMARY KEY,type INTEGER,name TEXT,name_cn TEXT,nsfw INTEGER,date TEXT,summary TEXT,infobox TEXT,collection_json TEXT,aliases_json TEXT,raw_json TEXT);
+      CREATE TABLE name_keys(subject_id INTEGER,type INTEGER,key TEXT,name TEXT,kind TEXT);
+      CREATE INDEX name_keys_type_key ON name_keys(type,key,subject_id);
+      CREATE TABLE entities(kind TEXT,id INTEGER,name TEXT,name_cn TEXT,summary TEXT,infobox TEXT,aliases_json TEXT,raw_json TEXT);
+      CREATE TABLE entity_keys(kind TEXT,id INTEGER,key TEXT,name TEXT);
+      CREATE INDEX entity_keys_kind_key ON entity_keys(kind,key,id);
+      CREATE TABLE links(source_kind TEXT,source_id INTEGER,target_kind TEXT,target_id INTEGER,relation_type TEXT);
+      CREATE INDEX links_source ON links(source_kind,source_id,target_kind,target_id);
+      CREATE INDEX links_target ON links(target_kind,target_id,source_kind,source_id);
+      CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
+      CREATE VIRTUAL TABLE names_fts USING fts5(key,subject_id UNINDEXED,type UNINDEXED,tokenize='trigram');
+      CREATE VIRTUAL TABLE entity_names_fts USING fts5(key,kind UNINDEXED,id UNINDEXED,tokenize='trigram');
+    `);
+      if (mode === 'offline-hit') {
+        db.prepare('INSERT INTO subjects VALUES(42,2,?,?,0,?,?,?,?,?,?)').run(
+          '月色真美',
+          '',
+          '2017-04-06',
+          '',
+          '[]',
+          '{"collect":100}',
+          '[]',
+          '{}'
+        );
+        db.exec(
+          "INSERT INTO name_keys VALUES(42,2,'月色真美','月色真美','name'); INSERT INTO names_fts SELECT key,subject_id,type FROM name_keys;"
+        );
+      }
+      db.close();
+      const c = await client(
+        f.data,
+        (request) =>
+          mode === 'offline-hit' ? { status: 403, json: {} } : responder(entry(), f.png)(request),
+        { localIndexPath: filename }
+      );
+      try {
+        await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
+        await c.idle();
+        const automatic = await c.call('get', { id: f.id });
+        const manual = await c.call('match', { id: f.id });
+        assert.equal(automatic.subject_id, 42);
+        assert.equal(automatic.match_confidence, 1);
+        assert.equal(manual.candidates[0]?.id, 42);
+        assert.equal(manual.candidates[0]?.match, 1);
+        assert.equal(c.requests.filter((r) => r.body).length, mode === 'offline-hit' ? 0 : 1);
+        if (mode === 'offline-hit') assert.equal((await c.call('syncStatus')).paused, 'access');
+      } finally {
+        await c.close();
+        await cleanup(f);
+      }
+    });
+});
 
 test('bilingual import retrieves both titles and binds their verified shared subject; manual search keeps alternatives', async () => {
   const chinese = '天选庶民的真命之选',
@@ -1239,10 +1403,12 @@ test('canonical Pokemon beyond the old eight-result cutoff binds and leads typed
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle();
     assert.equal((await c.call('get', { id: f.id })).subject_id, 3019);
-    assert.equal(c.requests.filter((r) => r.body).length, 1);
+    // Canonical identity still wins after the shared bounded pagination checks.
+    assert.equal(c.requests.filter((r) => r.body).length, 3);
     await c.call('bind', { id: f.id, url: '3019' });
     const result = await c.call('match', { id: f.id });
     assert.equal(result.candidates[0].id, 3019);
+    assert.equal(c.requests.filter((r) => r.body).length, 3, 'manual entry reuses bounded recall');
     assert.ok(result.candidates.length <= 10);
     assert.ok(result.candidates.every((s) => s.type === 2));
   } finally {
@@ -1497,7 +1663,7 @@ test('manual exact searches preserve fresh and bound albums, covers, annotations
     });
 });
 
-test('manual recall stays separate while raw API cache is reused within one Token scope', async () => {
+test('manual and automatic recall share cached candidates within one Token scope', async () => {
   const f = await fixture();
   const c = await client(f.data, responder());
   try {

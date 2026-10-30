@@ -71,7 +71,12 @@ const S = {
   parent: null,
   current: null,
   roots: [],
-  settings: { density: 222, ratio: 'poster', theme: 'light', autoMatch: true },
+  settings: {
+    ...window.albumAppearanceSpec.defaults,
+    ratio: 'poster',
+    theme: 'light',
+    autoMatch: true
+  },
   filter: 'all',
   sort: 'name',
   direction: 'asc',
@@ -128,7 +133,16 @@ function applySettings() {
   if ($('#motion-level')) $('#motion-level').value = S.settings.motionLevel || 'high';
   window.albumTypography?.apply(S.settings);
   applyDisplaySettings();
+  window.albumAppearance.apply(S.settings);
+  window.albumAppearanceControls?.sync();
 }
+window.albumAppearanceControls = window.albumAppearance.createController({
+  settings: () => S.settings,
+  save: (key, value) => api('settings', { key, value }),
+  previewDensity: previewDisplayDensity,
+  finishDensity: finishDisplayDensity,
+  notify: toast
+});
 async function saveSetting(key, value) {
   await api('settings', { key, value });
   S.settings[key] = value;
@@ -201,12 +215,21 @@ function updateSidebar() {
   $('#root-count').textContent = S.roots.length;
   window.renderFolderTree?.();
 }
+let summarySettingsApplied = false;
 async function loadSummary() {
+  const appearanceRevision = window.albumAppearanceControls.snapshot();
   const init = await api('init');
+  init.settings = window.albumAppearanceControls.mergeSummary(init.settings, appearanceRevision);
   if (init.localIndex) window.albumLocalSearch?.setStatus(init.localIndex);
   S.roots = init.roots;
+  const settingsChanged = Object.entries(init.settings).some(
+    ([key, value]) => JSON.stringify(S.settings[key]) !== JSON.stringify(value)
+  );
   S.settings = { ...S.settings, ...init.settings };
-  applySettings();
+  if (!summarySettingsApplied || settingsChanged) {
+    applySettings();
+    summarySettingsApplied = true;
+  }
   $('#index-count').textContent = init.stats.images
     ? fmt(init.stats.images) + ' 个媒体项目已索引'
     : '本地资料库';
@@ -776,6 +799,7 @@ function characterBindModal(n) {
   (custom ? $('#character-name') : keyword).focus();
 }
 function openModal(title, html, width = 610) {
+  void window.albumAppearanceControls.flush();
   modalGeneration++;
   if (!$('#modal').open)
     modalReturnFocus = window.albumDialogInteraction.rememberFocus(document.activeElement);
@@ -790,6 +814,7 @@ function openModal(title, html, width = 610) {
   return d;
 }
 function closeModal() {
+  void window.albumAppearanceControls.flush();
   $('#modal').close();
   window.albumDialogInteraction.restoreFocus(modalReturnFocus);
 }
@@ -1230,10 +1255,9 @@ let pendingImport = null,
   growingDirty = false,
   growingLast = 0,
   overviewLast = 0;
-const matchRefreshBatch = createMatchRefreshBatch(() => {
-  window.invalidateFolderTree?.();
-  scheduleGrowingRefresh();
-});
+// Subject/cover changes do not invalidate directory structure or open tree pages.
+const matchRefreshBatch = createMatchRefreshBatch(scheduleGrowingRefresh);
+const scanRefreshNeeded = createScanRefreshGate();
 function updateImportBusy() {
   for (const b of $$('#import-sidebar,#empty-import,#demo-import')) {
     b.disabled = !!pendingImport || scanActive;
@@ -1566,9 +1590,10 @@ function densityModal() {
     : '确认当前页面全部文件夹封面，清除当前页面红点；包含尚未滚动加载的项目，首页同时包含已展开的相册预览。';
   const dialog = openModal(
     '查看设置',
-    `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div><section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 Ctrl + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
+    `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div>${window.albumAppearance.rangeMarkup('density', 'display')}<section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 Ctrl + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
   );
   dialog.classList.add('display-dialog');
+  window.albumAppearanceControls.mount(dialog);
   const refreshButton = document.createElement('button');
   refreshButton.id = 'refresh-button';
   refreshButton.className = 'subtle-button display-refresh';
@@ -1711,6 +1736,7 @@ async function settingsModal(tab = 'appearance') {
   };
   const dispose = () => {
     if (disposed) return;
+    void window.albumAppearanceControls.flush();
     disposed = true;
     serial++;
     observer.disconnect();
@@ -1817,12 +1843,13 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK_中</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div><div class="setting-row"><div><strong>卡片尺寸与比例</strong><p>可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
+        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK_中</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div>${window.albumAppearance.markup()}<div class="setting-row"><div><strong>封面比例与更多显示设置</strong><p>卡片尺寸也可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
         $('#sidebar-mode').value = S.settings.sidebarMode || 'auto';
         $('#sidebar-mode').onchange = (e) =>
           attempt(() => saveSetting('sidebarMode', e.target.value));
         $('#theme-select').value = S.settings.theme;
         $('#theme-select').onchange = (e) => attempt(() => changeTheme(e.target.value));
+        window.albumAppearanceControls.mount(content);
         $('#settings-density').onclick = densityModal;
         $('#liquid-glass').checked = S.settings.liquidGlass !== false;
         $('#liquid-glass').onchange = (event) =>
@@ -1899,6 +1926,7 @@ async function settingsModal(tab = 'appearance') {
   }
   async function switchTab(name) {
     if (!alive()) return;
+    void window.albumAppearanceControls.flush();
     const ticket = ++serial;
     requested = name;
     settle();
@@ -2340,10 +2368,9 @@ window.album.onEvent((event) => {
     $('#footer-status').textContent = active ? '正在升级名称排序索引…' : '正在载入相册…';
   }
   if (event.type === 'progress') {
-    const wasActive = scanActive;
     showProgress(event.data);
     attempt(() => enterPendingImport(event.data));
-    if (event.data.active || wasActive) {
+    if (scanRefreshNeeded(event.data)) {
       clearTimeout(changedTimer);
       scheduleGrowingRefresh();
     }

@@ -18,7 +18,7 @@ const MediaEditor = (() => {
     const cropField = (key, label) =>
       `<label>${label} (%)<input data-crop="${key}" type="number" min="0" max="100" step="any" inputmode="decimal" aria-describedby="me-crop-help me-error"></label>`;
     const colorField = (key, label, min, max) =>
-      `<label class="me-slider-label" for="me-${key}"><span>${label}</span><output id="me-${key}-value" for="me-${key}">100%</output></label><input id="me-${key}" data-color="${key}" type="range" min="${min}" max="${max}" step="0.01" value="1">`;
+      `<label class="me-slider-label" for="me-${key}"><span>${label}</span><output id="me-${key}-value" for="me-${key}">100%</output></label><div class="me-range-control"><input id="me-${key}" data-color="${key}" type="range" min="${min}" max="${max}" step="0.01" value="1"><button type="button" data-color-reset="${key}" title="恢复默认值" aria-label="${label}：恢复默认值">恢复默认</button></div>`;
     return `<div class="me-shell">
       <header class="me-header">
         <div class="me-heading"><span class="me-eyebrow">EDIT A COPY</span><h2 id="me-title">编辑副本</h2><p class="me-filename" title="${escape(n?.name)}">${escape(n?.name || '未选择图片')}</p></div>
@@ -776,6 +776,12 @@ const MediaEditor = (() => {
         s.el(`${input.dataset.color}-value`).textContent =
           `${Math.round(Number(input.value) * 100)}%`;
         queuePaint(s);
+      };
+    for (const button of s.dialog.querySelectorAll('[data-color-reset]'))
+      button.onclick = () => {
+        const input = s.el(button.dataset.colorReset);
+        input.value = '1';
+        input.oninput();
       };
     s.el('before').onclick = () => {
       s.before = !s.before;

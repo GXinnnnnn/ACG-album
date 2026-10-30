@@ -1,18 +1,23 @@
 @charset "UTF-8";
 /* Stronger secondary ink keeps the existing rounded type without a text halo. */
 :root {
-  --soft: #353342;
-  --muted: #454251;
-  --scroll-thumb: #9b8199;
-  --scroll-thumb-hover: #785b78;
-  --scroll-track: rgba(83, 58, 86, 0.06);
+  --text: #22232e;
+  --soft: #302d3a;
+  --muted: #3e3a49;
+  --floating-icon: #4a4654;
+  --placeholder: #726f79;
+  --scroll-thumb: #c982a6;
+  --scroll-thumb-hover: #b65f90;
+  --scroll-track: transparent;
 }
 :root[data-theme='dark'] {
-  --soft: #dedbe9;
-  --muted: #c8c2d5;
-  --scroll-thumb: #81738f;
-  --scroll-thumb-hover: #b09bbd;
-  --scroll-track: rgba(218, 202, 238, 0.06);
+  --text: #f4f2fa;
+  --soft: #e4e0ef;
+  --muted: #d1cbdf;
+  --floating-icon: #c5bfd3;
+  --placeholder: #9893a0;
+  --scroll-thumb: #b879a0;
+  --scroll-thumb-hover: #db9cbe;
 }
 body {
   font-weight: 500;
@@ -44,8 +49,63 @@ body {
   font-family: var(--secondary-font-family, inherit);
   font-weight: 550;
 }
+/* Neutral floating icons use slightly softer ink than text. :where keeps the
+   override below component state rules; only color changes, never SVG geometry. */
+:root
+  :where(
+    .topbar,
+    .sidebar-shell,
+    .toolbar-right,
+    .back-to-top,
+    .progress-panel,
+    .toast,
+    .context-menu,
+    .album-select-list,
+    .modal:not(.viewer):not(#viewer)
+  )
+  svg {
+  color: var(--floating-icon);
+}
+/* Semantic controls keep their own accent, red or on-accent ink, including
+   nested icons. Hovered neutral controls also follow their existing text ink. */
+:root
+  :where(
+    .topbar,
+    .sidebar-shell,
+    .toolbar-right,
+    .back-to-top,
+    .progress-panel,
+    .toast,
+    .context-menu,
+    .album-select-list,
+    .modal:not(.viewer):not(#viewer)
+  )
+  :where(
+    .active,
+    .is-active,
+    .selected,
+    .danger,
+    .primary,
+    .me-primary,
+    .text-button,
+    .import-button,
+    .accent,
+    .menu-check,
+    .updates-symbol,
+    a,
+    [aria-pressed='true'],
+    [aria-selected='true'],
+    [aria-checked='true'],
+    button:hover,
+    .cover-shell,
+    .crop-preview
+  )
+  svg {
+  color: inherit;
+}
+/* Empty-field examples have their own neutral ink, independent of help and values. */
 :root :is(input, textarea)::placeholder {
-  color: var(--muted);
+  color: var(--placeholder);
   opacity: 1;
   font-weight: 500;
 }
@@ -60,48 +120,89 @@ body {
   font-family: var(--secondary-font-family, inherit);
   font-weight: 550;
 }
-/* Scrollable dialogs and nested lists share the current theme and accent.
-   A stable gutter also prevents controls moving when a panel gains a scrollbar. */
-:root .modal,
+/* Optical shells never reserve an empty strip beside their glass. Overflow
+   remains owned by the existing modal/menu or its nested scroll region. Keep
+   stable gutters on .settings-panel, .binding-scroll, .local-search-scroll,
+   #font-options, .category-nav and #viewport so their content does not jump. */
+:root
+  :is(
+    .sidebar-shell,
+    .topbar > *,
+    .toolbar-right,
+    .back-to-top,
+    .context-menu,
+    .album-select-list,
+    .progress-panel,
+    .toast,
+    .modal
+  ) {
+  scrollbar-gutter: auto;
+}
+/* Keep native scrollbar tracks inside the content, away from the optical
+   shell. A scrolling dialog loses real client width to a classic scrollbar;
+   an absolutely positioned glass canvas cannot paint beneath that gutter. */
+:root #modal:not(.settings-dialog):not(.binding-modal):not(.display-dialog)[open],
+:root .album-info-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+:root #modal > .modal-top,
+:root .album-info-dialog > .modal-top {
+  flex-shrink: 0;
+}
+:root #modal:not(.settings-dialog):not(.binding-modal):not(.display-dialog) > #modal-content,
+:root .album-info-dialog > .info-dialog-body {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scroll-padding-block: 4px;
+}
+/* A context menu and a top-layer select popup can scroll just like a modal.
+   Paint only their draggable thumb, not a translucent full-height track. */
+:root :is(.modal, .context-menu, .album-select-list),
 :root .modal * {
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) var(--scroll-track);
 }
-:root .modal {
-  scrollbar-gutter: stable;
+/* Chromium ignores ::-webkit-scrollbar geometry when the standard properties
+   are non-auto. Opt back into the 6px gutter / 4px painted thumb there;
+   Firefox retains its native thin scrollbar and the same pink colors. */
+@supports selector(::-webkit-scrollbar) {
+  :root :is(.modal, .context-menu, .album-select-list),
+  :root .modal * {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
 }
-/* Settings scroll inside .settings-panel. Reserving another gutter on the
-   non-scrolling shell narrows its optical canvas and leaves a translucent strip. */
-:root .modal:is(.settings-dialog, .local-search-dialog, .binding-modal) {
-  scrollbar-gutter: auto;
-}
-:root .modal::-webkit-scrollbar,
+:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar,
 :root .modal *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
-:root .modal::-webkit-scrollbar-track,
+:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-track,
 :root .modal *::-webkit-scrollbar-track {
   background: var(--scroll-track);
   border-radius: 99px;
 }
-:root .modal::-webkit-scrollbar-thumb,
+:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-thumb,
 :root .modal *::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
-  border: 2px solid transparent;
+  border: 1px solid transparent;
   background-clip: padding-box;
   border-radius: 99px;
 }
-:root .modal::-webkit-scrollbar-thumb:hover,
+:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-thumb:hover,
 :root .modal *::-webkit-scrollbar-thumb:hover {
   background-color: var(--scroll-thumb-hover);
 }
-:root .modal::-webkit-scrollbar-corner,
+:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-corner,
 :root .modal *::-webkit-scrollbar-corner {
   background: transparent;
 }
 @media (forced-colors: active) {
-  :root .modal,
+  :root :is(.modal, .context-menu, .album-select-list),
   :root .modal * {
     scrollbar-color: auto;
   }

@@ -751,15 +751,17 @@ test('an empty resize before an asynchronous list response selects the final lay
     );
     assert.equal(grid.gap, gap);
     assert.equal(grid.cols, expectedColumns);
-    assert.ok(Math.abs(modelRight - wall.clientWidth) < 0.001);
-    assert.ok(Math.abs(domRight - wall.clientWidth) < 0.001);
+    const expectedRight = expectedColumns * 186 + (expectedColumns - 1) * gap;
+    assert.ok(Math.abs(modelRight - expectedRight) < 0.001);
+    assert.ok(Math.abs(domRight - expectedRight) < 0.001);
+    assert.ok(expectedRight <= wall.clientWidth);
     grid.reset();
   }
 });
 
-test('preset column counts share all available width at 4K and narrow widths', async () => {
-  for (const width of [120, 700, 1180, 3448, 3840])
-    for (const density of [158, 222])
+test('continuous card width stays fixed and left aligned at 4K and clamps to narrow widths', async () => {
+  for (const width of [96, 120, 700, 1180, 3448, 3840])
+    for (const density of [120, 158, 186, 222, 297, 360])
       for (const [folders, media] of [
         [90, 0],
         [0, 90],
@@ -773,11 +775,14 @@ test('preset column counts share all available width at 4K and narrow widths', a
         assert.equal(grid.gap, gap);
         for (let column = 0; column < columns; column++) {
           const p = grid.getPosition(column);
-          assert.ok(Math.abs(p.width - grid.width) < 0.001);
+          assert.ok(Math.abs(p.width - Math.min(width, density)) < 0.001);
           assert.ok(Math.abs(p.left - column * (grid.width + gap)) < 0.001);
           assert.ok(p.left + p.width <= width + 0.001);
           if (column === columns - 1)
-            assert.ok(Math.abs(p.left + p.width - width) < 0.001, 'No unused trailing card space');
+            assert.ok(
+              width - p.left - p.width < density + gap,
+              'Trailing space cannot fit another requested card'
+            );
         }
         grid.reset();
       }
@@ -828,7 +833,7 @@ test('extreme images and videos cap total height at twice a same-width folder fo
     }
 });
 
-test('fitted column width crosses a DPR thumbnail tier without density changes or DOM replacement', async () => {
+test('window resize keeps requested card width, DOM and thumbnail tier stable', async () => {
   const f = await fixture(0, 180, 1180, 158, 2),
     { grid, wall, viewport } = f,
     b = grid.cards.get(0),
@@ -838,13 +843,13 @@ test('fitted column width crosses a DPR thumbnail tier without density changes o
   wall.clientWidth = 820;
   grid.render();
   await f.settle();
-  assert.ok(grid.width > 512 / (2 * 1.3));
+  assert.equal(grid.width, 158);
   assert.equal(grid.cards.get(0), b);
-  assert.match(image.src, /size=768/);
-  assert.equal(image.writes.length, 2);
+  assert.match(image.src, /size=512/);
+  assert.equal(image.writes.length, 1);
   assert.equal(grid.getPosition(anchor.index).top - viewport.scrollTop, anchor.offset);
   grid.render();
-  assert.equal(image.writes.length, 2);
+  assert.equal(image.writes.length, 1);
   grid.reset();
 });
 

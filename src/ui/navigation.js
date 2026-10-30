@@ -200,9 +200,49 @@ function treePager(parent, n, offset, total, pageSize, root = false) {
   pager.append(span);
   parent.append(pager);
 }
+let renderedTreeHost = null,
+  renderedTreeSignature = '';
+function visibleTreeState() {
+  if (folderTree.rootOffset >= S.roots.length) folderTree.rootOffset = 0;
+  const rows = [],
+    nodes = new Map();
+  function visit(n, depth) {
+    if (rows.length >= 96) return;
+    nodes.set(n.id, n);
+    const open = folderTree.open.has(n.id),
+      page = folderTree.pages.get(n.id);
+    rows.push([
+      n.id,
+      n.name,
+      n.path,
+      n.folders,
+      depth,
+      open,
+      open && folderTree.loading.has(n.id),
+      open && page ? [page.offset, page.total] : null
+    ]);
+    if (open && depth < 5 && !folderTree.loading.has(n.id))
+      for (const child of page?.items || []) visit(child, depth + 1);
+  }
+  for (const n of S.roots.slice(folderTree.rootOffset, folderTree.rootOffset + 12)) visit(n, 0);
+  return {
+    nodes,
+    signature: JSON.stringify([S.roots.length, folderTree.rootOffset, S.current?.id, rows])
+  };
+}
 function renderFolderTree() {
   const host = $('#category-nav');
   if (!host) return;
+  const state = visibleTreeState();
+  if (renderedTreeHost === host && renderedTreeSignature === state.signature) {
+    // Event handlers read the current record even when metadata did not change
+    // the visible tree. Keep keyboard focus and existing DOM/canvas intact.
+    for (const group of host.querySelectorAll('.tree-node'))
+      group.treeNode = state.nodes.get(group.dataset.nodeId) || group.treeNode;
+    return;
+  }
+  renderedTreeHost = host;
+  renderedTreeSignature = state.signature;
   const scroll = host.scrollTop,
     focusId = host.contains(document.activeElement) ? document.activeElement.dataset.treeKey : null;
   host.replaceChildren();
@@ -216,6 +256,7 @@ function renderFolderTree() {
     const group = document.createElement('div');
     group.className = 'tree-node';
     group.dataset.nodeId = n.id;
+    group.treeNode = n;
     const row = document.createElement('div');
     row.className =
       'tree-row' + (S.current?.id === n.id ? ' selected' : '') + (!depth ? ' tree-root' : '');
@@ -232,7 +273,7 @@ function renderFolderTree() {
     toggle.disabled = !expandable;
     toggle.dataset.treeKey = n.id + ':toggle';
     toggle.setAttribute('aria-label', (open ? '收起' : '展开') + n.name);
-    toggle.onclick = () => attempt(() => toggleTree(n));
+    toggle.onclick = () => attempt(() => toggleTree(group.treeNode));
     const link = document.createElement('button');
     link.className = 'category-link';
     link.dataset.treeKey = n.id + ':link';
@@ -241,7 +282,17 @@ function renderFolderTree() {
       `<span class="category-name">${esc(n.name)}</span>${!depth ? `<span class="category-total">${fmt(n.folders)}</span>` : ''}`;
     link.title = n.path;
     link.onclick = () => attempt(() => navigate({ parent: n.id }));
-    row.oncontextmenu = (e) => showContext(e, n);
+    row.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Paged structure is retained across matches; actions need current metadata.
+      return attempt(async () => {
+        const current = await api('get', { id: n.id });
+        if (!current || !host.contains(group)) return;
+        group.treeNode = current;
+        showContext(e, current);
+      });
+    };
     row.append(toggle, link);
     group.append(row);
     parent.append(group);

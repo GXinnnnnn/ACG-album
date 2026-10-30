@@ -10,7 +10,7 @@ const { idFor } = require('../src/model.cjs');
 const root = path.resolve(__dirname, '..');
 const stage =
   process.env.ACG_CHECK_STAGE ||
-  path.join(path.dirname(root), '资料归档', 'release-1.1.1-20261029');
+  path.join(path.dirname(root), '资料归档', 'popup-pipeline-20261030');
 const executable = process.env.ACG_EXECUTABLE
   ? path.resolve(process.env.ACG_EXECUTABLE)
   : require('electron');
@@ -163,6 +163,12 @@ async function launch(profile, instrument = false) {
         const context = original.apply(this, args);
         if (args[0] === 'webgl2' && context && !contexts.includes(context)) contexts.push(context);
         return context;
+      };
+      const shaders = (window.__release111Shaders = []);
+      const shaderSource = WebGL2RenderingContext.prototype.shaderSource;
+      WebGL2RenderingContext.prototype.shaderSource = function (shader, source) {
+        shaders.push(source);
+        return shaderSource.call(this, shader, source);
       };
       window.__release111Unhandled = [];
       window.addEventListener('unhandledrejection', (event) =>
@@ -338,7 +344,26 @@ async function progressChecks() {
   equalSlots(await progressSnapshot(), reference);
   report.samples.push({ progress: { reference, repeatedSnapshots: stable, changes: 45 } });
 }
-async function frostSample(label, scroller, modalSelector = '#modal') {
+async function materialSample(label, scroller, modalSelector = '#modal') {
+  // The production renderer pauses on native blur. CDP interactions can continue
+  // without focus, so restore the owned window before sampling live material.
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.show();
+    win.focus();
+    win.webContents.focus();
+  });
+  await expect
+    .poll(() =>
+      app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        return { window: win.isFocused(), webContents: win.webContents.isFocused() };
+      })
+    )
+    .toEqual({ window: true, webContents: true });
+  await page.waitForFunction(
+    () => !document.hidden && document.hasFocus() && !window.albumLiquidGlass.stats().inactive
+  );
   await page.evaluate(async (selector) => {
     await document.fonts.ready;
     const modal = document.querySelector(selector);
@@ -350,31 +375,21 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
     window.albumLiquidGlass.refresh({ immediate: true });
   }, modalSelector);
   await waitFrames();
-  await page.waitForFunction(
-    (selector) =>
-      document
-        .querySelector(selector)
-        ?.style.getPropertyValue('--dialog-frost-image')
-        .includes('data:image/svg+xml'),
-    modalSelector
-  );
   await page.waitForFunction(() => window.albumLiquidGlass.stats().gpu.status === 'webgl2');
   const sample = await page.evaluate(
     ({ label, scroller, modalSelector }) => {
       const modal = document.querySelector(modalSelector),
         rect = modal.getBoundingClientRect();
-      const mask = modal.style.getPropertyValue('--dialog-frost-image');
-      const match = mask.match(/data:image\/svg\+xml,([^\"]+)/);
-      if (!match) throw new Error('Missing actual frost SVG');
-      const svg = new DOMParser().parseFromString(decodeURIComponent(match[1]), 'image/svg+xml');
-      const rectangles = [...svg.querySelectorAll('rect')].map((node) =>
-        Object.fromEntries(
-          ['x', 'y', 'width', 'height', 'rx', 'fill', 'fill-opacity', 'filter'].map((name) => [
-            name,
-            node.getAttribute(name)
-          ])
-        )
-      );
+      const material = (node) => {
+        const css = getComputedStyle(node);
+        return {
+          backgroundImage: css.backgroundImage,
+          backgroundColor: css.backgroundColor,
+          backdropFilter: css.backdropFilter
+        };
+      };
+      const sidebar = document.querySelector('.sidebar-shell'),
+        sidebarRect = sidebar.getBoundingClientRect();
       const panel = document.querySelector(scroller),
         style = getComputedStyle(panel);
       const descriptions = [
@@ -413,10 +428,30 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
               : null;
           })()
         },
-        rectangles,
-        gaussian: svg.querySelector('feGaussianBlur')?.getAttribute('stdDeviation'),
+        material: material(modal),
+        sidebarMaterial: material(sidebar),
+        sidebarVisible:
+          !!sidebar.getClientRects().length &&
+          sidebarRect.right > 0 &&
+          sidebarRect.bottom > 0 &&
+          sidebarRect.left < innerWidth &&
+          sidebarRect.top < innerHeight &&
+          getComputedStyle(sidebar).visibility === 'visible',
+        frostImage: getComputedStyle(modal).getPropertyValue('--dialog-frost-image').trim(),
+        hidden: document.hidden,
+        focused: document.hasFocus(),
+        fragmentVariants: new Set(
+          (window.__release111Shaders || []).filter((source) => /out\s+vec4\s+color\b/.test(source))
+        ).size,
+        centralShaderBranches: (window.__release111Shaders || []).flatMap((source) =>
+          source
+            .split('\n')
+            .filter((line) => /\bfrost\b|dialogFrost|frostMask|centerMask|frostCenter/i.test(line))
+        ),
         scrollbarColor: style.scrollbarColor,
         scrollbarWidth: style.scrollbarWidth,
+        scrollbarWebkitWidth: getComputedStyle(panel, '::-webkit-scrollbar').width,
+        scrollbarThumb: getComputedStyle(panel, '::-webkit-scrollbar-thumb').backgroundColor,
         scrollTop: panel.scrollTop,
         scrollHeight: panel.scrollHeight,
         clientHeight: panel.clientHeight,
@@ -431,27 +466,42 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
     },
     { label, scroller, modalSelector }
   );
-  assert.equal(
-    sample.rectangles.length,
-    1,
-    'The frost image contains exactly one material rectangle'
+  assert.equal(sample.hidden, false, 'Saved material sample is visible');
+  assert.equal(sample.focused, true, 'Saved material sample retains renderer focus');
+  assert.equal(sample.stats.inactive, false, 'Saved material sample is actively rendered');
+  assert.ok(sample.sidebarVisible, 'Compare against the visible sidebar in the same theme');
+  const modalChannels = sample.material.backgroundColor.match(/[\d.]+/g).map(Number);
+  const sidebarChannels = sample.sidebarMaterial.backgroundColor.match(/[\d.]+/g).map(Number);
+  assert.deepEqual(
+    modalChannels.slice(0, 3),
+    sidebarChannels.slice(0, 3),
+    'Windows retain the sidebar theme hue'
   );
-  const rectangle = sample.rectangles[0];
-  assert.equal(rectangle.rx, '18');
-  assert.equal(sample.gaussian, '9');
-  const gaps = [
-    +rectangle.x,
-    +rectangle.y,
-    sample.modal.width - +rectangle.x - +rectangle.width,
-    sample.modal.height - +rectangle.y - +rectangle.height
-  ];
-  assert.ok(gaps.every((gap) => gap >= 9.5));
-  assert.ok(Math.max(...gaps) - Math.min(...gaps) < 0.1, `Equal frost insets: ${gaps}`);
+  assert.ok(
+    Math.abs(modalChannels[3] - 0.92) < 0.001,
+    'Default reading surface uses 8% transparency'
+  );
+  assert.ok(
+    Math.abs(sidebarChannels[3] - 0.82) < 0.001,
+    'Default liquid surface uses 18% transparency'
+  );
+  assert.equal(
+    sample.material.backdropFilter,
+    sample.sidebarMaterial.backdropFilter,
+    'Shared uniform full-surface DOM blur'
+  );
+  assert.equal(
+    (sample.material.backgroundImage.match(/linear-gradient\(/g) || []).length,
+    2,
+    'Only two full-surface optical gradients, no separate center'
+  );
+  assert.match(sample.material.backgroundImage, /linear-gradient\(/);
+  assert.match(sample.material.backdropFilter, /blur\(/);
+  assert.equal(sample.frostImage, '', 'No special dialog frost image');
+  assert.doesNotMatch(sample.material.backgroundImage, /data:image\/svg\+xml/i);
+  assert.equal(sample.fragmentVariants, 1, 'All surfaces compile the same shared fragment shader');
+  assert.deepEqual(sample.centralShaderBranches, [], 'No central-mask branch or frost uniform');
   if (sample.shell.settings) {
-    assert.ok(
-      gaps.every((gap) => Math.abs(gap - 18) < 0.1),
-      `Refined settings rim: ${gaps}`
-    );
     assert.equal(
       sample.shell.gutter,
       'auto',
@@ -474,8 +524,8 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
     assert.ok(sample.descriptions.length > 0);
   const inks =
     sample.theme === 'dark'
-      ? ['rgb(200, 194, 213)', 'rgb(222, 219, 233)']
-      : ['rgb(69, 66, 81)', 'rgb(53, 51, 66)'];
+      ? ['rgb(209, 203, 223)', 'rgb(228, 224, 239)']
+      : ['rgb(62, 58, 73)', 'rgb(48, 45, 58)'];
   for (const text of sample.descriptions) {
     assert.ok(
       inks.includes(text.color),
@@ -484,13 +534,16 @@ async function frostSample(label, scroller, modalSelector = '#modal') {
     assert.equal(text.fontWeight, '550');
     assert.ok(text.fontFamily);
   }
-  assert.equal(sample.scrollbarWidth, 'thin');
-  assert.notEqual(sample.scrollbarColor, 'auto');
+  assert.equal(sample.scrollbarWidth, 'auto', 'Chromium enables precise WebKit scrollbar geometry');
+  assert.equal(sample.scrollbarColor, 'auto');
+  assert.equal(sample.scrollbarWebkitWidth, '6px');
+  const pinkThumbs =
+    sample.theme === 'dark'
+      ? ['rgb(184, 121, 160)', 'rgb(219, 156, 190)']
+      : ['rgb(201, 130, 166)', 'rgb(182, 95, 144)'];
   assert.ok(
-    sample.scrollbarColor.includes(
-      sample.theme === 'dark' ? 'rgb(129, 115, 143)' : 'rgb(155, 129, 153)'
-    ),
-    'Scrollbar thumb follows the actual theme token'
+    pinkThumbs.includes(sample.scrollbarThumb),
+    'Scrollbar thumb follows the normal or hover pink theme token: ' + sample.scrollbarThumb
   );
   const cdp = await page.context().newCDPSession(page);
   try {
@@ -566,17 +619,17 @@ async function scrollEvidence(label, selector, modalSelector = '#modal') {
     window.albumLiquidGlass.refresh({ immediate: true });
   }, selector);
   await waitFrames();
-  const before = await frostSample(`${label}-top`, selector, modalSelector);
+  const before = await materialSample(`${label}-top`, selector, modalSelector);
   await page.evaluate((selector) => {
     const panel = document.querySelector(selector);
     panel.scrollTop = panel.scrollHeight;
     window.albumLiquidGlass.refresh({ immediate: true });
   }, selector);
   await waitFrames();
-  const after = await frostSample(`${label}-bottom`, selector, modalSelector);
+  const after = await materialSample(`${label}-bottom`, selector, modalSelector);
   if (after.scrollHeight > after.clientHeight + 1) assert.ok(after.scrollTop > 0);
-  // The rounded layer must remain clipped to one inset material area after scrolling.
-  assert.equal(after.rectangles.length, before.rectangles.length);
+  // Scrolling content must leave the full-shell shared material unchanged.
+  assert.deepEqual(after.material, before.material);
   assert.deepEqual(after.modal, before.modal);
 }
 async function themeDialogs(theme) {
@@ -730,7 +783,7 @@ async function themeDialogs(theme) {
     );
     for (const theme of ['light', 'dark'])
       await check(
-        `${theme} preferences, metadata, updates and about use readable ink, themed scrollbars and one rounded GL frost layer`,
+        `${theme} preferences, metadata, updates and about match sidebar material with readable ink and themed scrollbars`,
         () => themeDialogs(theme)
       );
     assert.ok(await app.evaluate(() => globalThis.__release111.updates >= 2));

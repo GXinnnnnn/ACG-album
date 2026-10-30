@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   budget,
   materialProfile,
+  materialSettings,
   scheduler,
   createRenderer,
   imageSampler,
@@ -482,8 +483,7 @@ test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies b
         dark: false,
         light: [-0.5, 0.8],
         dpr: 2,
-        strength: 1,
-        frost: i ? { x: 24, y: 24, width: 252, height: 132 } : null
+        strength: 1
       }
     );
   assert.equal(f.calls.filter((call) => call[0] === 'getContext').length, 1);
@@ -506,11 +506,8 @@ test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies b
   );
   assert.deepEqual(
     f.calls.filter((call) => call[0] === 'uniform4f' && call[1] === 'frost'),
-    [
-      ['uniform4f', 'frost', 0, 0, 0, 0],
-      ['uniform4f', 'frost', 150, 90, 126, 66]
-    ],
-    'Only dialog content bounds suppress the optical layer toward the frosted center'
+    [],
+    'Sidebar and dialogs use the same full-face profile without a central frost uniform'
   );
   renderer.destroy();
   assert.equal(renderer.stats().status, 'destroyed');
@@ -560,6 +557,260 @@ test('unexpected texture security failure remains recoverable without rebuilding
   assert.equal(f.calls.filter((call) => call[0] === 'getContext').length, 1);
   renderer.destroy();
 });
+
+function materialMount(options = {}) {
+  const f = fixture(options);
+  const eventNode = (node = {}) => {
+    const handlers = new Map();
+    return Object.assign(node, {
+      addEventListener(type, fn) {
+        const list = handlers.get(type) || [];
+        list.push(fn);
+        handlers.set(type, list);
+      },
+      removeEventListener(type, fn) {
+        handlers.set(
+          type,
+          (handlers.get(type) || []).filter((item) => item !== fn)
+        );
+      },
+      emit(type, event = {}) {
+        for (const fn of handlers.get(type) || []) fn(event);
+      }
+    });
+  };
+  const values = new Map([
+    ['--liquid-opacity', '0.82'],
+    ['--frost-opacity', '0.92']
+  ]);
+  const root = {
+    dataset: { liquidGlass: options.off ? 'off' : 'on', theme: 'light', motion: 'low' },
+    style: { getPropertyValue: (name) => values.get(name) || '' }
+  };
+  const hosts = [textHost(box(20, 20, 180, 60)), textHost(box(300, 20, 220, 60))];
+  for (const host of hosts) {
+    host.dataset = {};
+    host.children = [];
+    host.append = (canvas) => {
+      host.children.push(canvas);
+      canvas.parentElement = host;
+    };
+  }
+  const mutations = [];
+  const counts = { rootReads: 0, hostReads: 0, contexts: 0, canvases: 0 };
+  const ctx = {
+    fillRect() {},
+    clearRect() {},
+    drawImage() {}
+  };
+  const doc = eventNode({
+    documentElement: root,
+    body: {},
+    hidden: false,
+    querySelector: () => null,
+    querySelectorAll: (selector) => (selector === surfaces ? hosts : []),
+    createElement() {
+      counts.canvases++;
+      return eventNode({
+        width: 1,
+        height: 1,
+        setAttribute() {},
+        remove() {
+          this.parentElement = null;
+        },
+        getContext(kind) {
+          if (kind !== 'webgl2') return ctx;
+          counts.contexts++;
+          return options.unavailable ? null : f.gl;
+        }
+      });
+    }
+  });
+  const media = eventNode({ matches: !!options.reduced });
+  const win = eventNode(
+    Object.assign(clock(), {
+      document: doc,
+      innerWidth: 800,
+      innerHeight: 600,
+      devicePixelRatio: 1,
+      matchMedia: () => media,
+      getComputedStyle(node) {
+        if (node === root) {
+          counts.rootReads++;
+          return root.style;
+        }
+        counts.hostReads++;
+        return {
+          visibility: 'visible',
+          opacity: '1',
+          borderTopLeftRadius: '16px',
+          position: 'fixed'
+        };
+      },
+      ResizeObserver: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+      MutationObserver: class {
+        constructor(callback) {
+          mutations.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      }
+    })
+  );
+  const api = mount(win);
+  const change = (
+    liquid = values.get('--liquid-opacity'),
+    frost = values.get('--frost-opacity')
+  ) => {
+    values.set('--liquid-opacity', String(liquid));
+    values.set('--frost-opacity', String(frost));
+    win.emit('album-appearance-change');
+  };
+  return {
+    ...f,
+    win,
+    api,
+    counts,
+    hosts,
+    change,
+    mutate: (records) => mutations.forEach((callback) => callback(records))
+  };
+}
+
+test('numeric range readouts do not rebuild the background scene, while real modal changes still do', () => {
+  const f = materialMount();
+  f.win.tick();
+  const before = f.api.stats();
+  const output = {
+    nodeType: 1,
+    closest: (selector) => (selector === '.appearance-range-control output' ? output : null)
+  };
+  for (let i = 0; i < 100; i++)
+    f.mutate([
+      { type: 'childList', target: output, addedNodes: [{ nodeType: 3 }], removedNodes: [] }
+    ]);
+  f.mutate([{ type: 'characterData', target: { nodeType: 3, parentElement: output } }]);
+  f.win.tick();
+  assert.equal(f.api.stats().sceneBuilds, before.sceneBuilds);
+  assert.equal(f.api.stats().gpu.draws, before.gpu.draws);
+  assert.equal(f.api.stats().pending, 0);
+  f.mutate([
+    {
+      type: 'childList',
+      target: {
+        nodeType: 1,
+        closest: (selector) => (selector === '.modal:not(.viewer)' ? {} : null)
+      },
+      addedNodes: [{ nodeType: 1 }],
+      removedNodes: []
+    }
+  ]);
+  f.win.tick();
+  assert.equal(
+    f.api.stats().sceneBuilds,
+    before.sceneBuilds + 1,
+    'Real modal content remains observable'
+  );
+  f.api.destroy();
+});
+
+test('material tokens clamp numeric alpha independently and preserve defaults', () => {
+  assert.deepEqual(materialSettings(null), { liquidOpacity: 0.82, frostOpacity: 0.92 });
+  assert.deepEqual(
+    materialSettings({ getPropertyValue: (name) => (name.includes('liquid') ? '0' : '5') }),
+    {
+      liquidOpacity: 0.1,
+      frostOpacity: 1
+    }
+  );
+  assert.deepEqual(materialSettings({ getPropertyValue: () => 'invalid' }), {
+    liquidOpacity: 0.82,
+    frostOpacity: 0.92
+  });
+});
+
+test('appearance bursts reuse canvases, context, geometry and scene; same-value events draw nothing', () => {
+  const f = materialMount();
+  f.win.tick();
+  assert.equal(f.api.stats().gpu.draws, 2);
+  assert.equal(f.counts.rootReads, 1);
+  const baseline = f.api.stats();
+  const counts = { ...f.counts };
+  const canvases = f.hosts.map((host) => host.children[0]);
+  for (let i = 0; i < 100; i++) f.change();
+  f.win.tick();
+  assert.equal(f.api.stats().gpu.draws, baseline.gpu.draws);
+  assert.equal(f.api.stats().pending, 0);
+  assert.deepEqual(f.counts, counts);
+  for (let i = 0; i < 100; i++) f.change(0.2 + i / 200);
+  assert.equal(f.api.stats().pending, 1, 'At most one scheduled batch per drag burst');
+  assert.ok(f.win.frames.size <= 1);
+  f.win.tick();
+  const changed = f.api.stats();
+  assert.equal(changed.gpu.draws, baseline.gpu.draws + 2);
+  assert.equal(changed.sceneBuilds, baseline.sceneBuilds);
+  assert.equal(changed.gpu.uploads, baseline.gpu.uploads);
+  assert.equal(f.counts.contexts, 1);
+  assert.equal(f.counts.canvases, counts.canvases);
+  assert.equal(f.counts.hostReads, counts.hostReads, 'No new host style/layout pass');
+  assert.equal(f.counts.rootReads, 2, 'One root style read for the entire changed batch');
+  assert.deepEqual(
+    f.hosts.map((host) => host.children[0]),
+    canvases
+  );
+  const opacityCalls = f.calls.filter((call) => call[0] === 'uniform1f' && call[1] === 'opacity');
+  assert.equal(opacityCalls.slice(-2).length, 2);
+  for (const call of opacityCalls.slice(-2)) assert.ok(Math.abs(call[2] - 0.695) < 1e-12);
+  for (let i = 0; i < 100; i++) f.change();
+  f.win.tick();
+  assert.equal(f.api.stats().gpu.draws, changed.gpu.draws);
+  for (let i = 0; i < 100; i++) f.change(undefined, 0.1 + i / 110);
+  f.win.tick();
+  assert.equal(f.api.stats().gpu.draws, changed.gpu.draws, 'Frost is CSS-only');
+  assert.equal(f.counts.rootReads, 2);
+  assert.equal(f.api.stats().pending, 0);
+  f.win.tick(1000);
+  assert.equal(f.api.stats().gpu.draws, changed.gpu.draws, 'Idle material never self-schedules');
+  f.api.destroy();
+});
+
+for (const options of [{ off: true }, { unavailable: true }, { reduced: true }])
+  test(
+    'material changes stay effective without context recreation: ' + JSON.stringify(options),
+    () => {
+      const f = materialMount(options);
+      f.win.tick();
+      const initialContexts = f.counts.contexts;
+      f.change(0.3, 0.4);
+      f.win.tick();
+      const stats = f.api.stats();
+      assert.deepEqual(stats.material, { liquidOpacity: 0.3, frostOpacity: 0.4, key: '0.3|0.4' });
+      assert.equal(f.counts.contexts, initialContexts);
+      if (options.off || options.unavailable) assert.equal(stats.gpu.draws || 0, 0);
+      else {
+        assert.equal(stats.gpu.draws, 4);
+        assert.ok(
+          f.calls.some(
+            (call) => call[0] === 'uniform1f' && call[1] === 'opacity' && call[2] === 0.3
+          )
+        );
+        assert.ok(
+          f.calls.some(
+            (call) => call[0] === 'uniform1f' && call[1] === 'strength' && call[2] === 0.45
+          )
+        );
+      }
+      for (let i = 0; i < 100; i++) f.change();
+      f.win.tick();
+      assert.equal(f.api.stats().gpu.draws, stats.gpu.draws);
+      assert.equal(f.api.stats().pending, 0);
+      f.api.destroy();
+    }
+  );
 
 test('surface allowlist excludes cards and nested navigation filters', () => {
   assert.ok(surfaces.includes('.topbar > .navigation'));

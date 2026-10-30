@@ -15,7 +15,7 @@ function cropModal(n) {
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
   openModal(
     '调整封面位置',
-    `<div class="crop-container"><div class="crop-preview" id="crop-preview" tabindex="0" role="img" aria-label="封面预览，按住鼠标拖动，滚轮缩放"><img id="crop-image" draggable="false" alt=""><span class="crop-gesture-hint">按住拖动 · 滚轮缩放</span></div><div class="crop-controls"><p>按住图片拖动位置，滚轮缩放画面。右侧滑条可精确调整，保存仅影响相册封面。</p><label for="crop-zoom">缩放 <span id="crop-zoom-value"></span></label><input id="crop-zoom" type="range" min="100" max="400" step="1"><label for="crop-x">水平位置 <span id="crop-x-value"></span></label><input id="crop-x" type="range" min="0" max="100" step="0.1"><label for="crop-y">垂直位置 <span id="crop-y-value"></span></label><input id="crop-y" type="range" min="0" max="100" step="0.1"><button id="crop-center" class="text-button">恢复居中 · 100%</button></div></div><div class="modal-actions"><button id="crop-cancel" class="subtle-button">取消</button><button id="crop-save" class="primary">保存位置</button></div>`,
+    `<div class="crop-container"><div class="crop-preview" id="crop-preview" tabindex="0" role="img" aria-label="封面预览，按住鼠标拖动，滚轮缩放"><img id="crop-image" draggable="false" alt=""><span class="crop-gesture-hint">按住拖动 · 滚轮缩放</span></div><div class="crop-controls"><p>按住图片拖动位置，滚轮缩放画面。右侧滑条可精确调整，保存仅影响相册封面。</p><label for="crop-zoom">缩放 <span id="crop-zoom-value"></span></label><div class="crop-range-control"><input id="crop-zoom" type="range" min="100" max="400" step="1"><button type="button" data-crop-reset="zoom" class="subtle-button" title="恢复默认值" aria-label="缩放：恢复默认值">恢复默认</button></div><label for="crop-x">水平位置 <span id="crop-x-value"></span></label><div class="crop-range-control"><input id="crop-x" type="range" min="0" max="100" step="0.1"><button type="button" data-crop-reset="x" class="subtle-button" title="恢复默认值" aria-label="水平位置：恢复默认值">恢复默认</button></div><label for="crop-y">垂直位置 <span id="crop-y-value"></span></label><div class="crop-range-control"><input id="crop-y" type="range" min="0" max="100" step="0.1"><button type="button" data-crop-reset="y" class="subtle-button" title="恢复默认值" aria-label="垂直位置：恢复默认值">恢复默认</button></div><button id="crop-center" class="text-button">恢复居中 · 100%</button></div></div><div class="modal-actions"><button id="crop-cancel" class="subtle-button">取消</button><button id="crop-save" class="primary">保存位置</button></div>`,
     720
   );
   const preview = $('#crop-preview'),
@@ -127,6 +127,14 @@ function cropModal(n) {
     e.preventDefault();
     update();
   };
+  for (const button of $$('#modal [data-crop-reset]'))
+    button.onclick = () => {
+      const key = button.dataset.cropReset;
+      if (key === 'zoom') zoom = 1;
+      else if (key === 'x') x = 50;
+      else y = 50;
+      update();
+    };
   $('#crop-center').onclick = () => {
     x = y = 50;
     zoom = 1;

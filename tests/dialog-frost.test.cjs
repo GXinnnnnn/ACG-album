@@ -1,58 +1,108 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { dialogFrostBounds, frostMask } = require('../src/ui/liquid-glass.js');
-const box = (left, top, width, height) => ({
-  left,
-  top,
-  width,
-  height,
-  right: left + width,
-  bottom: top + height
+const fs = require('node:fs');
+const path = require('node:path');
+const ui = path.join(__dirname, '..', 'src', 'ui');
+const source = fs.readFileSync(path.join(ui, 'liquid-glass.js'), 'utf8');
+const materialCss = fs.readFileSync(path.join(ui, 'liquid-glass.css'), 'utf8');
+const effectsCss = fs.readFileSync(path.join(ui, 'effects.css'), 'utf8');
+const viewerCss = fs.readFileSync(path.join(ui, 'viewer-frame.css'), 'utf8');
+const rules = (css) =>
+  [
+    ...css
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/@charset\s+[^;]+;/g, '')
+      .matchAll(/([^{}]+)\{([^{}]*)\}/g)
+  ].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+const declarations = (body) =>
+  Object.fromEntries(
+    [...body.matchAll(/([\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()])
+  );
+const shared = (rule) =>
+  rule.selector.includes('.sidebar-shell') && rule.selector.includes('.modal:not(.viewer)');
+
+test('sidebar and nonviewer dialogs use full-surface background tokens, with an independent denser window material', () => {
+  const all = rules(materialCss),
+    background = all.filter((rule) => shared(rule) && declarations(rule.body).background);
+  assert.equal(background.length, 2, 'Base tint fallback plus enhanced full-surface gradient');
+  assert.equal(declarations(background[0].body).background, 'var(--glass-base-tint)');
+  assert.match(declarations(background[1].body).background, /linear-gradient\(/);
+  assert.match(declarations(background[1].body).background, /var\(--glass-base-tint\)/);
+  const defaults = declarations(all.find((rule) => rule.selector === ':root').body);
+  assert.equal(Number(defaults['--liquid-opacity']), 0.82);
+  assert.equal(Number(defaults['--frost-opacity']), 0.92);
+  const window = declarations(
+    all.find((rule) => rule.selector === ':root[data-theme] .modal:not(.viewer)').body
+  );
+  assert.equal(window['--glass-base-tint'], 'var(--frost-body-tint)');
+  assert.equal(window['--glass-material-opacity'], 'var(--frost-opacity)');
+  assert.match(
+    window['backdrop-filter'],
+    /blur\(calc\(18px \* var\(--frost-opacity\) \/ 0\.92\)\)/
+  );
+  assert.ok(
+    rules(effectsCss).some(
+      (rule) => shared(rule) && /blur\(/.test(declarations(rule.body)['backdrop-filter'] || '')
+    ),
+    'Real DOM backdrop remains available'
+  );
+  assert.doesNotMatch(
+    materialCss,
+    /--dialog-frost|mask-image|clip-path/,
+    'No central material seam'
+  );
 });
-test('one content rectangle encloses separated header, controls and footer on all four sides', () => {
-  const dialog = box(100, 100, 640, 600);
-  const frost = dialogFrostBounds(dialog, [
-    box(132, 132, 200, 24),
-    box(140, 320, 520, 22),
-    box(132, 630, 550, 24)
-  ]);
-  assert.deepEqual(frost, { x: 22, y: 22, width: 596, height: 556 });
-  const svg = decodeURIComponent(frostMask(dialog, frost).slice(24, -2));
-  assert.match(svg, /feGaussianBlur/);
-  assert.equal((svg.match(/<rect /g) || []).length, 1, 'no per-section opaque blocks');
-  assert.match(svg, /rx="18"/);
+
+test('one shared shader has no central mask, frost uniform, SVG image or geometry helper', () => {
+  assert.match(source, /compile\(gl\.FRAGMENT_SHADER,\s*fragment\)/);
+  assert.equal((source.match(/const fragment\s*=/g) || []).length, 1);
+  assert.match(source, /uniform\s+vec4\s+material\s*;/);
+  assert.doesNotMatch(
+    source,
+    /\b(?:dialogFrostBounds|frostMask|measureDialogFrost|applyDialogFrost)\b|--dialog-frost|uniform\s+\w+\s+frost\b|\b(?:options|row|uniforms)\.frost\b|data:image\/svg\+xml/i
+  );
+  assert.doesNotMatch(materialCss, /--dialog-frost|data:image\/svg\+xml/i);
 });
-test('scroll-clipped text and off-dialog controls cannot extend the material past its rim', () => {
-  const frost = dialogFrostBounds(box(10, 20, 300, 240), [box(-200, -100, 900, 600)]);
-  assert.deepEqual(frost, { x: 10, y: 10, width: 280, height: 220 });
-  assert.deepEqual(dialogFrostBounds(box(0, 0, 300, 240), [box(800, 800, 40, 20)]), {
-    x: 22,
-    y: 22,
-    width: 256,
-    height: 196
-  });
-});
-test('short content extends down to the same rim and the nearest edge controls every side', () => {
-  const dialog = box(50, 80, 640, 600);
-  for (const text of [box(82, 112, 120, 24), box(500, 120, 158, 24), box(100, 620, 120, 28)]) {
-    const frost = dialogFrostBounds(dialog, [text]);
-    const gaps = [
-      frost.x,
-      frost.y,
-      dialog.width - frost.x - frost.width,
-      dialog.height - frost.y - frost.height
-    ];
-    assert.ok(gaps.every((gap) => gap === gaps[0]));
-    assert.equal(gaps[0], 22);
+
+test('light and dark themes supply distinct translucent shared body and backdrop tint tokens', () => {
+  for (const [css, token] of [
+    [materialCss, '--liquid-body-tint'],
+    [effectsCss, '--liquid-tint']
+  ]) {
+    const all = rules(css);
+    const light = declarations(all.find((rule) => rule.selector === ':root').body)[token];
+    const dark = declarations(
+      all.find((rule) => /^:root\[data-theme=['"]dark['"]\]$/.test(rule.selector)).body
+    )[token];
+    assert.notEqual(light, dark, token + ' follows the theme');
+    for (const value of [light, dark]) {
+      assert.match(value, /^rgba\(/);
+      if (token === '--liquid-body-tint')
+        assert.match(
+          value,
+          /,\s*var\(--liquid-opacity\)\)$/,
+          'Adjustable alpha remains a background token'
+        );
+      else {
+        const alpha = Number(value.match(/,\s*([\d.]+)\s*\)$/)?.[1]);
+        assert.ok(alpha > 0 && alpha < 1, token + ' leaves the real backdrop visible');
+      }
+    }
   }
+  assert.match(source, /uniform\s+float\s+dark\s*;/);
 });
-test('the same geometry has distinct theme tint without changing layout or foreground opacity', () => {
-  const rect = box(0, 0, 500, 400),
-    frost = dialogFrostBounds(rect, []);
-  const light = decodeURIComponent(frostMask(rect, frost));
-  const dark = decodeURIComponent(frostMask(rect, frost, true));
-  assert.match(light, /#faf8ff/);
-  assert.match(dark, /#1a1825/);
-  assert.equal(light.match(/<rect[^>]+rx="18"/)[0], dark.match(/<rect[^>]+rx="18"/)[0]);
+
+test('viewer remains excluded from shared optical hosts and retains its own material', () => {
+  const hosts = source.match(/const surfaces\s*=\s*['"]([^'"]+)['"]/)[1].split(',');
+  assert.ok(hosts.includes('.sidebar-shell'));
+  assert.ok(hosts.includes('.modal:not(.viewer)'));
+  assert.ok(
+    hosts.every((selector) => !/viewer/.test(selector) || selector === '.modal:not(.viewer)')
+  );
+  for (const rule of rules(materialCss + effectsCss).filter(shared))
+    assert.doesNotMatch(rule.selector, /\.modal(?!:not\(\.viewer\))/);
+  const viewer = rules(viewerCss).find((rule) => rule.selector === '#viewer');
+  assert.equal(declarations(viewer.body).background, 'var(--viewer-background)');
+  assert.equal(declarations(viewer.body)['backdrop-filter'], 'none');
 });

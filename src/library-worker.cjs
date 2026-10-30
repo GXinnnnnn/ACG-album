@@ -23,6 +23,7 @@ const {
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
 const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
 const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
+const appearanceSettings = require('./appearance-settings.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
 const {
@@ -143,7 +144,7 @@ if (!q('PRAGMA table_info(nodes)').some((c) => c.name === 'album_kind'))
   db.exec("ALTER TABLE nodes ADD COLUMN album_kind TEXT DEFAULT 'auto'");
 const defaults = {
   theme: 'light',
-  density: 222,
+  ...appearanceSettings.defaults,
   ratio: 'poster',
   autoMatch: true,
   metadataOnboardingSeen: false,
@@ -2027,15 +2028,13 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob, { prob
       const detailLimit = 6 - Math.min(5, plans.length - index - 1);
       for (const term of terms) {
         if (!guard()) return null;
-        const data = await sharedMatchRequest(
-          searchCache,
-          `${explicit ? 'manual' : 'auto'} ${term}`,
-          types,
-          guard,
-          (live) =>
-            searchSubjectPages(term, types, (endpoint, body) => api(endpoint, body, live), {
-              fullCandidates: explicit
-            })
+        const data = await sharedMatchRequest(searchCache, term, types, guard, (live) =>
+          searchSubjectPages(term, types, (endpoint, body) => api(endpoint, body, live), {
+            // A search-page exact title still needs authoritative detail checks.
+            // Both entry points need the same bounded candidate pool to find
+            // replacements and detect conflicts beyond a stale exact result.
+            fullCandidates: true
+          })
         );
         if (!guard()) return null;
         complete = complete && data.complete;
@@ -2985,6 +2984,11 @@ const methods = {
           .filter((x) => x.key !== 'token')
           .map((s) => [s.key, JSON.parse(s.value)])
       ),
+      ...appearanceSettings.normalize(
+        Object.fromEntries(
+          Object.keys(appearanceSettings.defaults).map((key) => [key, setting(key)])
+        )
+      ),
       githubRepository: effectiveRepository(setting('githubRepository'))
     },
     progress,
@@ -3129,6 +3133,8 @@ const methods = {
   },
   settings: ({ key, value }) => {
     if (!Object.hasOwn(defaults, key) && key !== 'collapsed') throw new Error('不支持的设置');
+    if (Object.hasOwn(appearanceSettings.defaults, key) && !appearanceSettings.valid(key, value))
+      throw new Error('外观设置值无效。');
     if (key === 'nickname') {
       value = String(value).trim();
       if (!value || value.length > 24) throw new Error('显示名称应为 1–24 个字符。');

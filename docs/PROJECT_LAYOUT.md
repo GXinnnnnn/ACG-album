@@ -10,14 +10,14 @@ ACG-album 1.1.1 是本地优先的 Windows Electron 应用。主进程与 worker
 | -------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 主进程入口     | `src/main.cjs`                                                                                                    | 窗口、生命周期、单实例、系统对话框、自定义协议、worker 通信、系统权限及凭据加密；不把数据库扫描放进渲染进程                                                            |
 | 应用与外部服务 | `src/application.cjs`                                                                                             | 应用信息、作者与致谢数据、外部链接入口；集中校验可访问的 HTTPS 主机                                                                                                    |
-| 仓库元数据辅助 | `src/repository.cjs`                                                                                              | 验证可配置的仓库信息；缺省使用官方仓库，保留用户已保存的自定义更新来源                                                                                                                   |
+| 仓库元数据辅助 | `src/repository.cjs`                                                                                              | 验证可配置的仓库信息；缺省使用官方仓库，保留用户已保存的自定义更新来源                                                                                                 |
 | 后台工作线程   | `src/library-worker.cjs`                                                                                          | 使用 `node:sqlite` 维护本地索引、扫描、查询、缩略图与条目信息；通过消息与主进程协作                                                                                    |
 | 媒体能力       | `src/media.cjs`                                                                                                   | 图片元数据、视频信息、Sharp 图像处理、编辑副本与导出；EXIF 使用 exifr                                                                                                  |
 | 预加载桥       | `src/preload.cjs`                                                                                                 | 使用 `contextBridge` 暴露明确的 IPC 能力；界面不直接取得 Node.js、文件系统或数据库访问权                                                                               |
 | 共享领域规则   | `src/model.cjs`                                                                                                   | 扩展名、路径 / ID、多语言检索词、作品名称、通用目录名过滤和最新图片选择等可独立测试的规则                                                                              |
 | 导入匹配策略   | `src/matching-policy.cjs`                                                                                         | 校验 `{ onlineMatch, subjectTypes, directoryKind, characterCover }` 白名单；明确关闭与缺省选项语义不同，供主进程和 worker 共用                                         |
 | 官方搜索召回   | `src/bangumi-search.cjs`                                                                                          | 有界相关度 / 热度分页、ID 去重与搜索完整性证据，供 worker 查询缓存复用                                                                                                 |
-| 作品候选选择   | `src/matching.cjs`                                                                                                | 名称可信度、所选类型、收藏热度、近分候选按收藏人数与最新有效发行日期选择及有界查询缓存；不把跨类型同名作品合并成系列                                                                   |
+| 作品候选选择   | `src/matching.cjs`                                                                                                | 名称可信度、所选类型、收藏热度、近分候选按收藏人数与最新有效发行日期选择及有界查询缓存；不把跨类型同名作品合并成系列                                                   |
 | 角色资料       | `src/character-matching.cjs`、`src/character-library.cjs`                                                         | 角色唯一精确名称判定、独立 ID 与资料表、首图 / 立绘策略、手动关联和自定义资料                                                                                          |
 | 缓存目录       | `src/cache-directory.cjs`、`src/ui/cache-settings.js`、`cache-settings.css`                                       | 真实路径与占用、目录迁移和回滚、维护锁、清空与重建，以及设置页状态反馈                                                                                                 |
 | 主进程辅助     | `src/icons.cjs`、`src/file-response.cjs`、`src/clipboard.cjs`                                                     | 系统文件夹图标、文件 Range 流与剪贴板位图写入读回确认；保持有限资源与重试边界                                                                                          |
@@ -30,6 +30,10 @@ ACG-album 1.1.1 是本地优先的 Windows Electron 应用。主进程与 worker
 | 演示资料       | `src/demo/`                                                                                                       | 演示样本，打包时作为独立 demo 资源；不指向用户真实图库                                                                                                                 |
 
 新增媒体适配位于 `src/image-preview.cjs`、`src/heif-decoder.cjs`、`src/heif-worker.cjs`；独立解码器及其对应源码在 `src/vendor/libheif/`，打包至 ASAR 外。`src/fonts.cjs` 与 `src/ui/typography.js` 负责本机字体选择；公开构建排除专有字体二进制。`src/home-copy.cjs` 与 `src/ui/home-copy.js` 负责首页文案校验、原位编辑与保存；`src/root-removal.cjs` 管理移除分类时的保护规则。
+
+## 本地可调外观
+
+`src/appearance-settings.cjs` 集中声明外观键、默认值和数值范围；worker 统一校验持久化值。`src/ui/appearance.js` 按动画帧预览并合并保存，`appearance.css` 管理控制排布；`display.js` 和 `masonry.js` 复用已加载数据完成卡片尺寸和滚动锚点布局。`liquid-glass.js` / `.css` 管理独立背景透明度和文字阴影，`readability.css` 保留占位提示与状态语义并调整颜色、滚动条。详见 [本地外观控制](LOCAL_APPEARANCE_CONTROLS.md)。
 
 ## 根目录
 

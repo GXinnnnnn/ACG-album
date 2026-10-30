@@ -1,0 +1,68 @@
+@charset "UTF-8";
+:root {
+  --liquid-opacity: 0.82;
+  --frost-opacity: 0.92;
+  --user-card-radius: 16px;
+}
+.appearance-range-row {
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.appearance-range-row > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.appearance-range-control {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 56px auto;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 310px;
+  min-width: 0;
+  max-width: 420px;
+}
+.appearance-range-control input[type='range'] {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.appearance-range-control input[type='range']:focus-visible,
+.appearance-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.appearance-range-control output {
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.appearance-range-control .appearance-reset {
+  padding: 7px 10px;
+  white-space: nowrap;
+  font-size: 12px;
+  min-height: 32px;
+}
+/* The preview geometry and virtual masonry both keep the requested card width. */
+:root .category-overview {
+  justify-content: flex-start;
+  align-content: flex-start;
+}
+:root .collection-preview {
+  grid-template-columns: repeat(auto-fill, minmax(0, min(100%, var(--card-width))));
+  justify-content: start;
+  align-content: start;
+  align-items: start;
+}
+:root[data-density-preview='on'] .collection-preview .album-card {
+  transition: none;
+}
+@media (max-width: 600px) {
+  .appearance-range-control {
+    flex-basis: 100%;
+    max-width: none;
+  }
+}

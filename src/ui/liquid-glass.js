@@ -27,8 +27,8 @@
   uniform float radius;
   uniform float dark;
   uniform float strength;
+  uniform float opacity;
   uniform vec4 material;
-  uniform vec4 frost;
   in vec2 uv;
   out vec4 color;
   float shape(vec2 p) {
@@ -60,47 +60,9 @@
     vec3 optical = mix(refracted, tint, 0.22) + specular * mix(0.55,0.35,dark) + sheen * 0.035;
     // A nonzero body floor keeps the whole surface optical, not just its rim.
     // Wide shoulders blend the stronger lens edge into this frosted interior.
-    float alpha = mask * (material.z + shoulder * 0.08 + fresnel * 0.32 + specular * 0.22 + sheen * material.w);
-    // One rounded content rectangle, independent of individual settings rows.
-    // Suppress the scene proxy toward its frosted center from all four sides.
-    if (frost.z > 0.0) {
-      vec2 point = vec2(uv.x * size.x, (1.0 - uv.y) * size.y);
-      vec2 q = abs(point - frost.xy) - frost.zw + vec2(18.0);
-      float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 18.0;
-      alpha *= mix(0.12, 1.0, smoothstep(-6.0, 24.0, distance));
-    }
+    float alpha = mask * (material.z + shoulder * 0.08 + fresnel * 0.32 + specular * 0.22 + sheen * material.w) * opacity / 0.82;
     color = vec4(optical, alpha);
   }`;
-  function dialogFrostBounds(rect, textRects) {
-    const visible = textRects.map((r) => intersectRect(rect, r)).filter(Boolean);
-    // Keep the full-height center and equal insets on every side, with a
-    // further 2px rim so the material is slightly smaller than the local trial.
-    // The text envelope retains 10px clearance, including short panels.
-    const nearest = visible.length
-      ? Math.min(
-          ...visible.flatMap((r) => [
-            r.left - rect.left,
-            r.top - rect.top,
-            rect.right - r.right,
-            rect.bottom - r.bottom
-          ])
-        ) - 10
-      : 22;
-    const inset = Math.min(
-      Math.max(10, nearest),
-      Math.max(0, (Math.min(rect.width, rect.height) - 1) / 2)
-    );
-    return {
-      x: inset,
-      y: inset,
-      width: Math.max(1, rect.width - inset * 2),
-      height: Math.max(1, rect.height - inset * 2)
-    };
-  }
-  function frostMask(rect, frost, dark = false) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${rect.width}" height="${rect.height}" viewBox="0 0 ${rect.width} ${rect.height}"><defs><filter id="f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="9"/></filter></defs><rect x="${frost.x}" y="${frost.y}" width="${frost.width}" height="${frost.height}" rx="18" fill="${dark ? '#1a1825' : '#faf8ff'}" fill-opacity="${dark ? 0.86 : 0.82}" filter="url(#f)"/></svg>`;
-    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-  }
   function materialProfile(width, height) {
     const halfSpan = Math.max(1, Math.min(width, height) * 0.5);
     return {
@@ -109,6 +71,21 @@
       bodyAlpha: 0.14,
       sheenAlpha: 0.06
     };
+  }
+  function materialSettings(style) {
+    const read = (name, fallback) => {
+      const value = parseFloat(style?.getPropertyValue?.(name));
+      return Number.isFinite(value) ? Math.min(1, Math.max(0.1, value)) : fallback;
+    };
+    return {
+      liquidOpacity: read('--liquid-opacity', 0.82),
+      frostOpacity: read('--frost-opacity', 0.92)
+    };
+  }
+  function appearanceKey(root) {
+    return ['--liquid-opacity', '--frost-opacity']
+      .map((name) => root.style?.getPropertyValue?.(name) || '')
+      .join('|');
   }
   function budget(width, height, dpr = 1) {
     const scale = Math.min(
@@ -243,8 +220,8 @@
           'radius',
           'dark',
           'strength',
-          'material',
-          'frost'
+          'opacity',
+          'material'
         ])
           uniforms[name] = gl.getUniformLocation(program, name);
         texture = gl.createTexture();
@@ -335,6 +312,7 @@
         gl.uniform1f(uniforms.radius, options.radius);
         gl.uniform1f(uniforms.dark, Number(options.dark));
         gl.uniform1f(uniforms.strength, options.strength);
+        gl.uniform1f(uniforms.opacity, options.liquidOpacity ?? 0.82);
         const material = materialProfile(rect.width, rect.height);
         gl.uniform4f(
           uniforms.material,
@@ -342,14 +320,6 @@
           material.shoulderWidth,
           material.bodyAlpha,
           material.sheenAlpha
-        );
-        const frost = options.frost;
-        gl.uniform4f(
-          uniforms.frost,
-          frost ? frost.x + frost.width / 2 : 0,
-          frost ? frost.y + frost.height / 2 : 0,
-          frost ? frost.width / 2 : 0,
-          frost ? frost.height / 2 : 0
         );
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         if (target.width !== pixels.width) target.width = pixels.width;
@@ -508,6 +478,10 @@
       visible = [],
       rendered = 0;
     const uniformDirtyHosts = new Set();
+    let material = materialSettings(null),
+      materialKey = appearanceKey(root),
+      materialStyleDirty = true,
+      materialDirty = true;
     const metrics = {
       frames: 0,
       sceneBuilds: 0,
@@ -520,6 +494,8 @@
       securityCpuMs: 0,
       lastUploadMs: 0,
       lastReason: '',
+      materialReads: 0,
+      materialChanges: 0,
       legibilityPasses: 0,
       legibilityChanges: 0,
       imageBackedSurfaces: 0,
@@ -564,6 +540,30 @@
       legibilityQueue.cancel();
       queue.request();
     }
+    function syncMaterial() {
+      if (!materialStyleDirty) return;
+      // One root style read per changed batch; pointer draws reuse these values.
+      material = materialSettings(win.getComputedStyle(root));
+      metrics.materialReads++;
+      materialStyleDirty = false;
+    }
+    function appearanceChanged() {
+      const key = appearanceKey(root);
+      if (key === materialKey) return;
+      materialKey = key;
+      // apply() writes canonical numeric tokens before emitting this event.
+      // Frost is CSS-only; it must not upload the scene or redraw the GPU layer.
+      const next = materialSettings(root.style);
+      const liquidChanged = next.liquidOpacity !== material.liquidOpacity;
+      const changed = liquidChanged || next.frostOpacity !== material.frostOpacity;
+      material = next;
+      if (!changed) return;
+      metrics.materialChanges++;
+      materialStyleDirty = true;
+      if (!liquidChanged) return;
+      materialDirty = true;
+      if (enabled()) invalidate('appearance', false);
+    }
     function createCanvas() {
       const canvas = doc.createElement('canvas');
       canvas.className = 'liquid-glass-canvas';
@@ -572,51 +572,6 @@
       canvas.setAttribute('inert', '');
       canvas.tabIndex = -1;
       return canvas;
-    }
-    function measureDialogFrost(host, rect) {
-      if (!host.matches?.('.modal:not(.viewer)') || !doc.createTreeWalker) return null;
-      const textRects = [];
-      const walker = doc.createTreeWalker(host, 4);
-      const range = doc.createRange();
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (
-          !node.textContent.trim() ||
-          node.parentElement.closest('script,style,[hidden],.liquid-glass-canvas')
-        )
-          continue;
-        range.selectNodeContents(node);
-        for (const box of range.getClientRects()) {
-          let clipped = intersectRect(rect, box);
-          for (
-            let parent = node.parentElement;
-            clipped && parent && parent !== host;
-            parent = parent.parentElement
-          ) {
-            const style = win.getComputedStyle(parent);
-            if (style.visibility === 'hidden' || style.display === 'none') {
-              clipped = null;
-              break;
-            }
-            if (
-              /(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowY + style.overflowX)
-            )
-              clipped = intersectRect(clipped, parent.getBoundingClientRect());
-          }
-          if (clipped) textRects.push(clipped);
-        }
-      }
-      for (const field of host.querySelectorAll('input,textarea,select')) {
-        if (field.getClientRects().length) textRects.push(field.getBoundingClientRect());
-      }
-      return dialogFrostBounds(rect, textRects);
-    }
-    function syncFrost(rows) {
-      for (const row of rows) {
-        if (!row.frost) continue;
-        const mask = frostMask(row.rect, row.frost, row.dark);
-        if (row.host.style.getPropertyValue('--dialog-frost-image') !== mask)
-          row.host.style.setProperty('--dialog-frost-image', mask);
-      }
     }
     function measureSurfaces() {
       const rows = [],
@@ -648,7 +603,6 @@
           host,
           rect,
           radius: Math.min(rawRadius, rect.width / 2, rect.height / 2),
-          frost: measureDialogFrost(host, rect),
           dark: root.dataset.theme === 'dark',
           isStatic: style.position === 'static'
         });
@@ -658,7 +612,6 @@
     }
     function discover() {
       const rows = measureSurfaces();
-      syncFrost(rows);
       const active = new Set(rows.map((row) => row.host));
       for (const [host, canvas] of hosts)
         if (!host.isConnected || !active.has(host)) {
@@ -676,6 +629,10 @@
           row.host.append(canvas);
           hosts.set(row.host, canvas);
           resizeObserver.observe(row.host);
+        } else if (hosts.get(row.host).parentElement !== row.host) {
+          // Select options and context actions may replace their own children.
+          // Reattach the existing optical layer rather than losing its canvas.
+          row.host.append(hosts.get(row.host));
         }
       return rows;
     }
@@ -740,13 +697,16 @@
     }
     function refreshLegibility() {
       if (!readable()) return;
+      syncMaterial();
       applyLegibility(measureSurfaces(), collectPictures());
     }
     function buildScene() {
       const scale = Math.min(1, 640 / Math.max(win.innerWidth, win.innerHeight));
       scene ||= doc.createElement('canvas');
-      scene.width = Math.max(1, Math.round(win.innerWidth * scale));
-      scene.height = Math.max(1, Math.round(win.innerHeight * scale));
+      const width = Math.max(1, Math.round(win.innerWidth * scale)),
+        height = Math.max(1, Math.round(win.innerHeight * scale));
+      if (scene.width !== width) scene.width = width;
+      if (scene.height !== height) scene.height = height;
       const ctx = scene.getContext('2d');
       ctx.fillStyle = root.dataset.theme === 'dark' ? '#15151f' : '#e8e9f1';
       ctx.fillRect(0, 0, scene.width, scene.height);
@@ -829,12 +789,15 @@
       ensureEngine();
       phase.ensureMs = win.performance.now() - start;
       if (!engine.ready()) {
-        syncFrost(measureSurfaces());
         refreshLegibility();
         return;
       }
+      syncMaterial();
       const fullDraw =
-        dirty || layoutDirty || !['pointer', 'pointer-leave'].includes(metrics.lastReason);
+        materialDirty ||
+        dirty ||
+        layoutDirty ||
+        !['pointer', 'pointer-leave'].includes(metrics.lastReason);
       if (layoutDirty) {
         const discoverAt = win.performance.now();
         visible = discover();
@@ -867,11 +830,11 @@
             { width: win.innerWidth, height: win.innerHeight },
             {
               radius: row.radius,
-              frost: row.frost,
               dark: row.dark,
               light: row.host === hotHost ? pointer : [-0.65, 0.8],
               dpr: win.devicePixelRatio || 1,
-              strength: reduced.matches || root.dataset.motion === 'low' ? 0.45 : 1
+              strength: reduced.matches || root.dataset.motion === 'low' ? 0.45 : 1,
+              liquidOpacity: material.liquidOpacity
             }
           );
           canvas.hidden = false;
@@ -886,6 +849,7 @@
       metrics.phaseCpuMs.push(phase);
       if (metrics.phaseCpuMs.length > 120) metrics.phaseCpuMs.shift();
       uniformDirtyHosts.clear();
+      materialDirty = false;
       metrics.frames++;
       metrics.frameCpuMs.push(phase.totalMs);
       if (metrics.frameCpuMs.length > 120) metrics.frameCpuMs.shift();
@@ -896,6 +860,15 @@
       let changed = false;
       for (const record of records) {
         if (record.target?.classList?.contains('liquid-glass-canvas')) continue;
+        // Numeric readouts are opaque foreground, never part of the image proxy.
+        // Host ResizeObserver still covers a genuine geometry change.
+        if (
+          (record.type === 'childList' || record.type === 'characterData') &&
+          (record.target?.nodeType === 1 ? record.target : record.target?.parentElement)?.closest?.(
+            '.appearance-range-control output'
+          )
+        )
+          continue;
         if (record.type === 'attributes') {
           if (
             record.target === root ||
@@ -949,6 +922,7 @@
     );
     on(win, 'resize', () => invalidate('viewport-resize'), { passive: true });
     on(win, 'album-effects-change', () => invalidate('settings'));
+    on(win, 'album-appearance-change', appearanceChanged);
     on(doc, 'visibilitychange', () => invalidate('visibility'));
     on(win, 'blur', () => {
       inactive = true;
@@ -1064,6 +1038,7 @@
       stats() {
         return {
           ...metrics,
+          material: { ...material, key: materialKey },
           frameCpuMs: [...metrics.frameCpuMs],
           renderedSurfaces: rendered,
           visibleSurfaces: visible.length,
@@ -1086,8 +1061,7 @@
   return {
     budget,
     materialProfile,
-    dialogFrostBounds,
-    frostMask,
+    materialSettings,
     scheduler,
     createRenderer,
     imageSampler,

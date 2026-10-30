@@ -88,13 +88,12 @@ async function sourceSnapshot() {
       targets: Platform.WINDOWS.createTarget('nsis', Arch.x64),
       publish: 'never',
       config: {
-        ...metadata.build,
+        // Base resource mappings are inherited once from package.json.
         files: publicFontFiles(metadata.build.files),
         directories: { ...metadata.build.directories, output: out },
         artifactName: `ACG-album-Setup-${metadata.version}-${label}.` + '${ext}',
         extraMetadata: { searchEdition: variant },
         extraResources: [
-          ...metadata.build.extraResources,
           { from: database, to: 'local-index/subjects.sqlite' },
           { from: manifestPath, to: 'local-index/manifest.json' },
           { from: path.join(root, 'docs', 'LOCAL_SEARCH_DATA.md'), to: 'local-index/SOURCE.md' }

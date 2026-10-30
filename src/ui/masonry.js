@@ -3,7 +3,7 @@
 // Page numbers stay absolute (offset = page * 180), including mixed boundary pages.
 // Anchor offsets are card-top pixels relative to the viewport; positions are grid-relative.
 // The host owns scroll/resize scheduling. Timeline badges/headers belong to card().
-// Overview previews use the same density targets, then distribute the spare pixels.
+// Overview previews use the same fixed density targets, aligned to the top-left.
 // Keep the API bound explicit; a normal 4K window needs only 28–42 preview albums.
 function overviewPreviewGeometry(available, preset, gap = 19) {
   const width = Math.max(1, Number(available) || 1),
@@ -12,7 +12,7 @@ function overviewPreviewGeometry(available, preset, gap = 19) {
     columns = Math.max(1, Math.floor((width + spacing) / (target + spacing)));
   return {
     columns,
-    width: (width - (columns - 1) * spacing) / columns,
+    width: target,
     limit: Math.min(500, columns * 2)
   };
 }
@@ -129,7 +129,7 @@ function createOverviewPreviewController() {
       }
       entry.items = (result.items || []).slice(0, limit);
       entry.total = Number(result.total) || entry.items.length;
-      reconcile(entry);
+      if (document.documentElement.dataset?.densityPreview !== 'on') reconcile(entry);
       return true;
     } finally {
       if (entry.generation === generation) entry.preview.removeAttribute('aria-busy');
@@ -143,6 +143,7 @@ function createOverviewPreviewController() {
       for (const entry of entries.values()) {
         if (!current(entry)) continue;
         const geometry = measure(entry);
+        if (document.documentElement.dataset?.densityPreview === 'on') continue;
         if (geometry.limit !== entry.requestedLimit) attempt(() => request(entry));
         else if (entry.items && Math.abs(geometry.width - entry.renderedWidth) > 0.01)
           reconcile(entry);
@@ -168,6 +169,19 @@ function createOverviewPreviewController() {
     resizeObserver.observe(preview);
   }
   return {
+    preview() {
+      for (const entry of entries.values()) if (current(entry)) measure(entry);
+    },
+    async refresh() {
+      const tasks = [];
+      for (const entry of entries.values()) {
+        if (!current(entry)) continue;
+        const geometry = measure(entry);
+        if (geometry.limit !== entry.requestedLimit) tasks.push(request(entry));
+        else if (entry.items) reconcile(entry);
+      }
+      await Promise.all(tasks);
+    },
     render(preview, parent, version) {
       releaseDetached();
       if (!preview.isConnected || version !== S.loadVersion) return Promise.resolve(false);
@@ -665,10 +679,9 @@ function createVirtualGrid() {
     dirty = true;
     const preset = Math.max(1, Number(S.settings.density) || 222);
     grid.gap = grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
-    // The preset chooses density; distribute the remaining width across those
-    // columns so the last card ends at the available content edge at any size.
+    // Fixed card widths leave trailing space and clamp to narrow containers.
     grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (preset + grid.gap)));
-    grid.width = (m.width - (grid.cols - 1) * grid.gap) / grid.cols;
+    grid.width = Math.min(m.width, preset);
     mediaCols = grid.cols;
     const ratio =
       S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12;
@@ -884,7 +897,7 @@ function createVirtualGrid() {
         b?.remove();
         const position = grid.getPosition(index),
           inViewport = position.top + position.height > m.top && position.top < m.top + m.height;
-        b = card(n, index, false, grid.width, inViewport);
+        b = card(n, index, false, grid.previewThumbWidth || grid.width, inViewport);
         grid.cards.set(index, b);
         m.el.append(b);
       } else if (!b) {
@@ -915,7 +928,7 @@ function createVirtualGrid() {
       if (previous.index !== index) moved.add(b);
       previous.index = index;
       if (n && previous.image) {
-        const src = thumb(n, grid.width),
+        const src = thumb(n, grid.previewThumbWidth || grid.width),
           tier = /[?&]size=(\d+)/.exec(src)?.[1],
           currentTier =
             /[?&]size=(\d+)/.exec(previous.image.getAttribute('src') || '')?.[1] ||

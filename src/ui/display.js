@@ -52,9 +52,73 @@ function restoreDisplayAnchor(anchor) {
   grid.render();
   updateScrollActions();
 }
+let displayPreviewAnchor = null,
+  displayPreviewKey = null,
+  displayFinishGeneration = 0,
+  displayRestoreCleanup = null;
+function previewDisplayDensity(value) {
+  displayFinishGeneration++;
+  displayRestoreCleanup?.();
+  displayRestoreCleanup = null;
+  const key = viewKey();
+  if (!displayPreviewAnchor || displayPreviewKey !== key) {
+    displayPreviewAnchor = captureDisplayAnchor();
+    displayPreviewKey = key;
+    grid.previewThumbWidth = grid.width;
+  }
+  document.documentElement.dataset.densityPreview = 'on';
+  document.documentElement.style.setProperty('--card-width', value + 'px');
+  applyDisplaySettings();
+  overviewPreviewController?.preview();
+  grid.layout(false);
+  restoreDisplayAnchor(displayPreviewAnchor);
+}
+function finishDisplayDensity() {
+  if (!displayPreviewAnchor) return;
+  const anchor = displayPreviewAnchor,
+    key = displayPreviewKey,
+    generation = ++displayFinishGeneration;
+  displayPreviewAnchor = displayPreviewKey = null;
+  document.documentElement.dataset.densityPreview = 'off';
+  grid.previewThumbWidth = 0;
+  grid.render();
+  if (!overviewPreviewController) return;
+  const viewport = $('#viewport'),
+    scrollTop = viewport.scrollTop;
+  let scrolled = false;
+  const onScroll = () => {
+    if (viewport.scrollTop !== scrollTop) scrolled = true;
+  };
+  const cleanup = () => {
+    viewport.removeEventListener('scroll', onScroll);
+    if (displayRestoreCleanup === cleanup) displayRestoreCleanup = null;
+  };
+  displayRestoreCleanup = cleanup;
+  viewport.addEventListener('scroll', onScroll, { passive: true });
+  void overviewPreviewController
+    .refresh()
+    .then(() => {
+      if (
+        generation === displayFinishGeneration &&
+        key === viewKey() &&
+        !scrolled &&
+        viewport.scrollTop === scrollTop
+      )
+        restoreDisplayAnchor(anchor);
+    })
+    .catch((error) => toast(error.message || String(error), true))
+    .finally(cleanup);
+}
 function changeDisplaySetting(key, value) {
+  if (key === 'density' && window.albumAppearanceControls) {
+    if (!window.albumAppearanceSpec.valid(key, value))
+      return Promise.reject(new Error('不支持的显示设置'));
+    window.albumAppearanceControls.set(key, value);
+    return window.albumAppearanceControls.flush();
+  }
   if (
-    (key === 'density' && !cardDisplayPresets.some((p) => p.width === value)) ||
+    (key === 'density' &&
+      !(typeof value === 'number' && Number.isFinite(value) && value >= 120 && value <= 360)) ||
     (key === 'ratio' && !['poster', 'tall', 'square'].includes(value)) ||
     (key === 'details' && typeof value !== 'boolean') ||
     !['density', 'ratio', 'details'].includes(key)

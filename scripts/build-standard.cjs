@@ -85,12 +85,11 @@ async function assertNoLocalIndex(directory) {
     targets: Platform.WINDOWS.createTarget('nsis', Arch.x64),
     publish: 'never',
     config: {
-      ...metadata.build,
+      // electron-builder merges package.json build config; pass only overrides.
       files: publicFontFiles(metadata.build.files),
       directories: { ...metadata.build.directories, output: out },
       artifactName: `ACG-album-Setup-${metadata.version}-Standard.` + '${ext}',
       extraMetadata: { searchEdition: 'standard' },
-      extraResources: [...metadata.build.extraResources],
       nsis: { ...metadata.build.nsis, differentialPackage: false }
     }
   });

@@ -1,7 +1,7 @@
 @charset "UTF-8";
-/* Keep focus attached to the control silhouette. Darken the light-theme
-   accent just enough for contrast; the existing text token reverses this
-   automatically in dark mode. No geometry, font, or text-halo changes. */
+/* Keep the complete focus ring inside each control's silhouette: an outline
+   at offset 0 still paints outside its border and is clipped at scroll edges.
+   The existing accent/text mix follows the selected light or dark theme. */
 :root {
   --control-focus-color: color-mix(in srgb, var(--accent) 78%, var(--text));
 }
@@ -22,27 +22,30 @@
     .album-select-button
   ):focus-visible {
   outline: 2px solid var(--control-focus-color);
-  outline-offset: 0;
+  outline-offset: -2px;
 }
 /* Search has one focus boundary around its complete rounded wrapper, rather
    than a detached glow plus a second outline around the inner text box. */
 :root .search-wrap:focus-within {
   outline: 2px solid var(--control-focus-color);
-  outline-offset: 0;
+  outline-offset: -2px;
   border-color: var(--control-focus-color);
   box-shadow:
     inset 0 0 0 1px var(--control-focus-color),
     var(--float-shadow);
 }
 :root .search-wrap input:focus-visible,
+:root .topbar .search-wrap input:focus-visible,
 :root .modal .search-wrap input:focus-visible {
   outline: none;
 }
-/* A one-pixel inset preserves all two pixels of keyboard focus in scrollable
-   dialog lists and tightly packed preference controls, without the old gap. */
-:root .modal :is(button, a, summary, [tabindex]):focus-visible {
+/* Menus, top-layer options and compact glass controls share the same clipping
+   constraints as dialogs. A full two-pixel inset needs no overflow/z-index fix. */
+:root
+  :is(.modal, .context-menu, .album-select-list, .progress-panel, .toolbar-right, .topbar > *)
+  :is(button, input, textarea, select, a, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--control-focus-color);
-  outline-offset: -1px;
+  outline-offset: -2px;
 }
 @media (forced-colors: active) {
   :root {

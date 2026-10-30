@@ -11,6 +11,19 @@ vm.runInContext(
 );
 const create = context.createMatchRefreshBatch;
 
+test('scan heartbeats do not reload unchanged content, while root/revision and terminal edges do', () => {
+  const needed = context.createScanRefreshGate();
+  assert.equal(needed({ active: false, revision: 0 }), false);
+  assert.equal(needed({ active: true, root: 'a', revision: 1 }), true);
+  for (let i = 0; i < 100; i++)
+    assert.equal(needed({ active: true, root: 'a', revision: 1, current: 'waiting-' + i }), false);
+  assert.equal(needed({ active: true, root: 'a', revision: 2 }), true);
+  assert.equal(needed({ active: true, root: 'b', revision: 2 }), true);
+  assert.equal(needed({ active: false, root: 'b', revision: 2 }), true);
+  assert.equal(needed({ active: false, root: 'b', revision: 2 }), false);
+  assert.equal(needed({ active: true, root: 'b', revision: 2 }), true);
+});
+
 test('automatic matches refresh every ten distinct folders and flush the final partial batch', () => {
   let refreshes = 0;
   const batch = create(() => refreshes++);
