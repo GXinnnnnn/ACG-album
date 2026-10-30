@@ -30,13 +30,15 @@ test('public package excludes all five private fonts even when files are present
   assert.throws(() => publicFontFiles(undefined), /explicit files array/);
 });
 
-test('standard and both search editions apply the same public exclusion after base config', () => {
+test('standard and both search editions apply public exclusion without reinheriting build config', () => {
   for (const script of ['build-standard.cjs', 'build-search-editions.cjs']) {
     const source = fs.readFileSync(path.join(__dirname, '../scripts', script), 'utf8');
     assert.match(source, /const \{ publicFontFiles \} = require\('\.\/public-font-package\.cjs'\)/);
-    assert.match(
+    assert.match(source, /files: publicFontFiles\(metadata\.build\.files\)/);
+    assert.doesNotMatch(
       source,
-      /\.\.\.metadata\.build,\s*files: publicFontFiles\(metadata\.build\.files\)/
+      /\.\.\.metadata\.build\s*[,}]/,
+      'electron-builder inherits the base config; spreading it duplicates resource copy tasks'
     );
     assert.equal((source.match(/files: publicFontFiles/g) || []).length, 1);
   }
