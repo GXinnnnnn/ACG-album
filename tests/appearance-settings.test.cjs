@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { Worker } = require('node:worker_threads');
+const appearance = require('../src/appearance-settings.cjs');
 async function open(dataDir) {
   const worker = new Worker(path.resolve(__dirname, '../src/library-worker.cjs'), {
     workerData: { dataDir, watch: false }
@@ -35,6 +36,29 @@ async function open(dataDir) {
     }
   };
 }
+
+test('responsive preset interpolation clamps CSS widths and leaves saved density normalization unchanged', () => {
+  for (const [width, expected] of [
+    [800, [120, 155, 191]],
+    [1920, [120, 155, 191]],
+    [2560, [123, 159, 192]],
+    [2880, [124, 161, 193]],
+    [3840, [128, 166, 195]],
+    [5120, [128, 166, 195]],
+    [NaN, [128, 166, 195]]
+  ]) {
+    const presets = appearance.cardPresets(width);
+    assert.deepEqual(presets, expected);
+    assert.ok(presets.every((value) => appearance.valid('density', value)));
+  }
+  for (const density of [120, 123, 155, 159, 166, 191, 192, 195, 222, 267.5, 360])
+    assert.equal(appearance.normalize({ density }).density, density);
+  assert.equal(
+    appearance.defaults.density,
+    166,
+    'No migration guesses from a previous default number'
+  );
+});
 
 test('glass starts enabled and motion starts high; saved choices and local font survive restart', async (t) => {
   const data = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-appearance-'));

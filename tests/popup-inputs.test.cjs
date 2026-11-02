@@ -257,7 +257,6 @@ test('subject URL, settings/search inputs and textarea rings remain inside clipp
     element('input', scroll, { id: 'subject-url', class: 'field-input' }, ['focus-visible']),
     element('input', scroll, { type: 'search', class: 'field-input' }, ['focus-visible']),
     element('input', scroll, { type: 'checkbox', class: 'switch' }, ['focus-visible']),
-    element('input', scroll, { type: 'range' }, ['focus-visible']),
     element('textarea', scroll, { class: 'field-input' }, ['focus-visible']),
     element('select', scroll, {}, ['focus-visible']),
     element('button', scroll, { class: 'album-select-button' }, ['focus-visible'])
@@ -294,6 +293,29 @@ test('keyboard rings cover popup options, modal controls and ID-specific editor/
     const modal = element('dialog', body, { id, class: 'modal' });
     focusIsContained(element('button', modal, {}, ['focus-visible']), id);
     if (id === 'media-editor') focusIsContained(element('input', modal, {}, ['focus-visible']), id);
+  }
+});
+
+test('native ranges retain a one-pixel rounded focus ring in popups and the editor', () => {
+  for (const theme of ['light', 'dark']) {
+    const { body } = fixture(theme);
+    const hosts = [body];
+    for (const className of ['modal', 'context-menu', 'toolbar-right'])
+      hosts.push(element('div', body, { class: className }));
+    hosts.push(element('dialog', body, { id: 'media-editor', class: 'modal' }));
+    for (const host of hosts) {
+      const range = element('input', host, { type: 'range' }, ['focus-visible']);
+      const css = style(range);
+      assert.match(css.raw('outline'), /^1px solid /);
+      assert.equal(css.raw('outline-offset'), '-1px');
+      assert.equal(css.raw('border-radius'), '6px');
+      assert.equal(style(range, { forcedColors: true }).value('outline'), '1px solid Highlight');
+      assert.equal(
+        css.raw('appearance'),
+        undefined,
+        'Native slider/keyboard semantics stay intact'
+      );
+    }
   }
 });
 

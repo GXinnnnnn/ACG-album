@@ -4,9 +4,15 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const sharp = require('sharp');
-sharp.cache({ memory: 48, files: 0, items: 80 });
-sharp.concurrency(2);
+let sharpImplementation;
+function sharp(...args) {
+  if (!sharpImplementation) {
+    sharpImplementation = require('sharp');
+    sharpImplementation.cache({ memory: 48, files: 0, items: 80 });
+    sharpImplementation.concurrency(2);
+  }
+  return sharpImplementation(...args);
+}
 const {
   IMAGE_EXT,
   VIDEO_EXT,
@@ -21,6 +27,7 @@ const {
   thumbnailKey
 } = require('./model.cjs');
 const { SUBJECT_TYPES, importOptions } = require('./matching-policy.cjs');
+const { lookupLearnedTitleBindings } = require('./learned-title-bindings.cjs');
 const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
 const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
 const appearanceSettings = require('./appearance-settings.cjs');
@@ -39,6 +46,9 @@ const {
   MATCHING_POLICY_VERSION,
   rankSubjects,
   rankImportSubjects,
+  rankKnownSubjects,
+  chooseSeriesSubject,
+  installment,
   collections,
   dateValue,
   createSearchCache
@@ -76,11 +86,15 @@ CREATE INDEX IF NOT EXISTS nodes_global_size ON nodes(missing,kind,(CASE WHEN ki
 DROP INDEX IF EXISTS nodes_parent_sort;
 CREATE INDEX IF NOT EXISTS nodes_root ON nodes(root); CREATE INDEX IF NOT EXISTS nodes_subject ON nodes(subject_id);
 CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY,json TEXT,updated REAL);
+CREATE TABLE IF NOT EXISTS manual_title_keys(node_id TEXT PRIMARY KEY,name_key TEXT NOT NULL,subject_id INTEGER NOT NULL,type INTEGER NOT NULL,name TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS manual_title_lookup ON manual_title_keys(name_key,type,subject_id);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE IF NOT EXISTS root_match_policy(root TEXT PRIMARY KEY,enabled INTEGER NOT NULL,types TEXT NOT NULL,revision INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS match_frontier(root TEXT PRIMARY KEY,after_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS match_pending(id TEXT PRIMARY KEY,root TEXT NOT NULL,stamp TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS match_pending_root ON match_pending(root,id);
+CREATE TEMP TABLE IF NOT EXISTS match_batch_done(id TEXT PRIMARY KEY,stamp TEXT NOT NULL);
+CREATE TEMP TABLE IF NOT EXISTS match_deferred(id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS match_resume(singleton INTEGER PRIMARY KEY CHECK(singleton=1),reason TEXT NOT NULL,retry_at REAL NOT NULL,scope TEXT NOT NULL,failures INTEGER NOT NULL);
 INSERT OR IGNORE INTO match_resume VALUES(1,'',0,'',0);
 CREATE INDEX IF NOT EXISTS nodes_root_matching ON nodes(root,kind,missing,id);
@@ -180,6 +194,8 @@ let cacheChanging = false,
   activeRequests = 0;
 const cacheReadMethods = new Set([
   'init',
+  'statistics',
+  'mediaStats',
   'list',
   'get',
   'ancestors',
@@ -260,40 +276,42 @@ async function migrateSortKeys() {
     await yieldNow();
   }
 }
-if (setting('searchVersion') !== 1) {
-  db.exec(
-    'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
-  );
-  setSetting('searchVersion', 1);
-}
-// Preserve indexed pagination when equal dates/sizes need a natural-name tie.
-// Rebuild once for existing libraries; name ordering already has this shape.
-if (setting('browseOrderVersion') !== 1) {
-  db.exec('BEGIN');
-  try {
-    for (const [scope, prefix] of [
-      ['parent,', 'parent'],
-      ['', 'global']
-    ]) {
-      for (const [name, column] of [
-        ['date', 'birth'],
-        ['modified', 'mtime'],
-        ['size', "(CASE WHEN kind='folder' THEN total_bytes ELSE bytes END)"]
-      ]) {
-        db.exec(`DROP INDEX IF EXISTS nodes_${prefix}_${name};
-          CREATE INDEX nodes_${prefix}_${name} ON nodes(${scope}missing,kind,${column},sortkey,id)`);
-      }
-    }
-    setSetting('browseOrderVersion', 1);
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
+function migrateBrowseSchema() {
+  if (setting('searchVersion') !== 1) {
+    db.exec(
+      'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
+    );
+    setSetting('searchVersion', 1);
   }
+  // Preserve indexed pagination when equal dates/sizes need a natural-name tie.
+  // Rebuild once for existing libraries; name ordering already has this shape.
+  if (setting('browseOrderVersion') !== 1) {
+    db.exec('BEGIN');
+    try {
+      for (const [scope, prefix] of [
+        ['parent,', 'parent'],
+        ['', 'global']
+      ]) {
+        for (const [name, column] of [
+          ['date', 'birth'],
+          ['modified', 'mtime'],
+          ['size', "(CASE WHEN kind='folder' THEN total_bytes ELSE bytes END)"]
+        ]) {
+          db.exec(`DROP INDEX IF EXISTS nodes_${prefix}_${name};
+          CREATE INDEX nodes_${prefix}_${name} ON nodes(${scope}missing,kind,${column},sortkey,id)`);
+        }
+      }
+      setSetting('browseOrderVersion', 1);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  // Bump this migration alongside future browse-index schema changes. Do not
+  // reconsider every large table on ordinary repeat startup.
+  migrateOnce('browseOptimizeVersion', 1, () => db.exec('PRAGMA optimize=0x10002'));
 }
-// Bump this migration alongside future browse-index schema changes. Do not
-// reconsider every large table on ordinary repeat startup.
-migrateOnce('browseOptimizeVersion', 1, () => db.exec('PRAGMA optimize=0x10002'));
 let rootRemoval;
 const getNode = (id) => {
   const node = one('SELECT * FROM nodes WHERE id=?', id);
@@ -323,25 +341,30 @@ const characters = createCharacterLibrary({
 });
 // Persist the automatic scope separately from the character network toggle:
 // offline unique-character lookup remains compatible with existing imports.
-migrateOnce('rootMatchPolicyVersion', 1, () => {
-  run(`UPDATE root_match_policy SET auto_enabled=CASE WHEN directory_kind='photo' THEN 0
+function migrateReviewPolicies() {
+  migrateOnce('rootMatchPolicyVersion', 1, () => {
+    run(`UPDATE root_match_policy SET auto_enabled=CASE WHEN directory_kind='photo' THEN 0
     WHEN directory_kind='character' THEN 1 ELSE enabled END`);
-  run(`UPDATE nodes AS n SET match_review=0 WHERE kind='folder' AND match_review<>0
+    run(`UPDATE nodes AS n SET match_review=0 WHERE kind='folder' AND match_review<>0
     AND NOT (${reviewScopeSql('n')})`);
-});
-db.exec(
-  "CREATE INDEX IF NOT EXISTS nodes_root_folder_id ON nodes(root,id) WHERE kind='folder' AND missing=0"
-);
-// Repair prior versions that treated a successful nonexact match as unreviewed.
-// Only unmatched local fallback covers need review; stale confidence-review flags
-// must not survive an explicit confirmation or reopen a matched cover.
-migrateOnce('matchReviewVersion', 1, () =>
-  run(
-    `UPDATE nodes SET confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE confirmed END,match_review=0
+  });
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS nodes_root_folder_id ON nodes(root,id) WHERE kind='folder' AND missing=0"
+  );
+  // Repair prior versions that treated a successful nonexact match as unreviewed.
+  // Only unmatched local fallback covers need review; stale confidence-review flags
+  // must not survive an explicit confirmation or reopen a matched cover.
+  migrateOnce('matchReviewVersion', 1, () =>
+    run(
+      `UPDATE nodes SET confirmed=CASE WHEN ${matchedAutomaticSql()} THEN 1 ELSE confirmed END,match_review=0
      WHERE kind='folder' AND ((${matchedAutomaticSql()} AND confirmed<>1) OR match_review<>0)`
-  )
-);
+    )
+  );
+}
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
+const summary = require('./library-summary.cjs').createLibrarySummary({
+  databasePath: path.join(home, 'library.sqlite')
+});
 media.setVisibility((alias) => rootRemoval?.visibleSql(alias) || '1');
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
   path.join(home, 'library.sqlite')
@@ -353,7 +376,188 @@ rootRemoval = require('./root-removal.cjs').createRootRemoval(db, {
     send('error', { message: '分类后台清理未完成，将在下次启动继续：' + error.message })
 });
 const indexing = require('./indexing.cjs').createIndexing(db, maintenance);
+const { readScanStat, createScanIdentity } = require('./scan-identity.cjs');
+const scanIdentity = createScanIdentity(db);
+const { createScanJournal, snapshotOf } = require('./scan-journal.cjs');
+const scanJournal = createScanJournal(db);
+const fsRename = require('./fs-rename.cjs').createFsRename({
+  journalDir: path.join(home, 'rename-journal')
+});
+const renameIdentity = require('./rename-identity.cjs').createRenameIdentity(db, {
+  idFor,
+  sortKey,
+  pendingStampFor: (node) => (eligibleMatch(node) ? pendingStamp(node) : null)
+});
+let scanReserved = false,
+  renameReserved = false,
+  renameTask = null;
+let startupReleased = workerData.deferBackground !== true;
+let maintenanceComplete = false,
+  maintenanceTask = null;
+let maintenanceState = { state: 'pending' };
 let libraryRevision = 0;
+function nextScanJob() {
+  return one("SELECT * FROM scan_jobs ORDER BY (state='running') DESC,id LIMIT 1");
+}
+function matchingHasWork() {
+  return !!(
+    onlineRunning ||
+    onlineQueue.size ||
+    one(`SELECT 1 FROM match_pending p WHERE ${rootRemoval.visibleSql('p')} LIMIT 1`) ||
+    one(`SELECT 1 FROM match_frontier p WHERE ${rootRemoval.visibleSql('p')} LIMIT 1`)
+  );
+}
+function taskSnapshot() {
+  const job = nextScanJob();
+  return {
+    known: true,
+    busy: !!(running || scanReserved || renameReserved || job || matchingHasWork()),
+    scan: {
+      status: running ? 'running' : job?.state || 'idle',
+      jobId: job?.id || null,
+      root: job?.root || null,
+      path: job?.path || null,
+      reason: job?.reason || ''
+    },
+    matching: {
+      hasWork: matchingHasWork(),
+      active: onlineRunning,
+      pausedReason: one('SELECT reason FROM match_resume WHERE singleton=1')?.reason || ''
+    },
+    maintenance: { ...maintenanceState }
+  };
+}
+function publishTasks() {
+  send('tasks', taskSnapshot());
+}
+async function recoverRenames() {
+  renameReserved = true;
+  renameTask = renameIdentity.recover({ fsRename });
+  let results;
+  try {
+    results = await renameTask;
+  } finally {
+    renameTask = null;
+  }
+  const failed = results.filter((entry) => entry.recoveryRequired);
+  renameReserved = failed.length > 0;
+  if (failed.length) {
+    publishTasks();
+    throw new Error(
+      '文件改名需要恢复，请检查实际位置后重试：' +
+        failed
+          .map((entry) => (entry.actualPath || entry.opId) + '（' + entry.error + '）')
+          .join('；')
+    );
+  }
+  return results;
+}
+async function renameNode({ id, name }) {
+  if (running || scanReserved || renameReserved || cacheChanging || activeRequests > 1)
+    throw new Error('请先等待当前导入或资料修改完成，再重命名。');
+  const source = getNode(id);
+  if (!source || source.missing || rootRemoval.isHidden(source.root))
+    throw new Error('文件或文件夹不存在，请刷新后重试。');
+  renameReserved = true;
+  publishTasks();
+  let keepReserved = false;
+  renameTask = (async () => {
+    let ticket, plan, receipt;
+    try {
+      // Stop old consumers before preparing a path map; their durable work stays
+      // pending and is remapped by the same database commit as the node IDs.
+      invalidateRoot(source.root, { preserve: true });
+      clearOnline({ preserve: true });
+      clearTimeout(watchTimer);
+      clearTimeout(mediaStartupTimer);
+      clearTimeout(titleSeedTimer);
+      watchers.get(source.root)?.close();
+      watchers.delete(source.root);
+      watchPending.delete(source.root);
+      await Promise.allSettled([
+        onlineTask,
+        localPauseSweep,
+        ...subjectJobs,
+        ...thumbJobs.values(),
+        videoSaveTail
+      ]);
+      await media.stop();
+      if (stopping) throw new Error('程序正在关闭，尚未修改名称。');
+      ticket = await fsRename.prepare({ sourcePath: source.path, newName: name });
+      if (ticket.noOp)
+        return {
+          renamed: false,
+          oldId: id,
+          id,
+          oldRoot: source.root,
+          root: source.root,
+          oldPath: source.path,
+          path: source.path,
+          node: hydrate(source),
+          count: 0,
+          caseOnly: false
+        };
+      plan = await renameIdentity.prepare(
+        { id, newPath: ticket.path, operationId: ticket.opId },
+        async () => {
+          await yieldNow();
+          if (stopping) throw new Error('程序正在关闭，尚未修改名称。');
+        }
+      );
+      receipt = await fsRename.execute(ticket);
+      const result = renameIdentity.commit(plan);
+      libraryRevision++;
+      invalidateRoot(result.root, { preserve: true });
+      result.node = hydrate(getNode(result.id));
+      try {
+        await fsRename.complete(receipt);
+      } catch (error) {
+        result.recoveryPending = true;
+        send('error', { message: '名称已修改，恢复记录将在下次启动核对：' + error.message });
+      }
+      send('changed', { root: result.root, revision: libraryRevision, rename: result });
+      return result;
+    } catch (error) {
+      const committed = ticket && renameIdentity.isCommitted(ticket.opId);
+      if (receipt && !committed) {
+        try {
+          await fsRename.rollback(receipt);
+        } catch (rollbackError) {
+          keepReserved = true;
+          throw new Error(
+            '改名尚未完成且需要恢复，请保留文件并检查实际位置：' +
+              (rollbackError.actualPath || receipt.path) +
+              '。' +
+              error.message +
+              '；' +
+              rollbackError.message
+          );
+        }
+      }
+      if (error.recoveryRequired) {
+        keepReserved = true;
+        error.message += ' 实际位置：' + (error.actualPath || ticket?.path || source.path);
+      }
+      throw error;
+    } finally {
+      if (plan) renameIdentity.dispose(plan);
+    }
+  })();
+  try {
+    return await renameTask;
+  } finally {
+    renameTask = null;
+    renameReserved = keepReserved;
+    publishTasks();
+    if (!stopping && !keepReserved) {
+      reconcileWatches();
+      if (watchPending.size) watchTimer = setTimeout(drainWatches, 500);
+      media.start().catch((error) => send('error', { message: error.message }));
+      scheduleTitleSeed();
+      startOnline();
+    }
+  }
+}
 function albumKind(n) {
   const ancestors = [];
   for (let p = n; p; p = p.parent ? getNode(p.parent) : null) {
@@ -632,6 +836,9 @@ function confirmReview({ query, previewIds = [] } = {}) {
   if (updated) send('changed', { review: true });
   return { updated };
 }
+function progressState() {
+  return { ...progress, busy: running, cancelling: cancelled && (running || onlineRunning) };
+}
 function emitProgress(force = false, heartbeat = false) {
   const now = Date.now();
   if (force || now - (progress.last || 0) >= 250) {
@@ -639,7 +846,7 @@ function emitProgress(force = false, heartbeat = false) {
     // checkpoint immediately afterwards still needs to publish its revision.
     if (!heartbeat) progress.last = now;
     progress.revision = libraryRevision;
-    send('progress', { ...progress });
+    send('progress', progressState());
     if (!heartbeat && progress.active && (force || now - (progress.lastChanged || 0) >= 750)) {
       progress.lastChanged = now;
       send('changed', { root: progress.root, revision: libraryRevision });
@@ -746,9 +953,20 @@ function stopScanHeartbeat() {
 }
 async function scan(rootPath, options = {}) {
   if (cacheChanging) throw new Error('正在管理缓存，请稍后再导入。');
-  if (running) throw new Error('已有导入任务正在运行，请等待完成或先取消。');
+  if (running || renameReserved || (scanReserved && !options.resumeJobId))
+    throw new Error('已有导入或改名任务正在运行，请等待完成或先取消。');
   running = true;
   cancelled = false;
+  if (options.resumeJobId) {
+    const job = scanJournal.setJob(options.resumeJobId);
+    if (job.path !== path.resolve(rootPath)) {
+      running = false;
+      throw new Error('恢复任务路径不一致。');
+    }
+    indexing.setJob(job.id);
+  }
+  emitProgress(true, true);
+  publishTasks();
   // Filesystem I/O and background WAL maintenance may await without processing
   // entries. Report the current counts independently of that work, without
   // inventing progress or triggering unchanged grid refreshes.
@@ -791,20 +1009,71 @@ async function scan(rootPath, options = {}) {
       }
       return scanContents(rootPath, options);
     })();
-    return await scanTask;
+    const result = await scanTask;
+    const job = scanJournal.load();
+    if (job && job.path === path.resolve(rootPath) && (cancelled || stopping)) {
+      if (stopping) scanJournal.pause({ reason: '程序关闭，等待继续' });
+      else {
+        db.exec('BEGIN');
+        try {
+          indexing.reset();
+          scanJournal.cancel();
+          db.exec('COMMIT');
+        } catch (failure) {
+          db.exec('ROLLBACK');
+          throw failure;
+        }
+      }
+    }
+    return result;
+  } catch (error) {
+    const job = scanJournal.load();
+    if (job && job.path === path.resolve(rootPath)) {
+      if (stopping) scanJournal.pause({ reason: '程序关闭，等待继续' });
+      else if (cancelled) {
+        db.exec('BEGIN');
+        try {
+          indexing.reset();
+          scanJournal.cancel();
+          db.exec('COMMIT');
+        } catch (failure) {
+          db.exec('ROLLBACK');
+          throw failure;
+        }
+      } else scanJournal.block({ reason: String(error.message).slice(0, 1000) });
+    }
+    if (error.code === 'ACG_SCAN_INTERRUPTED')
+      return {
+        root: idFor(path.resolve(rootPath)),
+        cancelled: !stopping,
+        paused: stopping,
+        errors: progress.errors || 0
+      };
+    throw error;
   } finally {
     stopScanHeartbeat();
     scanTask = null;
     running = false;
+    scanReserved = !!nextScanJob();
+    progress.active = false;
+    emitProgress(true, true);
+    publishTasks();
+    startOnline();
   }
 }
 async function scanContents(rootPath, options = {}) {
-  const { target = null, offline = false } = options;
+  const { target = null, offline = false, matchNewOnly = false } = options;
   const matchOptions = importOptions(options);
   if (stopping) throw new Error('媒体服务已停止。');
-  const stat = await fsp.stat(rootPath);
-  if (!stat.isDirectory()) throw new Error('请选择一个文件夹。');
   rootPath = path.resolve(rootPath);
+  for (let ancestor = rootPath; ; ancestor = path.dirname(ancestor)) {
+    const ancestorStat = await fsp.lstat(ancestor);
+    if (ancestorStat.isSymbolicLink())
+      throw new Error('不能通过符号链接或目录联接导入相册，请选择原始目录。');
+    if (path.dirname(ancestor) === ancestor) break;
+  }
+  const stat = await readScanStat(rootPath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('请选择一个文件夹。');
   const dataRelative = path.relative(await fsp.realpath(home), await fsp.realpath(rootPath));
   if (
     !dataRelative ||
@@ -823,7 +1092,19 @@ async function scanContents(rootPath, options = {}) {
   );
   if (containing) throw new Error('该目录与已导入分类重叠，请选择独立目录，避免重复索引。');
   // Validation completed under the scanner reservation.
-  const started = Math.max(Date.now(), (progress.scanStamp || 0) + 1);
+  const job = options.resumeJobId
+    ? scanJournal.setJob(options.resumeJobId)
+    : scanJournal.begin({
+        root: id,
+        path: rootPath,
+        target,
+        options,
+        started: Math.max(Date.now(), (progress.scanStamp || 0) + 1)
+      });
+  const started = job.started;
+  scanJournal.resume(job.id);
+  indexing.setJob(job.id);
+  scanReserved = true;
   progress = {
     active: true,
     root: id,
@@ -834,16 +1115,33 @@ async function scanContents(rootPath, options = {}) {
     visited: 0,
     queued: 1,
     errors: 0,
-    started: Date.now(),
-    scanStamp: started
+    started: job.started,
+    scanStamp: started,
+    ...job.counters
   };
   let autoCheckpoint = null,
     dirtyEntries = 0;
   const touched = new Map();
+  let lastJobCheckpoint = 0;
+  const scanInterrupted = () =>
+    Object.assign(new Error('导入任务已暂停。'), { code: 'ACG_SCAN_INTERRUPTED' });
   const checkpoint = async (changed = false) => {
+    if (cancelled || stopping) throw scanInterrupted();
     if (changed) libraryRevision++;
+    if (Date.now() - lastJobCheckpoint >= 250) {
+      scanJournal.checkpoint({
+        counters: Object.fromEntries(
+          ['folders', 'images', 'visited', 'queued', 'errors'].map((key) => [
+            key,
+            progress[key] || 0
+          ])
+        )
+      });
+      lastJobCheckpoint = Date.now();
+    }
     emitProgress();
     await yieldNow();
+    if (cancelled || stopping) throw scanInterrupted();
   };
   function nodeFor(p, parent, depth, kind) {
     const name = path.basename(p);
@@ -866,6 +1164,11 @@ async function scanContents(rootPath, options = {}) {
   }
   async function primeLocalCover(folder) {
     if (getNode(folder.id)?.cover || cancelled || stopping) return false;
+    const previewStamp = Math.max(
+      started,
+      Number(getNode(folder.id)?.indexed) || 0,
+      Number(folder.parent && getNode(folder.parent)?.indexed) || 0
+    );
     // Preview siblings before descending into a large album. Across the whole
     // probe inspect at most 128 entries / 8 directories / 4 levels, stat only
     // traversed directories and the first image, and never follow symlinks.
@@ -875,7 +1178,7 @@ async function scanContents(rootPath, options = {}) {
     while (queue.length && entries < 128 && opened < 8 && !cancelled && !stopping) {
       const { node, ancestors } = queue.shift();
       try {
-        const directoryStat = await fsp.lstat(node.path);
+        const directoryStat = await readScanStat(node.path);
         if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) continue;
         const chain =
           node.id === folder.id ? ancestors : [...ancestors, { node, stat: directoryStat }];
@@ -889,15 +1192,45 @@ async function scanContents(rootPath, options = {}) {
             if (chain.length < 3 && queue.length + opened < 8)
               queue.push({ node: nodeFor(p, node.id, node.depth + 1, 'folder'), ancestors: chain });
           } else if (IMAGE_EXT.has(path.extname(entry.name).toLowerCase())) {
-            const stat = await fsp.lstat(p);
+            const stat = await readScanStat(p);
             if (stat.isSymbolicLink() || !stat.isFile()) continue;
             if (cancelled || stopping) return false;
             const image = nodeFor(p, node.id, node.depth + 1, 'image');
+            // Deep previews must not create a target before its parent identity
+            // can be checked. The regular scanner establishes parents in order.
+            if (
+              [...chain, { node: image, stat }].some(
+                ({ node: candidate, stat: candidateStat }) =>
+                  !getNode(candidate.id) &&
+                  candidateStat.fsIdentity &&
+                  one(
+                    'SELECT 1 FROM nodes WHERE root=? AND fs_identity=? AND id<>? LIMIT 1',
+                    id,
+                    candidateStat.fsIdentity,
+                    candidate.id
+                  )
+              )
+            )
+              return false;
+            const moves = [];
+            for (const ancestor of chain)
+              moves.push(await scanIdentity.prepare(ancestor.node, ancestor.stat, checkpoint));
+            const imageMove = await scanIdentity.prepare(image, stat, checkpoint);
+            if (cancelled || stopping) return false;
             let published;
             db.exec('BEGIN');
             try {
-              for (const ancestor of chain) indexing.upsert(ancestor.node, ancestor.stat, started);
-              indexing.upsert(image, stat, started);
+              for (let i = 0; i < chain.length; i++) {
+                const stamp = Math.max(
+                  previewStamp,
+                  Number(getNode(chain[i].node.id)?.indexed) || 0
+                );
+                scanIdentity.apply(moves[i], stamp);
+                indexing.upsert(chain[i].node, chain[i].stat, stamp);
+              }
+              const stamp = Math.max(previewStamp, Number(getNode(image.id)?.indexed) || 0);
+              scanIdentity.apply(imageMove, stamp);
+              indexing.upsert(image, stat, stamp);
               published = publishLocalCover(node.id, image);
               db.exec('COMMIT');
             } catch (error) {
@@ -913,7 +1246,12 @@ async function scanContents(rootPath, options = {}) {
           }
         }
       } catch (error) {
-        if (!error.code || error.code.startsWith('ERR_') || error.code.startsWith('SQLITE_'))
+        if (
+          error.code === 'ACG_SCAN_INTERRUPTED' ||
+          !error.code ||
+          error.code.startsWith('ERR_') ||
+          error.code.startsWith('SQLITE_')
+        )
           throw error;
         // The full scan reports unreadable paths; preview failure is nonfatal.
       }
@@ -928,119 +1266,166 @@ async function scanContents(rootPath, options = {}) {
     }
   }
   async function visit(folder) {
-    if (cancelled) return;
-    let directory;
+    if (cancelled || stopping) throw scanInterrupted();
+    let directory, directorySnapshot;
     const candidates = {};
-    let complete = false;
+    const inheritedStamp = Math.max(
+      started,
+      Number(folder.indexed) || 0,
+      Number(folder.parent && getNode(folder.parent)?.indexed) || 0
+    );
+    let frame = scanJournal.discoverDirectory({ ...folder, stamp: inheritedStamp });
+    if (frame.phase === 'done') return;
+    // A sibling can reopen an ancestor after this directory was revalidated.
+    // Re-enumerate before raising a queued prune generation; otherwise verified
+    // children with the older stamp would incorrectly look stale.
+    if (frame.phase === 'prune' && inheritedStamp > frame.stamp)
+      frame = scanJournal.reopenDirectory(folder.id, {
+        snapshot: frame.snapshot,
+        stamp: Math.max(Date.now(), inheritedStamp, frame.stamp + 1)
+      });
+    let complete = frame.phase !== 'enumerate';
     try {
-      directory = await fsp.opendir(folder.path, { bufferSize: 128 });
-      progress.folders++;
-      progress.current = folder.path;
-      const commit = async (entries) => {
-        const batch = await Promise.all(
-          entries.map(async (e) => {
-            const p = path.join(folder.path, e.name);
-            try {
-              const s = await fsp.lstat(p);
-              return s.isSymbolicLink() ? null : { p, e, s };
-            } catch {
-              return { failed: p };
-            }
-          })
-        );
-        // Cancellation received while statting must not publish a partial batch.
-        if (cancelled) return;
-        const previewFolders = [];
-        let published = false;
+      if (frame.phase === 'enumerate') {
+        directorySnapshot = await readScanStat(folder.path);
+        if (directorySnapshot.isSymbolicLink() || !directorySnapshot.isDirectory())
+          throw Object.assign(new Error('目录不可用。'), { code: 'ENOENT' });
         db.exec('BEGIN');
         try {
+          frame = scanJournal.checkpointDirectory(folder.id, {
+            snapshot: directorySnapshot,
+            stamp: Math.max(frame.stamp, inheritedStamp)
+          });
+          indexing.upsert(folder, directorySnapshot, frame.stamp);
+          db.exec('COMMIT');
+          touched.set(folder.id, folder.depth);
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        directory = await fsp.opendir(folder.path, { bufferSize: 128 });
+        progress.folders++;
+        progress.current = folder.path;
+        const commit = async (entries) => {
+          const batch = await Promise.all(
+            entries.map(async (e) => {
+              const p = path.join(folder.path, e.name);
+              try {
+                const s = await readScanStat(p);
+                return s.isSymbolicLink() ? null : { p, e, s };
+              } catch {
+                return { failed: p };
+              }
+            })
+          );
+          // Cancellation received while statting must not publish a partial batch.
+          if (cancelled) return;
+          // Validate filesystem identity before entering the synchronous write batch.
+          // A rename preserves associations only when the old location is absent
+          // and the bounded subtree can be proven to be the same filesystem objects.
           for (const item of batch) {
-            if (!item) continue;
-            if (item.failed) {
-              progress.errors++;
-              indexing.protect(idFor(item.failed), started);
-              continue;
-            }
+            if (!item || item.failed) continue;
             const kind = item.e.isDirectory()
               ? 'folder'
               : VIDEO_EXT.has(path.extname(item.p).toLowerCase())
                 ? 'video'
                 : 'image';
-            const n = nodeFor(item.p, folder.id, folder.depth + 1, kind);
-            indexing.upsert(n, item.s, started);
-            consider(candidates, n, item.s);
-            if (kind === 'folder') {
-              progress.queued++;
-              // Incremental scans recurse only into newly discovered folders.
-              // A probe must not persist partial rows in an existing skipped subtree.
-              if (
-                !getNode(n.id)?.cover &&
-                (!target || one('SELECT 1 FROM scan_new WHERE id=?', n.id))
-              )
-                previewFolders.push(n);
-            } else progress.images++;
+            item.node = nodeFor(item.p, folder.id, folder.depth + 1, kind);
+            item.move = await scanIdentity.prepare(item.node, item.s, checkpoint);
+            if (cancelled || stopping) return;
           }
-          if (candidates.available && !getNode(folder.id)?.cover)
-            published = publishLocalCover(folder.id, candidates.available);
-          db.exec('COMMIT');
-          libraryRevision++;
-          if (progress.images >= 128 && !progress.firstBatch) {
-            progress.firstBatch = true;
-            emitProgress(true);
+          const previewFolders = [];
+          let published = false;
+          db.exec('BEGIN');
+          try {
+            for (const item of batch) {
+              if (!item) continue;
+              if (item.failed) {
+                progress.errors++;
+                indexing.protect(idFor(item.failed), frame.stamp);
+                continue;
+              }
+              const n = item.node,
+                kind = n.kind;
+              scanIdentity.apply(item.move, frame.stamp);
+              indexing.upsert(n, item.s, frame.stamp);
+              consider(candidates, n, item.s);
+              if (kind === 'folder') {
+                progress.queued++;
+                if (!getNode(n.id)?.cover) previewFolders.push(n);
+              } else progress.images++;
+            }
+            if (candidates.available && !getNode(folder.id)?.cover)
+              published = publishLocalCover(folder.id, candidates.available);
+            db.exec('COMMIT');
+            libraryRevision++;
+            if (progress.images >= 128 && !progress.firstBatch) {
+              progress.firstBatch = true;
+              emitProgress(true);
+            }
+          } catch (e) {
+            db.exec('ROLLBACK');
+            throw e;
           }
-        } catch (e) {
-          db.exec('ROLLBACK');
-          throw e;
+          dirtyEntries += entries.length;
+          if (published) emitProgress(true);
+          await checkpoint();
+          for (const child of previewFolders) {
+            if (cancelled || stopping) break;
+            if (await primeLocalCover(child)) emitProgress(true);
+          }
+          // Include unchanged scan stamps: they still dirty durable WAL pages.
+          if (dirtyEntries >= 2048) {
+            await maintenance.checkpoint();
+            dirtyEntries = 0;
+          }
+        };
+        let batch = [];
+        // opendir bounds directory memory even for a single 100k-file folder.
+        for await (const e of directory) {
+          if (cancelled) break;
+          const p = path.join(folder.path, e.name);
+          if (
+            p.toLowerCase() === home.toLowerCase() ||
+            e.isSymbolicLink() ||
+            (!e.isDirectory() && !MEDIA_EXT.has(path.extname(e.name).toLowerCase()))
+          )
+            continue;
+          batch.push(e);
+          if (batch.length === 128) {
+            await commit(batch);
+            batch = [];
+          }
         }
-        dirtyEntries += entries.length;
-        if (published) emitProgress(true);
-        await checkpoint();
-        for (const child of previewFolders) {
-          if (cancelled || stopping) break;
-          if (await primeLocalCover(child)) emitProgress(true);
-        }
-        // Include unchanged scan stamps: they still dirty durable WAL pages.
-        if (dirtyEntries >= 2048) {
-          await maintenance.checkpoint();
-          dirtyEntries = 0;
-        }
-      };
-      let batch = [];
-      // opendir bounds directory memory even for a single 100k-file folder.
-      for await (const e of directory) {
-        if (cancelled) break;
-        const p = path.join(folder.path, e.name);
-        if (
-          p.toLowerCase() === home.toLowerCase() ||
-          e.isSymbolicLink() ||
-          (!e.isDirectory() && !MEDIA_EXT.has(path.extname(e.name).toLowerCase()))
-        )
-          continue;
-        batch.push(e);
-        if (batch.length === 128) {
-          await commit(batch);
-          batch = [];
-        }
+        if (!cancelled && batch.length) await commit(batch);
+        complete = !cancelled && !stopping;
+        if (complete) frame = scanJournal.checkpointDirectory(folder.id, { phase: 'prune' });
       }
-      if (!cancelled && batch.length) await commit(batch);
-      complete = !cancelled;
     } catch (e) {
-      if (!e.code || e.code.startsWith('ERR_') || e.code.startsWith('SQLITE_')) throw e;
+      if (
+        e.code === 'ACG_SCAN_INTERRUPTED' ||
+        !e.code ||
+        e.code.startsWith('ERR_') ||
+        e.code.startsWith('SQLITE_')
+      )
+        throw e;
       // Read errors leave existing children intact, just like cancellation.
       progress.errors++;
       run('UPDATE nodes SET scan_error=? WHERE id=?', e.message, folder.id);
     }
     touched.set(folder.id, folder.depth);
     if (!complete) return;
-    await indexing.prune(folder.id, started, checkpoint);
+    if (frame.phase === 'prune') {
+      await indexing.prune(folder.id, frame.stamp, checkpoint);
+      frame = scanJournal.checkpointDirectory(folder.id, { phase: 'children' });
+    }
     libraryRevision++;
-    if (cancelled) return;
+    if (cancelled || stopping) throw scanInterrupted();
     run('UPDATE nodes SET scan_error=NULL WHERE id=?', folder.id);
-    let after = '';
+    let after = frame.after_child;
     while (!cancelled) {
       const children = q(
         `SELECT n.* FROM nodes n WHERE n.parent=? AND n.missing=0 AND n.kind='folder' AND n.id>?
-          ${target ? 'AND EXISTS(SELECT 1 FROM scan_new s WHERE s.id=n.id)' : ''}
           ORDER BY n.id LIMIT 64`,
         folder.id,
         after
@@ -1048,12 +1433,23 @@ async function scanContents(rootPath, options = {}) {
       if (!children.length) break;
       for (const child of children) {
         await visit(child);
-        if (cancelled) break;
+        if (cancelled || stopping) throw scanInterrupted();
+        scanJournal.checkpointDirectory(folder.id, { afterChild: child.id });
       }
       after = children.at(-1).id;
       await checkpoint();
     }
     if (cancelled) return;
+    const finalDirectoryStat = await readScanStat(folder.path);
+    const currentFrame = scanJournal.directory(folder.id);
+    if (JSON.stringify(snapshotOf(finalDirectoryStat)) !== JSON.stringify(currentFrame.snapshot)) {
+      scanJournal.reopenDirectory(folder.id, {
+        snapshot: finalDirectoryStat,
+        stamp: Math.max(Date.now(), currentFrame.stamp + 1)
+      });
+      return visit(getNode(folder.id));
+    }
+    scanJournal.checkpointDirectory(folder.id, { phase: 'finalize' });
     const saveCover = await refreshLocalCover(
       folder.id,
       candidates.newest || null,
@@ -1067,6 +1463,7 @@ async function scanContents(rootPath, options = {}) {
     try {
       saveCover?.();
       saveTotals();
+      scanJournal.completeDirectory(folder.id, { snapshot: finalDirectoryStat });
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -1079,47 +1476,103 @@ async function scanContents(rootPath, options = {}) {
   try {
     autoCheckpoint = one('PRAGMA wal_autocheckpoint').wal_autocheckpoint;
     db.exec('PRAGMA wal_autocheckpoint=0');
-    indexing.reset();
-    indexing.upsert(nodeFor(rootPath, null, 0, 'folder'), stat, started);
-    invalidateRoot(id, {
-      preserve: !!target && !offline && !Object.hasOwn(matchOptions, 'onlineMatch')
-    });
-    if (Object.hasOwn(matchOptions, 'onlineMatch') || Object.hasOwn(matchOptions, 'matchDepth')) {
-      const previous = one('SELECT * FROM root_match_policy WHERE root=?', id);
-      const explicit = Object.hasOwn(matchOptions, 'onlineMatch');
-      const kind = matchOptions.directoryKind || previous?.directory_kind || 'work';
-      const enabled = explicit
-        ? matchOptions.onlineMatch
-        : previous
-          ? !!previous.enabled
-          : !!setting('autoMatch');
-      const automatic = explicit
-        ? (kind === 'character' || enabled) && kind !== 'photo'
-        : previous
-          ? !!previous.auto_enabled
-          : enabled;
-      run(
-        `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover,match_depth,auto_enabled)
+    const initializing = job.phase === 'scan';
+    db.exec('BEGIN');
+    try {
+      if (initializing) indexing.reset();
+      scanIdentity.reset();
+      indexing.upsert(
+        nodeFor(rootPath, null, 0, 'folder'),
+        stat,
+        Math.max(started, scanJournal.directory(id)?.stamp || 0)
+      );
+      if (initializing) {
+        invalidateRoot(id, {
+          preserve: !!target && !offline && !Object.hasOwn(matchOptions, 'onlineMatch')
+        });
+        if (
+          Object.hasOwn(matchOptions, 'onlineMatch') ||
+          Object.hasOwn(matchOptions, 'matchDepth')
+        ) {
+          const previous = one('SELECT * FROM root_match_policy WHERE root=?', id);
+          const explicit = Object.hasOwn(matchOptions, 'onlineMatch');
+          const kind = matchOptions.directoryKind || previous?.directory_kind || 'work';
+          const enabled = explicit
+            ? matchOptions.onlineMatch
+            : previous
+              ? !!previous.enabled
+              : !!setting('autoMatch');
+          const automatic = explicit
+            ? (kind === 'character' || enabled) && kind !== 'photo'
+            : previous
+              ? !!previous.auto_enabled
+              : enabled;
+          run(
+            `INSERT INTO root_match_policy(root,enabled,types,revision,directory_kind,character_cover,match_depth,auto_enabled)
         VALUES(?,?,?,1,?,?,?,?) ON CONFLICT(root) DO UPDATE SET enabled=excluded.enabled,types=excluded.types,
         directory_kind=excluded.directory_kind,character_cover=excluded.character_cover,match_depth=excluded.match_depth,
         auto_enabled=excluded.auto_enabled,revision=root_match_policy.revision+1`,
-        id,
-        enabled ? 1 : 0,
-        JSON.stringify(
-          matchOptions.subjectTypes || (previous ? JSON.parse(previous.types) : [...SUBJECT_TYPES])
-        ),
-        kind,
-        matchOptions.characterCover || previous?.character_cover || 'local-first',
-        matchOptions.matchDepth ?? previous?.match_depth ?? 1,
-        automatic ? 1 : 0
-      );
+            id,
+            enabled ? 1 : 0,
+            JSON.stringify(
+              matchOptions.subjectTypes ||
+                (previous ? JSON.parse(previous.types) : [...SUBJECT_TYPES])
+            ),
+            kind,
+            matchOptions.characterCover || previous?.character_cover || 'local-first',
+            matchOptions.matchDepth ?? previous?.match_depth ?? 1,
+            automatic ? 1 : 0
+          );
+        }
+      }
+      if (initializing) scanJournal.checkpoint({ phase: 'indexing' });
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
     libraryRevision++;
     emitProgress(true);
     // A progress listener can cancel as soon as the root becomes visible.
     await yieldNow();
+    if (options.resumeJobId) {
+      let afterDirectory = '';
+      while (true) {
+        const frames = scanJournal.directories({ after: afterDirectory, limit: 64 });
+        if (!frames.length) break;
+        for (const frame of frames) {
+          let snapshot;
+          try {
+            snapshot = await readScanStat(frame.path);
+          } catch (error) {
+            if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+            const parent = frame.parent && scanJournal.directory(frame.parent);
+            if (parent) {
+              const parentStat = await readScanStat(parent.path);
+              scanJournal.reopenDirectory(parent.id, {
+                snapshot: parentStat,
+                stamp: Math.max(Date.now(), parent.stamp + 1)
+              });
+            }
+            continue;
+          }
+          if (
+            frame.phase === 'enumerate' ||
+            getNode(frame.id)?.missing ||
+            JSON.stringify(frame.snapshot) !== JSON.stringify(snapshotOf(snapshot))
+          )
+            scanJournal.reopenDirectory(frame.id, {
+              snapshot,
+              stamp: Math.max(Date.now(), frame.stamp + 1)
+            });
+        }
+        afterDirectory = frames.at(-1).id;
+        await checkpoint();
+      }
+    }
     const targetNode = target && getNode(idFor(target));
-    const startNode = targetNode?.root === id ? targetNode : getNode(id);
+    const startNode =
+      targetNode?.root === id && fs.existsSync(targetNode.path) ? targetNode : getNode(id);
     if (startNode.id !== id) progress.name = path.basename(rootPath) + ' / ' + startNode.name;
     await visit(startNode);
     // Recompute only the visited unfinished ancestry, not every library folder.
@@ -1136,14 +1589,17 @@ async function scanContents(rootPath, options = {}) {
       await indexing.totals(p.id, checkpoint);
       await checkpoint();
     }
-    progress.phase = cancelled ? '已取消，保留已索引内容' : '完成索引';
-    if (!offline && !cancelled && matchPolicy(getNode(id)).enabled) {
-      if (!target) enqueueRoot(id);
-      if (target) {
+    if (cancelled || stopping) throw scanInterrupted();
+    progress.phase = '完成索引';
+    scanJournal.checkpoint({ phase: 'handoff' });
+    if (!offline && matchPolicy(getNode(id)).enabled) {
+      if (!target && !matchNewOnly) enqueueRoot(id);
+      if (target || matchNewOnly) {
         let after = '';
         while (!cancelled) {
           const page = q(
-            "SELECT s.id FROM scan_new s CROSS JOIN nodes n ON n.id=s.id WHERE s.id>? AND n.kind='folder' AND n.missing=0 ORDER BY s.id LIMIT 64",
+            "SELECT s.id FROM scan_new s CROSS JOIN nodes n ON n.id=s.id WHERE s.job=? AND s.id>? AND n.kind='folder' AND n.missing=0 ORDER BY s.id LIMIT 64",
+            job.id,
             after
           );
           if (!page.length) break;
@@ -1156,7 +1612,7 @@ async function scanContents(rootPath, options = {}) {
           node;
           node = node.parent ? getNode(node.parent) : null
         )
-          if (eligibleMatch(node))
+          if (!matchNewOnly && eligibleMatch(node))
             run(
               'INSERT OR REPLACE INTO match_pending VALUES(?,?,?)',
               node.id,
@@ -1165,9 +1621,45 @@ async function scanContents(rootPath, options = {}) {
             );
       }
     }
-    return { root: id, cancelled, errors: progress.errors };
+    if (cancelled || stopping) throw scanInterrupted();
+    db.exec('BEGIN');
+    try {
+      // Pending pages are already durable; removing their scan source and the
+      // resume marker together makes the handoff complete or safely repeatable.
+      indexing.reset();
+      scanJournal.finish();
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    return { root: id, cancelled: false, errors: progress.errors };
   } finally {
     try {
+      if (cancelled && !stopping) {
+        // Explicit cancellation retains committed preview and enumeration rows.
+        // Publish their derived counts without resuming traversal or marking an
+        // unfinished frame done. Shutdown leaves that work for durable recovery.
+        const retained = new Map(touched);
+        for (const [nid] of touched) {
+          const seen = new Set([nid]);
+          for (let parent = getNode(nid)?.parent; parent && !seen.has(parent); ) {
+            seen.add(parent);
+            const node = getNode(parent);
+            if (!node) break;
+            retained.set(node.id, node.depth);
+            parent = node.parent;
+          }
+        }
+        const retainedCheckpoint = async () => {
+          await yieldNow();
+          if (stopping) throw scanInterrupted();
+        };
+        for (const [nid] of [...retained].sort((a, b) => b[1] - a[1])) {
+          if (stopping) break;
+          if (getNode(nid)) await indexing.totals(nid, retainedCheckpoint);
+        }
+      }
       // Also drain root/cover/totals writes and partial or cancelled tail batches.
       if (autoCheckpoint !== null) await maintenance.checkpoint();
     } finally {
@@ -1177,7 +1669,8 @@ async function scanContents(rootPath, options = {}) {
         running = false;
         // Media rows were seeded in the same bounded commits as nodes. Only the
         // bounded background decoder starts here; no library-wide seed or JS queue.
-        media.start().catch((e) => send('error', { message: e.message }));
+        if (!stopping && maintenanceComplete)
+          media.start().catch((e) => send('error', { message: e.message }));
         progress.active = false;
         progress.finished = Date.now();
         emitProgress(true);
@@ -1298,7 +1791,42 @@ function api(endpoint, body, guard, { refresh = false } = {}) {
 function md(subject, staff) {
   return `# ${subject.name_cn || subject.name}\n\n${subject.name || ''}\n\n- 条目：https://bgm.tv/subject/${subject.id}\n- 类型：${subject.type}\n- 日期：${subject.date || '未知'}\n- 评分：${subject.rating?.score || '暂无'}（${subject.rating?.total || 0} 人）\n- 更新：${new Date().toISOString()}\n\n## 简介\n\n${subject.summary || '暂无简介'}\n\n## Staff\n\n${staff.map((p) => '- ' + p.name + ' · ' + (p.relation || '')).join('\n')}\n\n## 信息\n\n${(subject.infobox || []).map((x) => '- ' + x.key + '：' + (typeof x.value === 'string' ? x.value : JSON.stringify(x.value))).join('\n')}\n`;
 }
-let coverTempCounter = 0;
+let coverTempCounter = 0,
+  manualBindingSequence = 0;
+// Explicit selections never enter the durable batch matcher. Keep only a small,
+// short-lived set of server-validated candidates for immediate identity commits.
+const manualCandidates = new Map(),
+  manualBindings = new Map();
+function rememberManualCandidates(result) {
+  for (const subject of result?.candidates || []) {
+    if (!safeMatchSubject(subject, MANUAL_SUBJECT_TYPES)) continue;
+    if (manualCandidates.size >= 128) manualCandidates.delete(manualCandidates.keys().next().value);
+    manualCandidates.set(subject.id, { subject, at: Date.now(), scope: accessScope() });
+  }
+  return result;
+}
+function enrichManualSubject(folderId, subjectId, generation, types) {
+  const task = (async () => {
+    await yieldNow();
+    const current = getNode(folderId);
+    if (!current || current.subject_id !== subjectId || !current.manual_subject) return;
+    const baseGuard = matchGuard(current, matchJob(current, true), true);
+    const guard = () => manualBindings.get(folderId) === generation && baseGuard();
+    try {
+      assertMatchLive(guard);
+      const detail = await api('/v0/subjects/' + subjectId, undefined, guard);
+      if (!safeMatchSubject(detail, types) || detail.id !== subjectId) return;
+      await saveSubject(detail, current, true, guard, types);
+      send('association', { id: folderId, state: 'complete' });
+    } catch (error) {
+      // The explicit association is durable. Offline/denied enrichment must not
+      // turn a saved choice into a failed bind or start a library-wide retry.
+      if (guard()) send('association', { id: folderId, state: 'deferred' });
+    }
+  })();
+  subjectJobs.add(task);
+  task.finally(() => subjectJobs.delete(task)).catch(() => {});
+}
 function saveSubject(
   subject,
   folder,
@@ -1340,7 +1868,7 @@ async function saveSubjectContents(
   folder,
   manual,
   guard,
-  { refresh = false, matchConfidence, immediate = false } = {}
+  { refresh = false, matchConfidence, immediate = false, identityOnly = false } = {}
 ) {
   assertMatchLive(guard);
   if (!Number.isSafeInteger(subject.id) || subject.id <= 0)
@@ -1368,23 +1896,33 @@ async function saveSubjectContents(
       previous?.access_scope === scope &&
       previous.cached_at <= Date.now() &&
       Date.now() - previous.cached_at < 7 * 86400000;
-    const staff = local
-      ? sameIdentity && Array.isArray(previous.staff) && previous.staff.length
+    const staff = identityOnly
+      ? sameIdentity && Array.isArray(previous.staff)
         ? previous.staff
-        : localIndex.staffFor(subject.id)
-      : fresh && Array.isArray(previous.staff)
-        ? previous.staff
-        : refresh
-          ? await api('/v0/subjects/' + subject.id + '/persons', undefined, guard, {
-              refresh: true
-            })
-          : await sharedMatchRequest(staffCache, String(subject.id), [], guard, (live) =>
-              api('/v0/subjects/' + subject.id + '/persons', undefined, live)
-            );
+        : local
+          ? localIndex.staffFor(subject.id)
+          : []
+      : local
+        ? sameIdentity && Array.isArray(previous.staff) && previous.staff.length
+          ? previous.staff
+          : localIndex.staffFor(subject.id)
+        : fresh && Array.isArray(previous.staff)
+          ? previous.staff
+          : refresh
+            ? await api('/v0/subjects/' + subject.id + '/persons', undefined, guard, {
+                refresh: true
+              })
+            : await sharedMatchRequest(staffCache, String(subject.id), [], guard, (live) =>
+                api('/v0/subjects/' + subject.id + '/persons', undefined, live)
+              );
     assertMatchLive(guard);
     if (!Array.isArray(staff)) throw new Error('Bangumi 作者资料响应无效。');
-    const data = { ...subject, staff };
-    if (local) {
+    const data =
+      identityOnly && previousOnline ? { ...subject, ...previous, staff } : { ...subject, staff };
+    if (identityOnly && previousOnline) {
+      data.cached_at = previous.cached_at || 0;
+      data.access_scope = previous.access_scope || '';
+    } else if (local) {
       // Archive reads can fill gaps for this exact identity, but cannot replace
       // richer online fields or make another credential's cache appear fresh.
       if (sameIdentity)
@@ -1403,7 +1941,7 @@ async function saveSubjectContents(
       data.access_scope = previousOnline ? previous.access_scope || '' : '';
     } else {
       data.details_source = 'online';
-      data.cached_at = fresh ? previous.cached_at : Date.now();
+      data.cached_at = identityOnly ? 0 : fresh ? previous.cached_at : Date.now();
       data.access_scope = scope;
     }
     // Media downloads only accept Bangumi's image host; never forward the API token.
@@ -1412,7 +1950,7 @@ async function saveSubjectContents(
       : null;
     const image = data.images?.large || data.images?.common;
     let coverComplete = !image || (fresh && !!coverPath && previous.cover_url === image);
-    if (!local && image && !coverComplete) {
+    if (!identityOnly && !local && image && !coverComplete) {
       try {
         const u = new URL(image);
         if (u.protocol === 'https:' && /(^|\.)bgm\.tv$/.test(u.hostname)) {
@@ -1446,16 +1984,21 @@ async function saveSubjectContents(
     assertMatchLive(guard);
     data.local_cover = coverPath;
     data.cover_url =
-      local && previousOnline ? previous.cover_url || '' : coverComplete ? image || '' : '';
-    data.resources_complete = local
-      ? previousOnline
-        ? (previous.resources_complete ?? false)
-        : false
-      : coverComplete;
+      (local || identityOnly) && previousOnline
+        ? previous.cover_url || ''
+        : coverComplete
+          ? image || ''
+          : '';
+    data.resources_complete =
+      local || identityOnly
+        ? previousOnline
+          ? (previous.resources_complete ?? false)
+          : false
+        : coverComplete;
     const serialized = JSON.stringify(data);
     const markdown = path.join(cacheHome, 'metadata', `${subject.id}.md`);
     if (
-      (!local || !previousOnline || !fs.existsSync(markdown)) &&
+      (!(local || identityOnly) || !previousOnline || !fs.existsSync(markdown)) &&
       (row?.json !== serialized || !fs.existsSync(markdown))
     ) {
       const temp = markdown + `.${++coverTempCounter}.tmp`;
@@ -1518,6 +2061,16 @@ async function saveSubjectContents(
         `UPDATE nodes SET confirmed=1,match_review=0 WHERE id=? AND ${matchedAutomaticSql()}`,
         folder.id
       );
+      if (manual) rememberTitleKey(getNode(folder.id), subject.type);
+      // An identity-only commit must carry its durable resource task across a
+      // crash before pumpOnline receives the result. Never replace newer work.
+      if (identityOnly && !manual)
+        run(
+          'UPDATE match_pending SET stamp=? WHERE id=? AND stamp=?',
+          pendingStamp(getNode(folder.id)),
+          folder.id,
+          pendingStamp(current)
+        );
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -1530,12 +2083,74 @@ async function saveSubjectContents(
       (current.cover_source === 'bangumi' || current.cover?.startsWith('subject:'))
     )
       await refreshLocalCover(folder.id);
-    send('changed', { id: folder.id, ...(!manual && !immediate ? { matching: true } : {}) });
+    send('changed', {
+      id: folder.id,
+      ...(manual ? { cover: true, association: true } : !immediate ? { matching: true } : {})
+    });
     return hydrate(getNode(folder.id));
   } finally {
     activeNetwork--;
     networkControllers.delete(controller);
   }
+}
+function rememberTitleKey(folder, type) {
+  const key = normalize(folder.name);
+  if (key && key.length <= 240 && folder.manual_subject && folder.subject_id > 0)
+    run(
+      'INSERT OR REPLACE INTO manual_title_keys VALUES(?,?,?,?,?)',
+      folder.id,
+      key,
+      folder.subject_id,
+      type,
+      folder.name
+    );
+}
+async function seedManualTitleKeys() {
+  if (setting('manualTitleKeysVersion') === 1) return;
+  let after = '';
+  while (!stopping) {
+    const page = q(
+      `SELECT n.id,n.name,n.subject_id,n.manual_subject,m.json FROM nodes n
+      JOIN metadata m ON m.id=n.subject_id WHERE n.id>? AND n.kind='folder'
+      AND n.manual_subject=1 AND n.subject_id>0 AND n.missing=0 ORDER BY n.id LIMIT 128`,
+      after
+    );
+    if (!page.length) {
+      setSetting('manualTitleKeysVersion', 1);
+      return;
+    }
+    db.exec('BEGIN');
+    try {
+      for (const node of page) rememberTitleKey(node, JSON.parse(node.json).type);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    after = page.at(-1).id;
+    await yieldNow();
+  }
+}
+function knownManualSubject(name, types) {
+  const key = normalize(name);
+  if (!key || key.length > 240 || !types.length) return null;
+  const learned = lookupLearnedTitleBindings(name, types);
+  if (learned.ambiguous) return null;
+  const rows = q(
+    `SELECT k.name,m.json FROM manual_title_keys k
+    JOIN nodes n ON n.id=k.node_id AND n.manual_subject=1 AND n.subject_id=k.subject_id AND n.missing=0
+    JOIN metadata m ON m.id=k.subject_id WHERE k.name_key=? AND k.type IN (${types.map(() => '?').join(',')}) LIMIT 513`,
+    key,
+    ...types
+  );
+  const subjects = rows.map((row) => {
+    const subject = JSON.parse(row.json);
+    return {
+      ...subject,
+      aliases: [...(Array.isArray(subject.aliases) ? subject.aliases : []), row.name]
+    };
+  });
+  return rankKnownSubjects(name, [...subjects, ...learned.subjects], types).selected;
 }
 function matchPolicy(folder) {
   const row = folder && one('SELECT * FROM root_match_policy WHERE root=?', folder.root);
@@ -1859,11 +2474,19 @@ function metadataAliases(subject, types) {
     aliases: [...new Set([...subjectNames(subject), ...subjectNames(cached)])].slice(0, 24)
   };
 }
-async function matchFolder(id, explicit = false, keyword = '', queuedJob, { probe = false } = {}) {
+async function matchFolder(
+  id,
+  explicit = false,
+  keyword = '',
+  queuedJob,
+  { probe = false, localOnly = false } = {}
+) {
   const folder = getNode(id);
   if (!folder || folder.kind !== 'folder' || folder.missing) return null;
   if (matchPolicy(folder).kind === 'character')
-    return characters.match(folder, explicit, keyword, queuedJob);
+    return localOnly
+      ? { networkDeferred: true }
+      : characters.match(folder, explicit, keyword, queuedJob);
   if (!explicit && !eligibleMatch(folder)) return hydrate(folder);
   const job = queuedJob || matchJob(folder, explicit),
     guard = matchGuard(folder, job, explicit);
@@ -1873,11 +2496,25 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob, { prob
     const importMatching = !explicit && policy.explicit && policy.enabled;
     const rank = importMatching ? rankImportSubjects : rankSubjects;
     const types = explicit ? manualMatchTypes(folder) : policy.types;
+    if (!explicit && !associationMatches(folder, types)) {
+      const known = knownManualSubject(String(keyword || folder.name), types);
+      if (known) {
+        if (probe) return { matchedSubject: known, matchConfidence: 1 };
+        const saved = await saveSubject(known, folder, false, guard, types, {
+          identityOnly: true,
+          matchConfidence: 1
+        });
+        return saved && incompleteResources(saved) ? { ...saved, localIdentitySaved: true } : saved;
+      }
+    }
     // A series may have no searchable title of its own. Probe at most four
     // immediate children, then bind one verified high-scoring work to the parent.
     // Probes never mutate a child and cannot recursively enumerate descendants.
     const seriesFallback = async (otherwise) => {
       if (explicit || probe || folder.subject_id || !guard()) return otherwise;
+      // Child evidence cannot erase an explicit installment or year in the parent.
+      if (installment(folder.name).number !== null || /\d/u.test(normalize(folder.name)))
+        return otherwise;
       const children = q(
         "SELECT name FROM nodes WHERE parent=? AND missing=0 AND kind='folder' ORDER BY sortkey,id LIMIT 4",
         folder.id
@@ -1885,7 +2522,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob, { prob
       const subjects = new Map();
       for (const child of children) {
         if (!guard()) return null;
-        const result = await matchFolder(id, false, child.name, job, { probe: true });
+        const result = await matchFolder(id, false, child.name, job, { probe: true, localOnly });
         if (result?.networkDeferred) continue;
         if (result?.matchedSubject) {
           const previous = subjects.get(result.matchedSubject.id);
@@ -1903,24 +2540,33 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob, { prob
       // Each child has its own title evidence (including installment numbers).
       // Compare verified scores without treating distinct child names as aliases.
       const verified = [...subjects.values()].filter((item) => item.match > IMPORT_MIN_CONFIDENCE);
-      const best = Math.max(...verified.map((item) => item.match));
-      const close = verified.filter((item) => best - item.match <= 0.03 + Number.EPSILON * 4);
-      const popular = Math.max(...close.map((item) => item.total));
-      const choices = close.filter((item) => !popular || item.total >= popular * 0.9);
-      choices.sort((a, b) => {
-        const date =
-          Number.isFinite(a.date) && Number.isFinite(b.date)
-            ? b.date - a.date
-            : Number.isFinite(a.date)
-              ? -1
-              : Number.isFinite(b.date)
-                ? 1
-                : 0;
-        return date || b.total - a.total || b.match - a.match || a.subject.id - b.subject.id;
-      });
-      if (!choices.length) return otherwise;
-      const saved = await saveSubject(choices[0].subject, folder, false, guard, types, {
-        matchConfidence: choices[0].match
+      const plan = searchPlan(folder.name);
+      const memberBases = verified.map(
+        ({ subject }) =>
+          new Set(
+            subjectNames(subject)
+              .map((name) => installment(name))
+              .filter((part) => part.number !== null && part.base)
+              .map((part) => part.base)
+          )
+      );
+      const commonBases = memberBases.length
+        ? [...memberBases[0]].filter((base) => memberBases.every((bases) => bases.has(base)))
+        : [];
+      const base = plan.series ? plan.terms[0] || '' : commonBases[0] || '';
+      const sameSeries = !!base && commonBases.includes(normalize(base));
+      const selected =
+        verified.length === 1
+          ? verified[0].subject
+          : chooseSeriesSubject(
+              verified.map((item) => item.subject),
+              { verified: sameSeries, query: base, base }
+            );
+      const choice = selected && verified.find((item) => item.subject.id === selected.id);
+      if (!choice) return otherwise;
+      const saved = await saveSubject(choice.subject, folder, false, guard, types, {
+        identityOnly: localOnly || !!onlinePause(),
+        matchConfidence: choice.match
       });
       return saved && incompleteResources(saved) ? { ...saved, localIdentitySaved: true } : saved;
     };
@@ -1970,7 +2616,7 @@ async function matchFolder(id, explicit = false, keyword = '', queuedJob, { prob
       }
     }
     // Paused HTTP work still gets a local-only pass; misses remain pending.
-    if (!explicit && localIndex.status().available && onlinePause())
+    if (!explicit && (localOnly || onlinePause()))
       return await seriesFallback({ networkDeferred: true });
     if (
       !explicit &&
@@ -2181,6 +2827,7 @@ function beginOnlineBatch() {
       !one('SELECT root FROM match_frontier LIMIT 1'))
   ) {
     onlineCompleted = 0;
+    run('DELETE FROM match_batch_done');
     onlineBatchCancelled = false;
   }
 }
@@ -2195,6 +2842,7 @@ function enqueueMatch(ids) {
     const folder = getNode(id);
     if (eligibleMatch(folder)) {
       beginOnlineBatch();
+      run('DELETE FROM match_batch_done WHERE id=?', id);
       run(
         'INSERT OR REPLACE INTO match_pending VALUES(?,?,?)',
         id,
@@ -2206,19 +2854,18 @@ function enqueueMatch(ids) {
   }
   startOnline();
 }
-async function fillOnlineQueue(deferred = null) {
+async function fillOnlineQueue() {
   let pendingAfter = '';
   while (!onlineQueue.size && !running && !stopping) {
     // The active task stays on disk until a terminal result is acknowledged.
     const pending = q(
-      'SELECT id,stamp FROM match_pending WHERE id>? ORDER BY id LIMIT 64',
+      'SELECT p.id,p.stamp FROM match_pending p WHERE p.id>? AND NOT EXISTS (SELECT 1 FROM match_deferred d WHERE d.id=p.id) ORDER BY p.id LIMIT 64',
       pendingAfter
     );
     const ready = [];
     db.exec('BEGIN');
     try {
       for (const { id, stamp } of pending) {
-        if (deferred?.has(id)) continue;
         const folder = getNode(id);
         if (!eligibleMatch(folder) || stamp !== pendingStamp(folder))
           run('DELETE FROM match_pending WHERE id=?', id);
@@ -2266,7 +2913,14 @@ async function fillOnlineQueue(deferred = null) {
       if (!page.length) run('DELETE FROM match_frontier WHERE root=?', root.id);
       else {
         for (const folder of page)
-          if (eligibleMatch(folder))
+          if (
+            eligibleMatch(folder) &&
+            !one(
+              'SELECT 1 FROM match_batch_done WHERE id=? AND stamp=?',
+              folder.id,
+              pendingStamp(folder)
+            )
+          )
             run(
               'INSERT OR IGNORE INTO match_pending VALUES(?,?,?)',
               folder.id,
@@ -2295,8 +2949,24 @@ function onlinePause() {
     ? state
     : null;
 }
-function onlineStatus(extra = {}) {
+function onlineStatus(extra = {}, { lightweight = false } = {}) {
   const state = onlinePause();
+  if (lightweight) {
+    const hasWork = matchingHasWork();
+    return {
+      pending: hasWork ? null : 0,
+      remaining: hasWork ? null : 0,
+      total: hasWork ? null : onlineCompleted,
+      completed: onlineCompleted,
+      countsKnown: !hasWork,
+      hasWork,
+      buffered: onlineQueue.size,
+      discovering: !!one('SELECT root FROM match_frontier LIMIT 1'),
+      paused: state?.reason || '',
+      retryAt: state?.retry_at || 0,
+      ...extra
+    };
+  }
   const remaining = one(
     `SELECT COUNT(*) total FROM match_pending p JOIN nodes n ON n.id=p.id
       WHERE ${rootRemoval.visibleSql('p')} AND n.missing=0 AND ${reviewScopeSql('n')}`
@@ -2337,9 +3007,20 @@ function localPauseKey(state) {
   );
 }
 function startOnline() {
-  if (cacheChanging || stopping || running || onlineRunning || onlineScheduled) return;
+  if (
+    !maintenanceComplete ||
+    !startupReleased ||
+    scanReserved ||
+    renameReserved ||
+    cacheChanging ||
+    stopping ||
+    running ||
+    onlineRunning ||
+    onlineScheduled
+  )
+    return;
   const paused = onlinePause();
-  if (paused && (!localIndex.status().available || localPauseSweep === localPauseKey(paused))) {
+  if (paused && localPauseSweep === localPauseKey(paused)) {
     send('online', onlineStatus({ active: false }));
     scheduleOnlineRetry(paused);
     return;
@@ -2347,14 +3028,25 @@ function startOnline() {
   onlineScheduled = true;
   setImmediate(() => {
     onlineScheduled = false;
-    if (cacheChanging || stopping || running) return;
+    if (
+      !maintenanceComplete ||
+      scanReserved ||
+      renameReserved ||
+      cacheChanging ||
+      stopping ||
+      running
+    )
+      return;
     onlineRunning = true;
+    publishTasks();
     onlineTask = pumpOnline()
       .catch((e) => send('error', { message: e.message }))
       .finally(() => {
         onlineRunning = false;
         onlineTask = null;
+        publishTasks();
         send('online', onlineStatus({ active: false }));
+        if (cancelled) emitProgress(true, true);
         if (
           !stopping &&
           !running &&
@@ -2367,20 +3059,32 @@ function startOnline() {
   });
 }
 async function pumpOnline() {
-  const deferred = new Set();
-  while (!running && !stopping && (!onlinePause() || localIndex.status().available)) {
-    if (!onlineQueue.size) await fillOnlineQueue(deferred);
+  run('DELETE FROM match_deferred');
+  // Resolve local identities across the bounded durable queue before any slow
+  // HTTP resource request can delay later, entirely local folders.
+  let localPass = true;
+  while (!running && !stopping) {
+    if (!onlineQueue.size) await fillOnlineQueue();
     const next = onlineQueue.entries().next().value;
-    if (!next || running || stopping) break;
+    if (running || stopping) break;
+    if (!next) {
+      if (localPass && !onlinePause()) {
+        localPass = false;
+        run('DELETE FROM match_deferred');
+        continue;
+      }
+      break;
+    }
     const [id, job] = next;
     onlineQueue.delete(id);
     activeOnlineJob = { id, job };
     send('online', onlineStatus({ active: true, id }));
     let terminal = false;
     try {
-      const result = await matchFolder(id, false, '', job);
+      const result = await matchFolder(id, false, '', job, { localOnly: localPass });
       terminal = result !== null && !result?.networkDeferred && !result?.localIdentitySaved;
-      if (result?.networkDeferred || result?.localIdentitySaved) deferred.add(id);
+      if (result?.networkDeferred || result?.localIdentitySaved)
+        run('INSERT OR IGNORE INTO match_deferred VALUES(?)', id);
       if (result?.localIdentitySaved) {
         const current = getNode(id);
         if (
@@ -2402,7 +3106,7 @@ async function pumpOnline() {
             JSON.stringify([job.policy, job.subject, job.manual])
           );
       }
-      if (!localIndex.status().available || !onlinePause())
+      if (!onlinePause())
         run("UPDATE match_resume SET reason='',retry_at=0,failures=0 WHERE singleton=1");
     } catch (e) {
       if (e.code === 'MATCH_CANCELLED' || e.name === 'AbortError' || stopping) continue;
@@ -2432,8 +3136,7 @@ async function pumpOnline() {
         );
       } else terminal = true;
       send('online', onlineStatus({ active: true, id, error: e.message }));
-      if (retryable && !localIndex.status().available) break;
-      if (retryable) deferred.add(id);
+      if (retryable) run('INSERT OR IGNORE INTO match_deferred VALUES(?)', id);
     } finally {
       if (
         terminal &&
@@ -2449,13 +3152,19 @@ async function pumpOnline() {
         );
         // Only acknowledge the exact durable job we terminated. A replaced or
         // canceled task must not inflate progress, including the final item.
-        if (removed.changes === 1) onlineCompleted++;
+        if (removed.changes === 1) {
+          run(
+            'INSERT OR REPLACE INTO match_batch_done VALUES(?,?)',
+            id,
+            JSON.stringify([job.policy, job.subject, job.manual])
+          );
+          onlineCompleted++;
+        }
       }
       activeOnlineJob = null;
     }
   }
-  if (localIndex.status().available && onlinePause())
-    localPauseSweep = localPauseKey(onlinePause());
+  if (onlinePause()) localPauseSweep = localPauseKey(onlinePause());
 }
 const thumbJobs = new Map();
 let activeThumbs = 0;
@@ -2915,7 +3624,8 @@ function queueWatch(root, filename) {
   watchTimer = setTimeout(drainWatches, 1400);
 }
 async function drainWatches() {
-  if (cacheChanging || running) {
+  if (stopping) return;
+  if (!maintenanceComplete || cacheChanging || running || scanReserved || renameReserved) {
     watchTimer = setTimeout(drainWatches, 1400);
     return;
   }
@@ -2946,7 +3656,14 @@ async function drainWatches() {
   if (watchPending.size) watchTimer = setTimeout(drainWatches, 500);
 }
 function reconcileWatches() {
-  const live = setting('watchChanges') && workerData.watch !== false ? roots() : [];
+  const live =
+    maintenanceComplete &&
+    !stopping &&
+    !renameReserved &&
+    setting('watchChanges') &&
+    workerData.watch !== false
+      ? roots()
+      : [];
   for (const [id, w] of watchers)
     if (!live.some((n) => n.id === id)) {
       w.close();
@@ -2974,8 +3691,9 @@ const methods = {
   setRootMatchPolicy,
   localIndexStatus: () => localIndex.status(),
   searchLocalIndex: (args) => localIndex.search(args),
-  init: () => ({
-    localIndex: localIndex.status(),
+  statistics: () => summary.request('statistics'),
+  init: async ({ lightweight = false } = {}) => ({
+    localIndex: lightweight ? null : localIndex.status(),
     roots: roots(),
     settings: {
       ...defaults,
@@ -2989,19 +3707,30 @@ const methods = {
           Object.keys(appearanceSettings.defaults).map((key) => [key, setting(key)])
         )
       ),
-      githubRepository: effectiveRepository(setting('githubRepository'))
+      githubRepository: effectiveRepository(setting('githubRepository')),
+      densityConfigured: !!one("SELECT 1 FROM settings WHERE key='density'")
     },
-    progress,
+    progress: progressState(),
     removal: rootRemoval.status(),
-    online: onlineStatus({ active: onlineRunning }),
-    stats: one(
-      `SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN kind IN ('image','video') THEN 1 ELSE 0 END),0) images,COALESCE(SUM(CASE WHEN kind='folder' THEN 1 ELSE 0 END),0) folders FROM nodes n WHERE missing=0 AND ${rootRemoval.visibleSql('n')}`
-    ),
+    online: onlineStatus({ active: onlineRunning }, { lightweight }),
+    taskSnapshot: taskSnapshot(),
+    maintenance: { ...maintenanceState },
+    stats: lightweight ? null : await methods.statistics(),
     dataDir: home
   }),
   list,
   confirmReview,
-  get: ({ id }) => hydrate(getNode(id)),
+  get: ({ id, path: requestedPath }) => {
+    if (requestedPath !== undefined) {
+      if (typeof requestedPath !== 'string' || !path.isAbsolute(requestedPath))
+        throw new Error('目录路径无效。');
+      const node = one('SELECT * FROM nodes WHERE path=?', path.resolve(requestedPath));
+      return node && !rootRemoval.isHidden(node.root) ? hydrate(node) : null;
+    }
+    return hydrate(getNode(id));
+  },
+  startupResume,
+  rename: renameNode,
   ancestors: ({ id }) =>
     getNode(id)
       ? q(
@@ -3015,6 +3744,26 @@ const methods = {
     stopScanHeartbeat();
     scanRemovalController?.abort();
     clearOnline();
+    if (!running) {
+      while (true) {
+        const job = nextScanJob();
+        if (!job) break;
+        scanJournal.setJob(job.id);
+        indexing.setJob(job.id);
+        db.exec('BEGIN');
+        try {
+          indexing.reset();
+          scanJournal.cancel();
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+      }
+      scanReserved = false;
+    }
+    emitProgress(true, true);
+    publishTasks();
     return true;
   },
   thumb: ({ id, size, priority }) => thumb(id, size, priority),
@@ -3045,7 +3794,7 @@ const methods = {
     return preview;
   },
   mediaInfo: ({ id }) => media.ensure(id),
-  mediaStats: () => media.stats(),
+  mediaStats: () => summary.request('mediaStats', media.activity()),
   setPlace: (args) => media.setPlace(args),
   frame: ({ id, index, size }) => media.frame(id, index, size),
   exportMedia: (args) => media.export(args),
@@ -3183,7 +3932,11 @@ const methods = {
       accessGeneration++;
       onlineQueue.clear();
       // Copy rather than mutate so the old in-flight response remains stale.
-      for (const [id, job] of resumable) onlineQueue.set(id, { ...job, access: accessGeneration });
+      // Overflow stays durable in match_pending and refill creates a fresh job.
+      for (const [id, job] of resumable) {
+        if (onlineQueue.size >= 64) break;
+        onlineQueue.set(id, { ...job, access: accessGeneration });
+      }
       searchCache.clear();
       detailCache.clear();
       staffCache.clear();
@@ -3196,7 +3949,7 @@ const methods = {
     }
     return true;
   },
-  match: ({ id, keyword }) => matchFolder(id, true, keyword),
+  match: async ({ id, keyword }) => rememberManualCandidates(await matchFolder(id, true, keyword)),
   bind: async ({ id, url, kind, custom }) => {
     const n = getNode(id);
     if (!n || n.kind !== 'folder') throw new Error('请选择相册');
@@ -3204,27 +3957,29 @@ const methods = {
       return characters.bind(n, { url, custom });
     const subjectId = parseSubjectId(url),
       types = manualMatchTypes(n),
-      job = matchJob(n, true),
-      guard = matchGuard(n, job, true);
+      generation = ++manualBindingSequence,
+      baseGuard = matchGuard(n, matchJob(n, true), true);
+    if (manualBindings.size >= 128) manualBindings.delete(manualBindings.keys().next().value);
+    manualBindings.set(id, generation);
+    const guard = () => manualBindings.get(id) === generation && baseGuard();
     const local = localIndex.readSubject(subjectId);
-    const subject = safeMatchSubject(local, types)
-      ? local
-      : await api('/v0/subjects/' + subjectId, undefined, guard);
+    const cached = diskCache.get(accessScope(), '/v0/subjects/' + subjectId);
+    const remembered = manualCandidates.get(subjectId);
+    const candidate =
+      remembered && remembered.scope === accessScope() && Date.now() - remembered.at < 10 * 60000
+        ? remembered.subject
+        : null;
+    const row = one('SELECT json FROM metadata WHERE id=?', subjectId);
+    const stored = row ? JSON.parse(row.json) : null;
+    const subject =
+      [cached, stored, local, candidate].find((value) => safeMatchSubject(value, types)) ||
+      (await api('/v0/subjects/' + subjectId, undefined, guard));
     if (!safeMatchSubject(subject, types) || subject.id !== subjectId)
       throw new Error('作品类型或条目 ID 不符合当前选择，请选择对应类型的 Bangumi 条目。');
-    const saved = await saveSubject(subject, n, true, guard, types);
-    if (subject.source !== 'local-index' || !saved || onlinePause()) return saved;
-    const current = getNode(id),
-      detailGuard = matchGuard(current, matchJob(current, true), true);
-    try {
-      const detail = await api('/v0/subjects/' + subjectId, undefined, detailGuard);
-      if (!safeMatchSubject(detail, types, subject)) return hydrate(getNode(id));
-      return await saveSubject(detail, current, true, detailGuard, types);
-    } catch {
-      // The explicit association is already durable and usable offline. Only a
-      // live, validated detail response may enrich it; failures keep local data.
-      return hydrate(getNode(id));
-    }
+    const saved = await saveSubject(subject, n, true, guard, types, { identityOnly: true });
+    if (!saved) return saved;
+    enrichManualSubject(id, subjectId, generation, types);
+    return { ...saved, enrichment_pending: true };
   },
   refreshMetadata: async ({ id }) => {
     const n = getNode(id);
@@ -3311,8 +4066,11 @@ const methods = {
     if (cacheTask) await cacheTask.catch(() => {});
     stopping = true;
     cancelled = true;
+    scanRemovalController?.abort();
     stopScanHeartbeat();
     clearOnline({ preserve: true });
+    if (maintenanceTask) await maintenanceTask.catch(() => {});
+    if (renameTask) await renameTask.catch(() => {});
     await rootRemoval.stop();
     if (scanTask) await scanTask.catch(() => {});
     if (onlineTask) await onlineTask.catch(() => {});
@@ -3321,12 +4079,14 @@ const methods = {
     for (const w of watchers.values()) w.close();
     clearTimeout(watchTimer);
     clearTimeout(mediaStartupTimer);
+    clearTimeout(titleSeedTimer);
     await videoSaveTail;
     await media.stop();
     await Promise.allSettled([...thumbJobs.values()]);
     await imagePreview.stop();
     await heifDecoder.stop();
     localIndex.close();
+    await summary.close();
     try {
       await maintenance.close();
     } finally {
@@ -3335,18 +4095,148 @@ const methods = {
     return true;
   }
 };
-let mediaStartupTimer;
-const sortKeysReady = migrateSortKeys();
+let mediaStartupTimer, titleSeedTimer;
+function scheduleTitleSeed() {
+  clearTimeout(titleSeedTimer);
+  if (stopping) return;
+  titleSeedTimer = setTimeout(() => {
+    if (stopping) return;
+    if (renameReserved) {
+      scheduleTitleSeed();
+      return;
+    }
+    const task = seedManualTitleKeys();
+    subjectJobs.add(task);
+    task
+      .finally(() => subjectJobs.delete(task))
+      .catch((error) => send('error', { message: error.message }));
+  }, 800);
+  titleSeedTimer.unref();
+}
+const foregroundReadMethods = new Set([
+  ...cacheReadMethods,
+  'startupResume',
+  'thumb',
+  'source',
+  'asset'
+]);
+async function resumeDurableScans() {
+  while (!stopping) {
+    const job = nextScanJob();
+    if (!job) break;
+    scanReserved = true;
+    publishTasks();
+    try {
+      await scan(job.path, {
+        ...JSON.parse(job.options),
+        target: job.target || undefined,
+        resumeJobId: job.id
+      });
+    } catch (error) {
+      scanJournal.setJob(job.id);
+      if (scanJournal.load()) scanJournal.block({ reason: error.message });
+      send('error', { message: '导入任务已保留，恢复前需要处理：' + error.message });
+      break;
+    }
+  }
+  scanReserved = !!nextScanJob();
+  publishTasks();
+}
+function startupResume() {
+  startupReleased = true;
+  if (
+    maintenanceState.state === 'error' ||
+    (maintenanceComplete && !running && ['paused', 'blocked'].includes(nextScanJob()?.state))
+  ) {
+    maintenanceTask = null;
+    maintenanceComplete = false;
+  }
+  if (!maintenanceTask && !stopping) {
+    maintenanceState = { state: 'running' };
+    publishTasks();
+    maintenanceTask = new Promise((resolve, reject) =>
+      setImmediate(async () => {
+        try {
+          if (stopping) return resolve(false);
+          await recoverRenames();
+          migrateBrowseSchema();
+          migrateReviewPolicies();
+          await migrateSortKeys();
+          if (stopping) return resolve(false);
+          migrateOnce('mediaSeedVersion', 1, () => media.seed());
+          migrateOnce('matchingNamePolicyVersion', MATCHING_POLICY_VERSION, () => {
+            for (const root of roots()) {
+              const policy = matchPolicy(root);
+              if (
+                policy.kind === 'work' &&
+                policy.enabled &&
+                one(
+                  `SELECT id FROM nodes WHERE root=? AND kind='folder' AND missing=0
+              AND depth BETWEEN 1 AND ? AND (subject_id IS NULL OR subject_id<=0)
+              AND COALESCE(manual_subject,0)=0 LIMIT 1`,
+                  root.id,
+                  policy.matchDepth
+                )
+              ) {
+                enqueueRoot(root.id);
+                run("UPDATE match_frontier SET after_id='' WHERE root=?", root.id);
+              }
+            }
+          });
+          rootRemoval.start();
+          await resumeDurableScans();
+          if (stopping) return resolve(false);
+          maintenanceComplete = true;
+          maintenanceState = { state: 'ready' };
+          reconcileWatches();
+          mediaStartupTimer = setTimeout(() => {
+            if (!running && !stopping && !renameReserved)
+              media.start().catch((e) => send('error', { message: e.message }));
+          }, 600);
+          scheduleTitleSeed();
+          publishTasks();
+          send('changed', { maintenance: true, revision: libraryRevision });
+          if (matchingHasWork()) startOnline();
+          resolve(true);
+        } catch (error) {
+          maintenanceState = { state: 'error', error: error.message };
+          publishTasks();
+          reject(error);
+        }
+      })
+    );
+    maintenanceTask.catch((error) => send('error', { message: error.message }));
+  }
+  return { accepted: !stopping, taskSnapshot: taskSnapshot() };
+}
+async function ensureMaintenance() {
+  startupResume();
+  await maintenanceTask;
+  if (stopping) throw new Error('媒体服务已停止。');
+}
 parentPort.on('message', async ({ request, method, args }) => {
   let tracked = false;
   try {
-    await sortKeysReady;
     if (!Object.hasOwn(methods, method)) throw new Error('未知操作');
+    if (!foregroundReadMethods.has(method) && method !== 'shutdown') await ensureMaintenance();
+    if (renameReserved && ['thumb', 'source', 'asset'].includes(method)) {
+      if (!renameTask) throw new Error('文件改名需要恢复，请检查后台状态。');
+      await renameTask;
+      if (renameReserved) throw new Error('文件改名需要恢复，请检查后台状态。');
+    }
+    if (renameReserved && !foregroundReadMethods.has(method) && method !== 'shutdown')
+      throw new Error('正在重命名或等待改名恢复，请稍后再修改资料。');
     if (cacheChanging && method !== 'shutdown' && !cacheReadMethods.has(method))
       throw new Error('正在管理缓存，请稍后再试。');
     tracked =
       !cacheReadMethods.has(method) &&
-      !['changeCacheDirectory', 'resetCacheDirectory', 'cleanCache', 'shutdown'].includes(method);
+      ![
+        'startupResume',
+        'changeCacheDirectory',
+        'resetCacheDirectory',
+        'cleanCache',
+        'shutdown'
+      ].includes(method);
     if (tracked) activeRequests++;
     const result = await methods[method](args || {});
     parentPort.postMessage({ request, result });
@@ -3356,49 +4246,6 @@ parentPort.on('message', async ({ request, method, args }) => {
     if (tracked) activeRequests--;
   }
 });
-sortKeysReady.then(
-  () => {
-    // Existing libraries need this reconciliation once. Scanner commits already
-    // seed/reset individual media rows atomically with each changed node.
-    migrateOnce('mediaSeedVersion', 1, () => media.seed());
-    // Old misses have no pending task left to resume. Revisit enabled work roots
-    // once per identity policy, using the existing durable, depth-bounded cursor.
-    // Correct/manual identities retain the ordinary eligibleMatch protections.
-    migrateOnce('matchingNamePolicyVersion', MATCHING_POLICY_VERSION, () => {
-      for (const root of roots()) {
-        const policy = matchPolicy(root);
-        if (
-          policy.kind === 'work' &&
-          policy.enabled &&
-          one(
-            `SELECT id FROM nodes WHERE root=? AND kind='folder' AND missing=0
-             AND depth BETWEEN 1 AND ? AND (subject_id IS NULL OR subject_id<=0)
-             AND COALESCE(manual_subject,0)=0 LIMIT 1`,
-            root.id,
-            policy.matchDepth
-          )
-        ) {
-          enqueueRoot(root.id);
-          // An older in-flight cursor may already have passed previous misses.
-          run("UPDATE match_frontier SET after_id='' WHERE root=?", root.id);
-        }
-      }
-    });
-    mediaStartupTimer = setTimeout(() => {
-      if (!running) media.start().catch((e) => send('error', { message: e.message }));
-    }, 600);
-    reconcileWatches();
-    parentPort.postMessage({ event: 'ready', data: {} });
-    rootRemoval.start();
-    if (
-      one('SELECT id FROM match_pending LIMIT 1') ||
-      one('SELECT root FROM match_frontier LIMIT 1')
-    )
-      startOnline();
-  },
-  (error) => {
-    setImmediate(() => {
-      throw error;
-    });
-  }
-);
+scanReserved = !!nextScanJob();
+parentPort.postMessage({ event: 'ready', data: { taskSnapshot: taskSnapshot() } });
+if (startupReleased) setImmediate(startupResume);

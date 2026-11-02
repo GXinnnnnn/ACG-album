@@ -8,13 +8,14 @@ const { Worker, MessageChannel } = require('node:worker_threads');
 const { DatabaseSync } = require('node:sqlite');
 const sharp = require('sharp');
 const { idFor } = require('../src/model.cjs');
+const { lookupLearnedTitleBindings } = require('../src/learned-title-bindings.cjs');
 
 // All HTTP is replaced before the real worker loads. A separate MessagePort
 // lets tests hold responses while exercising ordinary worker commands.
 async function client(
   dataDir,
   respond,
-  { fastClock = true, token = 'isolated-test-token', localIndexPath } = {}
+  { fastClock = true, token = 'isolated-test-token', localIndexPath, ignoreMockAbort = false } = {}
 ) {
   const { port1, port2 } = new MessageChannel();
   const worker = new Worker(
@@ -39,7 +40,10 @@ async function client(
     });
     global.fetch = (url, options = {}) => new Promise((resolve, reject) => {
       const seq = ++sequence, signal = options.signal;
-      const abort = () => { pending.delete(seq); reject(signal.reason); };
+      const abort = () => {
+        if (workerData.ignoreMockAbort) return;
+        pending.delete(seq); reject(signal.reason);
+      };
       const cleanup = () => signal?.removeEventListener('abort', abort);
       if (signal?.aborted) return reject(signal.reason);
       signal?.addEventListener('abort', abort, { once: true });
@@ -59,6 +63,7 @@ async function client(
         watch: false,
         token,
         fastClock,
+        ignoreMockAbort,
         mockPort: port2,
         script: path.resolve(__dirname, '../src/library-worker.cjs')
       },
@@ -174,6 +179,12 @@ async function fixture(album = '月色真美') {
 async function cleanup(f) {
   assert.ok(path.resolve(f.tmp).startsWith(path.join(os.tmpdir(), 'acg-matching-')));
   await fs.rm(f.tmp, { recursive: true, force: true });
+}
+async function subtitleSearchFixture() {
+  // Search-policy regressions must not short-circuit through a learned identity.
+  const title = '16bit的奇想';
+  assert.deepEqual(lookupLearnedTitleBindings(title, [1, 2]).subjects, []);
+  return fixture(title);
 }
 const entry = (id = 42, type = 2) => ({
   id,
@@ -841,7 +852,7 @@ test('all-folder frontier processes more than one bounded page without exceeding
     await c.idle();
     assert.equal(c.requests.filter((r) => r.body).length, 140);
     const activity = c.events.filter((event) => event.event === 'online' && event.data.active);
-    assert.equal(activity.length, 140);
+    assert.equal(new Set(activity.map((event) => event.data.id)).size, 140);
     assert.ok(activity.every((event) => event.data.buffered <= 63));
     assert.ok(activity.every((event) => event.data.pending === event.data.remaining));
     assert.equal((await c.call('get', { id: f.id })).cover, idFor(f.image));
@@ -1418,10 +1429,10 @@ test('canonical Pokemon beyond the old eight-result cutoff binds and leads typed
 });
 
 test('a repeated truncated subtitle page cannot establish uniqueness', async () => {
-  const f = await fixture('16bit的感动');
+  const f = await subtitleSearchFixture();
   const anime = {
     ...entry(413741, 2),
-    name: '16bit的感动 ANOTHER LAYER',
+    name: '16bit的奇想 ANOTHER LAYER',
     collection: { collect: 10206 }
   };
   const c = await client(f.data, (r) =>
@@ -1431,6 +1442,10 @@ test('a repeated truncated subtitle page cannot establish uniqueness', async () 
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle();
     assert.equal((await c.call('get', { id: f.id })).subject_id, null);
+    assert.ok(
+      c.requests.some((r) => r.body),
+      'automatic matching exercised truncated search recall'
+    );
     assert.equal((await c.call('match', { id: f.id })).needs_selection, true);
     assert.ok(c.requests.filter((r) => r.body).length <= 6);
   } finally {
@@ -1440,9 +1455,9 @@ test('a repeated truncated subtitle page cannot establish uniqueness', async () 
 });
 
 test('detail verification retains other candidates when an exact search title becomes a subtitle', async () => {
-  const f = await fixture('16bit的感动');
-  const search = { ...entry(413741, 2), name: '16bit的感动' };
-  const anime = { ...search, name: '16bit的感动 ANOTHER LAYER', collection: { collect: 10206 } };
+  const f = await subtitleSearchFixture();
+  const search = { ...entry(413741, 2), name: '16bit的奇想' };
+  const anime = { ...search, name: '16bit的奇想 ANOTHER LAYER', collection: { collect: 10206 } };
   const other = { ...entry(777, 2), name: '其他作品' };
   const c = await client(f.data, (r) =>
     r.body
@@ -1453,6 +1468,10 @@ test('detail verification retains other candidates when an exact search title be
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle();
     assert.equal((await c.call('get', { id: f.id })).subject_id, null);
+    assert.ok(
+      c.requests.some((r) => r.body),
+      'automatic matching exercised search/detail reranking'
+    );
     const result = await c.call('match', { id: f.id });
     assert.equal(result.needs_selection, true);
     assert.ok(result.candidates.some((s) => s.id === 777));
@@ -1463,19 +1482,19 @@ test('detail verification retains other candidates when an exact search title be
 });
 
 test('sub85 subtitle import stays unbound while manual matching remains animation-only', async () => {
-  const f = await fixture('16bit的感动');
-  const book = { ...entry(314759, 1), name: '16bitセンセーション', name_cn: '16bit的感动' };
+  const f = await subtitleSearchFixture();
+  const book = { ...entry(314759, 1), name: '16bitファンタジー', name_cn: '16bit的奇想' };
   const anime = {
     ...entry(413741, 2),
-    name: '16bitセンセーション ANOTHER LAYER',
-    name_cn: '16bit的感动 ANOTHER LAYER',
+    name: '16bitファンタジー ANOTHER LAYER',
+    name_cn: '16bit的奇想 ANOTHER LAYER',
     infobox: [
       {
         key: '别名',
         value: [
-          { v: '16位元的輝煌 Another Layer' },
-          { v: '16bit Sensation: Another Layer' },
-          { v: '16位的辉煌 Another Layer' }
+          { v: '16位元的奇想 Another Layer' },
+          { v: '16bit Reverie: Another Layer' },
+          { v: '16位的奇想 Another Layer' }
         ]
       }
     ],
@@ -1492,6 +1511,10 @@ test('sub85 subtitle import stays unbound while manual matching remains animatio
     const automatic = await c.call('get', { id: f.id });
     assert.equal(automatic.subject_id, null);
     assert.equal(automatic.match_review, 0);
+    assert.ok(
+      c.requests.some((r) => r.body),
+      'automatic matching exercised animation-only search'
+    );
     const manual = await c.call('match', { id: f.id });
     assert.equal(manual.node.subject_id, null);
     assert.equal(manual.candidates[0].id, 413741);
@@ -1557,8 +1580,8 @@ test('inherited manual lookup and direct binding obey animation-only import poli
 });
 
 test('reimport repairs old automatic book association but preserves manual cover and favorite', async () => {
-  const f = await fixture('16bit的感动');
-  let selected = { ...entry(100, 1), name: '16bit的感动', name_cn: '16bit的感动' };
+  const f = await subtitleSearchFixture();
+  let selected = { ...entry(100, 1), name: '16bit的奇想', name_cn: '16bit的奇想' };
   const c = await client(f.data, (r) => responder(selected)(r));
   try {
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [1] });
@@ -1567,9 +1590,14 @@ test('reimport repairs old automatic book association but preserves manual cover
     await c.call('setCover', { id: f.id, imageId: idFor(f.image) });
     await c.call('patch', { id: f.id, changes: { favorite: 1, crop_x: 35, crop_y: 65 } });
     selected = { ...selected, id: 200, type: 2 };
-    const after = c.events.length;
+    const after = c.events.length,
+      requestsBefore = c.requests.length;
     await c.call('scan', { path: f.source, onlineMatch: true, subjectTypes: [2] });
     await c.idle(after);
+    assert.ok(
+      c.requests.slice(requestsBefore).some((r) => r.body),
+      'reimport exercises animation search after the category change'
+    );
     const n = await c.call('get', { id: f.id });
     assert.equal(n.subject_id, 200);
     assert.equal(n.metadata.type, 2);
@@ -1798,12 +1826,14 @@ test('Token changes preserve active and queued automatic albums under the new ac
           assert.equal(fresh.filter((r) => r.body).length, 3);
           assert.ok(fresh.every((r) => !r.originalAccess && r.authorized === !!value));
           assert.equal(
-            c.events.filter(
-              (event) =>
-                event.event === 'online' && event.data.id === active.data.id && event.data.active
-            ).length,
-            2,
-            'the previously active album is retried exactly once'
+            c.events
+              .slice(after)
+              .filter(
+                (event) =>
+                  event.event === 'online' && event.data.id === active.data.id && event.data.active
+              ).length,
+            1,
+            'the previously active album is retried exactly once after the Token change'
           );
           gate.resolve();
           for (const album of albums)
@@ -1816,6 +1846,120 @@ test('Token changes preserve active and queued automatic albums under the new ac
           await cleanup(f);
         }
       });
+});
+
+test('Token replacement keeps a replenished 64-job queue bounded and completes every durable album once', async () => {
+  const f = await fixture('CredentialQueue000'),
+    gate = deferred(),
+    replacement = 'queue-cap-replacement-token';
+  let c;
+  try {
+    const albums = [];
+    for (let i = 0; i < 70; i++) {
+      const name = 'CredentialQueue' + String(i).padStart(3, '0'),
+        folder = path.join(f.source, name),
+        subject = { ...entry(700100 + i), name, name_cn: name };
+      if (i) await fs.mkdir(folder);
+      albums.push({ folder, id: idFor(folder), subject });
+    }
+    const byName = new Map(albums.map((album) => [album.subject.name, album])),
+      bySubject = new Map(albums.map((album) => [album.subject.id, album]));
+    c = await client(
+      f.data,
+      async (request) => {
+        if (request.body) {
+          const album = byName.get(request.body.keyword);
+          assert.ok(album, 'search uses an eligible fixture album title');
+          if (request.originalAccess) {
+            // Ignore abort in this fixture so the production generation guard
+            // must reject a successful old-scope response after Token replacement.
+            await gate.promise;
+            return {
+              json: { total: 1, data: [{ ...album.subject, id: album.subject.id + 100000 }] }
+            };
+          }
+          return { json: { total: 1, data: [album.subject] } };
+        }
+        if (request.url.endsWith('/persons')) return { json: [] };
+        const match = /\/subjects\/(\d+)$/.exec(request.url),
+          album = match && bySubject.get(Number(match[1]));
+        assert.ok(album, 'only current-scope subjects may request details');
+        return { json: album.subject };
+      },
+      { ignoreMockAbort: true }
+    );
+    await c.call('scan', {
+      path: f.source,
+      onlineMatch: true,
+      subjectTypes: [2],
+      offline: true
+    });
+    const started = await c.call('sync');
+    await c.until(() => c.requests.some((request) => request.originalAccess && request.body));
+    const active = c.events.filter((event) => event.event === 'online' && event.data.active).at(-1);
+    assert.equal(active.data.buffered, 63, 'held HTTP has consumed one slot from its 64-job page');
+    const last = [...albums].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).at(-1);
+    assert.notEqual(last.id, active.data.id);
+    const supplemented = await c.call('sync', { id: last.id });
+    assert.equal(supplemented.buffered, 64, 'single-album sync replenishes the waiting page');
+    assert.equal(supplemented.remaining, 70, 'the supplemented album was already durable');
+    const after = c.events.length;
+    await c.call('token', { value: replacement });
+    const switched = await c.call('syncStatus');
+    assert.ok(switched.buffered <= 64, 'Token recovery cannot append active as a 65th waiting job');
+    assert.equal(switched.remaining, 70, 'Token recovery preserves all unacknowledged work');
+    gate.resolve();
+    await c.idle(after);
+    const final = await c.call('syncStatus'),
+      statuses = c.events.filter((event) => event.event === 'online').map((event) => event.data);
+    assert.ok([started, supplemented, switched, final].every((status) => status.buffered <= 64));
+    assert.ok(statuses.every((status) => status.buffered <= 64));
+    assert.ok(statuses.filter((status) => status.active).every((status) => status.buffered <= 63));
+    assert.equal(final.completed, 70, 'each durable album receives one terminal acknowledgement');
+    assert.equal(final.remaining, 0);
+    assert.equal(final.pending, 0);
+    assert.equal(final.total, 70);
+    assert.equal(final.discovering, false);
+    assert.equal(final.active, false);
+    assert.equal(c.requests.filter((request) => request.originalAccess).length, 1);
+    const fresh = c.requests.filter((request) => !request.originalAccess),
+      searches = fresh.filter((request) => request.body);
+    assert.equal(searches.length, 70, 'new access scope searches each album exactly once');
+    assert.ok(fresh.every((request) => request.authorized));
+    for (const album of albums) {
+      assert.equal(
+        searches.filter((request) => request.body.keyword === album.subject.name).length,
+        1
+      );
+      const node = await c.call('get', { id: album.id });
+      assert.equal(node.subject_id, album.subject.id);
+      assert.equal(node.manual_subject, 0);
+      assert.equal(node.confirmed, 1);
+    }
+    const expectedScope = require('node:crypto')
+      .createHash('sha256')
+      .update('ACGAlbum Bangumi cache v1\0' + replacement)
+      .digest('hex');
+    const db = new DatabaseSync(path.join(f.data, 'library.sqlite'), { readOnly: true });
+    try {
+      const metadata = db.prepare('SELECT id,json FROM metadata').all();
+      assert.equal(metadata.length, 70, 'late old-scope subjects never enter metadata');
+      for (const row of metadata) {
+        assert.ok(bySubject.has(row.id));
+        assert.equal(JSON.parse(row.json).access_scope, expectedScope);
+      }
+      assert.equal(db.prepare('SELECT COUNT(*) total FROM match_pending').get().total, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) total FROM match_frontier').get().total, 0);
+    } finally {
+      db.close();
+    }
+    assert.equal((await fs.stat(f.image)).mtimeMs, 1700000000000);
+    assert.deepEqual(await fs.readFile(f.image), f.png);
+  } finally {
+    gate.resolve();
+    await c?.close();
+    await cleanup(f);
+  }
 });
 
 test('Token replacement never revives invalidated active or queued automatic jobs', async (t) => {

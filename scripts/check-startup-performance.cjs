@@ -20,7 +20,13 @@ const output =
 const round = (value) => +value.toFixed(3);
 async function client(
   dataDir,
-  { profile = false, suppressMedia = false, pauseBeforeFolderCommit = null } = {}
+  {
+    profile = false,
+    suppressMedia = false,
+    pauseBeforeFolderCommit = null,
+    resumeStartup = true,
+    startupTimeoutMs = 60000
+  } = {}
 ) {
   const { port1, port2 } = new MessageChannel();
   const start = performance.now();
@@ -85,6 +91,7 @@ async function client(
       workerData: {
         dataDir,
         watch: false,
+        deferBackground: true,
         script: workerScript,
         baselineStartup: process.env.ACG_PERF_BASELINE === '1',
         profile,
@@ -95,10 +102,14 @@ async function client(
       transferList: [port2]
     }
   );
-  let sequence = 0;
+  let sequence = 0,
+    closed = false,
+    closePromise = null,
+    fatal = null;
   const pending = new Map(),
     snapshots = new Map(),
-    events = [];
+    events = [],
+    observers = new Set();
   let pausedResolve;
   const paused = new Promise((resolve) => {
     pausedResolve = resolve;
@@ -108,66 +119,170 @@ async function client(
     readyResolve = resolve;
     readyReject = reject;
   });
-  worker.on('error', (error) => {
+  // Every failure has an owner, including failure before client() returns.
+  const fail = (error) => {
+    fatal ||= error;
     readyReject(error);
-    for (const p of pending.values()) p.reject(error);
+    for (const map of [pending, snapshots]) {
+      for (const item of map.values()) {
+        clearTimeout(item.timer);
+        item.reject(error);
+      }
+      map.clear();
+    }
+    for (const observer of [...observers]) observer();
+  };
+  const terminate = async () => {
+    closed = true;
+    port1.close();
+    try {
+      await worker.terminate();
+    } finally {
+      fail(fatal || new Error('Startup fixture worker closed'));
+    }
+  };
+  const readyTimer = setTimeout(() => {
+    fail(new Error('Startup fixture ready timed out'));
+    void terminate();
+  }, startupTimeoutMs);
+  worker.on('error', (error) => {
+    fail(error);
+    void terminate();
+  });
+  worker.on('exit', (code) => {
+    if (!closed) {
+      fail(new Error('Startup fixture worker exited unexpectedly: ' + code));
+      void terminate();
+    }
   });
   worker.on('message', (message) => {
-    if (message.event) events.push(message);
-    if (message.event === 'ready') readyResolve();
-    if (message.request) {
-      const p = pending.get(message.request);
-      if (!p) return;
-      pending.delete(message.request);
-      message.error ? p.reject(new Error(message.error)) : p.resolve(message.result);
+    if (message.event) {
+      events.push(message);
+      for (const observer of [...observers]) observer();
     }
+    if (message.event === 'ready') {
+      clearTimeout(readyTimer);
+      readyResolve();
+    }
+    const item = pending.get(message.request);
+    if (!item) return;
+    pending.delete(message.request);
+    clearTimeout(item.timer);
+    message.error ? item.reject(new Error(message.error)) : item.resolve(message.result);
   });
   port1.on('message', ({ id, result, paused, inTransaction }) => {
     if (paused) return pausedResolve({ id: paused, inTransaction });
-    const p = snapshots.get(id);
+    const item = snapshots.get(id);
+    if (!item) return;
     snapshots.delete(id);
-    p(result);
+    clearTimeout(item.timer);
+    item.resolve(result);
   });
   try {
     await ready;
   } catch (error) {
-    await worker.terminate();
-    port1.close();
+    clearTimeout(readyTimer);
+    await terminate();
     throw error;
   }
   const readyMs = performance.now() - start;
+  function request(map, label, post) {
+    return new Promise((resolve, reject) => {
+      if (fatal || closed) return reject(fatal || new Error('Startup fixture worker closed'));
+      const id = ++sequence;
+      const timer = setTimeout(() => {
+        fail(new Error('Startup fixture request timed out: ' + label));
+        void terminate();
+      }, startupTimeoutMs);
+      map.set(id, { resolve, reject, timer });
+      try {
+        post(id);
+      } catch (error) {
+        fail(error);
+        void terminate();
+      }
+    });
+  }
   const api = {
     readyMs,
     events,
     paused,
     resume() {
-      if (pauseBeforeFolderCommit) port1.postMessage({ resume: true });
+      if (pauseBeforeFolderCommit && !closed) port1.postMessage({ resume: true });
     },
     call(method, args = {}) {
-      return new Promise((resolve, reject) => {
-        const request = ++sequence;
-        pending.set(request, { resolve, reject });
-        worker.postMessage({ request, method, args });
-      });
+      return request(pending, method, (id) => worker.postMessage({ request: id, method, args }));
     },
     snapshot(reset = false) {
-      return new Promise((resolve) => {
-        const id = ++sequence;
-        snapshots.set(id, resolve);
-        port1.postMessage({ id, reset });
-      });
+      return request(snapshots, 'SQL profile', (id) => port1.postMessage({ id, reset }));
     },
-    async close() {
-      api.resume();
+    async resumeStartup({ expected = 'ready', timeoutMs = startupTimeoutMs } = {}) {
+      assert.ok(['ready', 'error'].includes(expected));
+      let resolveTerminal, rejectTerminal;
+      const terminal = new Promise((resolve, reject) => {
+        resolveTerminal = resolve;
+        rejectTerminal = reject;
+      });
+      // Register before RPC. A tiny migration may publish its terminal state
+      // before the startupResume reply reaches this side of the MessagePort.
+      const from = events.length;
+      const accept = (state) => {
+        if (!state || !['ready', 'error'].includes(state.state)) return;
+        if (state.state === expected) resolveTerminal(state);
+        else
+          rejectTerminal(new Error(state.error || 'Unexpected maintenance state: ' + state.state));
+      };
+      const inspect = () => {
+        if (fatal) return rejectTerminal(fatal);
+        for (const event of events.slice(from))
+          if (event.event === 'tasks') accept(event.data?.maintenance);
+      };
+      const timer = setTimeout(() => {
+        const error = new Error('Startup fixture maintenance timed out waiting for ' + expected);
+        rejectTerminal(error);
+        fail(error);
+        void terminate();
+      }, timeoutMs);
+      observers.add(inspect);
+      // Attach rejection handling before awaiting the RPC as maintenance can
+      // finish (or the worker can fail) first.
+      terminal.catch(() => {});
       try {
-        await api.call('shutdown');
+        const reply = await api.call('startupResume');
+        assert.equal(reply.accepted, true);
+        accept(reply.taskSnapshot?.maintenance);
+        inspect();
+        return await terminal;
       } finally {
-        await worker.terminate();
-        port1.close();
+        clearTimeout(timer);
+        observers.delete(inspect);
       }
+    },
+    close() {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        api.resume();
+        try {
+          if (!closed && !fatal) await api.call('shutdown');
+        } finally {
+          clearTimeout(readyTimer);
+          await terminate();
+        }
+      })();
+      return closePromise;
     }
   };
-  return api;
+  try {
+    if (resumeStartup) {
+      const at = performance.now();
+      await api.resumeStartup();
+      api.maintenanceMs = performance.now() - at;
+    }
+    return api;
+  } catch (error) {
+    await api.close().catch(() => {});
+    throw error;
+  }
 }
 async function timed(work) {
   const start = performance.now();

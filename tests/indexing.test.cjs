@@ -594,17 +594,45 @@ test('unchanged scans recover missing and stopped media without retrying ordinar
   try {
     const indexing = require('../src/indexing.cjs').createIndexing(db);
     const stamp = 1700000000000.25;
+    // Prune intentionally retains broken ancestor chains. Model a complete
+    // registered root and its child folder before exercising real removal.
+    const outer = idFor(f.tmp);
+    const folder = {
+      id: idFor(f.source),
+      root: outer,
+      parent: outer,
+      path: f.source,
+      name: 'source',
+      sortkey: 'source',
+      kind: 'folder',
+      depth: 1
+    };
+    const stat = { size: 123, mtimeMs: stamp, birthtimeMs: stamp - 1000 };
+    indexing.upsert(
+      {
+        id: outer,
+        root: outer,
+        parent: null,
+        path: f.tmp,
+        name: path.basename(f.tmp),
+        sortkey: path.basename(f.tmp),
+        kind: 'folder',
+        depth: 0
+      },
+      stat,
+      stamp
+    );
+    indexing.upsert(folder, stat, stamp);
     const n = {
       id: idFor(path.join(f.source, 'recover.jpg')),
-      root: idFor(f.source),
-      parent: idFor(f.source),
+      root: outer,
+      parent: folder.id,
       path: path.join(f.source, 'recover.jpg'),
       name: 'recover.jpg',
       sortkey: 'recover.jpg',
       kind: 'image',
-      depth: 1
+      depth: 2
     };
-    const stat = { size: 123, mtimeMs: stamp, birthtimeMs: stamp - 1000 };
     indexing.upsert(n, stat, stamp);
     const read = db.prepare('SELECT * FROM media WHERE id=?');
     for (const [status, error] of [
@@ -646,15 +674,6 @@ test('unchanged scans recover missing and stopped media without retrying ordinar
       1
     );
     assert.equal(read.get(n.id).status, 'pending');
-    const folder = {
-      ...n,
-      id: idFor(f.source),
-      parent: 'outer',
-      path: f.source,
-      name: 'source',
-      kind: 'folder',
-      depth: 0
-    };
     indexing.upsert(folder, stat, stamp);
     indexing.reset();
     await indexing.prune(folder.parent, stamp + 7, async () => {});
@@ -663,6 +682,88 @@ test('unchanged scans recover missing and stopped media without retrying ordinar
       db.prepare('SELECT COUNT(*) count FROM scan_new WHERE id=?').get(folder.id).count,
       1
     );
+  } finally {
+    db.close();
+    await cleanup(f);
+  }
+});
+
+test('legacy identity backfill preserves unchanged mappings and does not seed matching or media', async () => {
+  const f = await fixture();
+  const c = await client(f.data);
+  await c.close();
+  const db = new DatabaseSync(path.join(f.data, 'library.sqlite'));
+  try {
+    const { readScanStat, identityFor } = require('../src/scan-identity.cjs');
+    const indexing = require('../src/indexing.cjs').createIndexing(db);
+    const p = path.join(f.source, 'same.jpg');
+    await fs.writeFile(p, 'abc');
+    const root = idFor(f.source);
+    const folder = {
+      id: root,
+      root,
+      parent: null,
+      path: f.source,
+      name: 'source',
+      sortkey: 'source',
+      kind: 'folder',
+      depth: 0
+    };
+    const image = {
+      id: idFor(p),
+      root,
+      parent: root,
+      path: p,
+      name: 'same.jpg',
+      sortkey: 'same.jpg',
+      kind: 'image',
+      depth: 1
+    };
+    const folderStat = await readScanStat(f.source),
+      imageStat = await readScanStat(p);
+    indexing.upsert(folder, folderStat, 1);
+    indexing.upsert(image, imageStat, 1);
+    db.exec(`UPDATE nodes SET fs_identity=NULL,favorite=1,subject_id=42,manual_subject=1;
+      UPDATE media SET status='ready',width=42;
+      CREATE TEMP TABLE identity_writes(kind TEXT);
+      CREATE TEMP TRIGGER identity_metadata AFTER UPDATE OF root,parent,path,name,sortkey,kind,depth,bytes,mtime,birth ON nodes
+        BEGIN INSERT INTO identity_writes VALUES('metadata'); END;
+      CREATE TEMP TRIGGER identity_media BEFORE INSERT ON media
+        BEGIN INSERT INTO identity_writes VALUES('media'); END;
+      CREATE TEMP TRIGGER identity_key AFTER UPDATE OF fs_identity ON nodes
+        BEGIN INSERT INTO identity_writes VALUES('identity'); END;`);
+    indexing.reset();
+    for (const stamp of [2, 3]) {
+      indexing.upsert(folder, folderStat, stamp);
+      indexing.upsert(image, imageStat, stamp);
+    }
+    assert.equal(
+      db.prepare("SELECT COUNT(*) n FROM identity_writes WHERE kind<>'identity'").get().n,
+      0
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) n FROM identity_writes WHERE kind='identity'").get().n,
+      2
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM scan_new').get().n, 0);
+    assert.equal(
+      db.prepare('SELECT fs_identity FROM nodes WHERE id=?').get(image.id).fs_identity,
+      identityFor(imageStat)
+    );
+    assert.equal(
+      db.prepare('SELECT subject_id FROM nodes WHERE id=?').get(image.id).subject_id,
+      42
+    );
+    assert.equal(db.prepare('SELECT status FROM media WHERE id=?').get(image.id).status, 'ready');
+    assert.equal(db.prepare('SELECT width FROM media WHERE id=?').get(image.id).width, 42);
+    // A newly created hardlink invalidates the evidence without resetting data.
+    await fs.link(p, path.join(f.source, 'hardlink.jpg'));
+    indexing.upsert(image, await readScanStat(p), 4);
+    assert.equal(
+      db.prepare('SELECT fs_identity FROM nodes WHERE id=?').get(image.id).fs_identity,
+      null
+    );
+    assert.equal(db.prepare('SELECT width FROM media WHERE id=?').get(image.id).width, 42);
   } finally {
     db.close();
     await cleanup(f);

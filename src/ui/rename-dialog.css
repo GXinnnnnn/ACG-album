@@ -1,0 +1,70 @@
+.rename-dialog .rename-form {
+  display: grid;
+  gap: 12px;
+}
+.rename-dialog .rename-path {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: var(--surface-soft, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.rename-dialog .rename-form > label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.rename-dialog .rename-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.rename-dialog #rename-name {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.rename-dialog #rename-name[aria-invalid='true'] {
+  border-color: var(--danger, #c44454);
+}
+.rename-dialog .rename-extension {
+  flex: 0 0 auto;
+  max-width: 35%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 13px;
+}
+.rename-dialog #rename-error {
+  min-height: 20px;
+  margin: 0;
+  color: var(--danger, #c44454);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.rename-dialog .modal-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+#startup-status {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+#startup-retry {
+  margin-top: 6px;
+  padding: 3px 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+#startup-retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}

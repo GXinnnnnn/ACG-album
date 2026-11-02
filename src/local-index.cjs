@@ -18,8 +18,8 @@ const SUBJECT_TYPES = [1, 2, 3, 4, 6];
 
 const MAX_ROWS = 512;
 const RELATED_LIMIT = 20;
-const SUBJECT_COLUMNS =
-  'id,type,name,name_cn,nsfw,date,summary,infobox,collection_json,aliases_json';
+const SUBJECT_COLUMNS = `id,type,name,name_cn,nsfw,date,summary,infobox,collection_json,aliases_json,
+   CASE WHEN json_valid(raw_json) THEN coalesce(json_extract(raw_json,'$.rating.score'),json_extract(raw_json,'$.score')) END AS archive_score`;
 const ENTITY_COLUMNS = 'kind,id,name,name_cn,summary,infobox,aliases_json';
 function json(value, fallback) {
   try {
@@ -31,12 +31,18 @@ function json(value, fallback) {
 function hydrate(row) {
   if (!row) return null;
   // Do not expose the large, unvalidated raw export to RPC consumers.
-  const { raw_json, aliases_json, collection_json, infobox, ...data } = row;
+  const { raw_json, aliases_json, collection_json, infobox, archive_score, ...data } = row;
   const aliases = json(aliases_json, []);
   const box = json(infobox, []);
   const collection = json(collection_json, {});
   return {
     ...data,
+    ...(typeof archive_score === 'number' &&
+    Number.isFinite(archive_score) &&
+    archive_score > 0 &&
+    archive_score <= 10
+      ? { rating: { score: archive_score } }
+      : {}),
     aliases: Array.isArray(aliases) ? aliases.filter((x) => typeof x === 'string') : [],
     infobox: Array.isArray(box) ? box : [],
     ...(collection_json !== undefined
@@ -358,7 +364,10 @@ function bilingualVolumeFamily(db, group, types, limit, budget) {
       );
       return { subject, volume: numbers.size === 1 ? [...numbers][0] : NaN };
     });
-  const ranked = rankVerifiedSeriesMembers(members, types);
+  const ranked = rankVerifiedSeriesMembers(members, types, {
+    query: group.whole,
+    base: group.whole
+  });
   return {
     ...ranked,
     candidates: ranked.candidates.slice(0, limit),

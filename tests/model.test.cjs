@@ -21,6 +21,17 @@ test('Chinese and multilingual names normalize and match conservatively', () => 
   assert.equal(scoreSubject(['星际牛仔'], { name_cn: '星际牛仔', name: 'カウボーイビバップ' }), 1);
   assert.ok(scoreSubject(['星际牛仔'], { name_cn: '星界的纹章' }) < 0.88);
 });
+test('only normalized equality receives a raw similarity of one', () => {
+  assert.equal(similarity('ＡＢ・ＡＢ', 'abab'), 1);
+  for (const [a, b] of [
+    ['abab', 'ababa'],
+    ['abcab', 'bcabc'],
+    ['星河星河', '星河星河星']
+  ]) {
+    assert.ok(similarity(a, b) < 1, `${a} / ${b}`);
+    assert.equal(similarity(a, b), similarity(b, a));
+  }
+});
 test('Chinese album suffixes preserve the actual work name', () => {
   assert.deepEqual(searchTerms('假面骑士图片'), ['假面骑士图片']);
   assert.deepEqual(searchStages('假面骑士图片').at(-1).terms, ['假面骑士']);

@@ -17,11 +17,12 @@
       return;
     const actions = [],
       action = (label, icon, fn, extra = {}) => actions.push({ label, icon, fn, ...extra });
-    action('刷新当前页面', 'refresh', async () => {
-      await loadSummary();
-      await loadPage(true);
+    action('刷新当前页面', 'refresh', refreshLibrary, {
+      disabled: libraryRefreshBusy || isImportBusy() || !S.roots.length
     });
-    action('增量更新文件夹', 'folder', refreshLibrary, { disabled: scanActive });
+    action('增量更新文件夹', 'folder', refreshLibrary, {
+      disabled: libraryRefreshBusy || isImportBusy() || !S.roots.length
+    });
     actions.push({ rule: true });
     for (const [value, label] of [
       ['name', '按文件名称排序'],
@@ -49,7 +50,7 @@
     );
     actions.push({ rule: true });
     action('卡片尺寸与批量确认…', 'sliders', densityModal);
-    action('导入文件夹…', 'plus', importFolder, { disabled: !!pendingImport || scanActive });
+    action('导入文件夹…', 'plus', importFolder, { disabled: isImportBusy() });
     if (S.parent)
       action('在资源管理器中定位当前文件夹', 'external', () => api('reveal', { id: S.parent }));
     showActionMenu(event, actions, '页面操作');

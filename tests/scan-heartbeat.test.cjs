@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { Worker, MessageChannel } = require('node:worker_threads');
+const { DatabaseSync } = require('node:sqlite');
 const { idFor } = require('../src/model.cjs');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fixture(t, mode) {
@@ -137,14 +138,14 @@ async function fixture(t, mode) {
     await fs.rm(directory, { recursive: true, force: true });
   });
   await ready;
-  return { client, source };
+  return { client, source, data };
 }
 for (const mode of ['success', 'error', 'cancel', 'shutdown'])
   test(
     `scan heartbeat during asynchronous I/O preserves real counts and cleans up on ${mode}`,
     { timeout: 12000 },
     async (t) => {
-      const { client: c, source } = await fixture(t, mode);
+      const { client: c, source, data } = await fixture(t, mode);
       // Convert rejection to data immediately: the intentional error is not an
       // unhandled rejection while the test observes its blocked operation.
       const scan = c.call('scan', { path: source, offline: true }).then(
@@ -231,7 +232,22 @@ for (const mode of ['success', 'error', 'cancel', 'shutdown'])
         assert.match(outcome.error?.message || '', /forced asynchronous directory failure/);
       else {
         assert.ok(!outcome.error);
-        assert.equal(outcome.result.cancelled, mode === 'cancel' || mode === 'shutdown');
+        assert.equal(outcome.result.cancelled, mode === 'cancel');
+        if (mode === 'shutdown') assert.equal(outcome.result.paused, true);
+        const db = new DatabaseSync(path.join(data, 'library.sqlite'), { readOnly: true });
+        try {
+          const jobs = db.prepare('SELECT root,state,reason FROM scan_jobs').all();
+          if (mode === 'shutdown') {
+            assert.equal(jobs.length, 1, 'shutdown preserves the unfinished durable scan');
+            assert.equal(jobs[0].root, idFor(source));
+            assert.equal(jobs[0].state, 'paused');
+            assert.equal(jobs[0].reason, '程序关闭，等待继续');
+          } else {
+            assert.equal(jobs.length, 0, 'completion or explicit cancel leaves no resumable scan');
+          }
+        } finally {
+          db.close();
+        }
       }
       assert.equal(await c.intervals(), 0, 'the settled scan owns no timer');
       const settled = c.events.filter((event) => event.event === 'progress').length;

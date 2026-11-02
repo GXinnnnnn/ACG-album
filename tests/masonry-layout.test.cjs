@@ -214,6 +214,121 @@ test('mixed folder/image cards share the final partial row across density and ab
     }
 });
 
+test('180-item API boundaries follow a single shortest-column stream for mixed folders and images', async () => {
+  for (const width of [700, 1180, 3448])
+    for (const density of [128, 166, 195])
+      for (const folders of [179, 180, 181]) {
+        const f = await fixture(folders, 500, width, density),
+          { grid } = f;
+        f.nodes.set(folders, { ...f.make(folders), width: 1, height: 100000000 });
+        await grid.fetchPage(Math.floor(folders / 180), true);
+        // Deliver later data first; sorted layout must still use absolute API offsets.
+        for (const page of [3, 2, 1]) await grid.fetchPage(page);
+        await f.settle();
+        grid.layout(false);
+        const row = Math.floor(folders / grid.cols) * grid.rowHeight,
+          columns = Array.from(
+            { length: grid.cols },
+            (_, c) => row + (c < folders % grid.cols ? grid.rowHeight : 0)
+          );
+        const folderHeight = grid.width / (3 / 4.12) + 70;
+        for (let index = folders; index < folders + 500; index++) {
+          let column = 0;
+          for (let c = 1; c < columns.length; c++) if (columns[c] < columns[column]) column = c;
+          const node = f.make(index),
+            height = Math.min(folderHeight * 2, (grid.width * node.height) / node.width + 48),
+            p = grid.getPosition(index);
+          assert.ok(
+            Math.abs(p.top - columns[column]) < 0.001,
+            `F=${folders}, W=${width}, w=${density}, index=${index}: continues its shortest column`
+          );
+          assert.equal(p.left, grid.offsetX + column * (grid.width + 8));
+          assert.ok(Math.abs(p.height - height) < 0.001);
+          columns[column] += height + 8;
+        }
+        assert.ok(Math.abs(parseFloat(f.wall.style.height) - Math.max(...columns) + 8) < 0.001);
+        grid.reset();
+      }
+});
+
+test('a boundary-page tall image stays rendered while the next API page fills shorter columns', async () => {
+  const f = await fixture(179, 600, 700, 166),
+    { grid, viewport, document } = f;
+  f.nodes.set(179, { ...f.make(179), width: 1, height: 100000000 });
+  await grid.fetchPage(0, true);
+  const tall = grid.getPosition(179),
+    folder = grid.getPosition(178);
+  assert.equal(tall.top, folder.top);
+  grid.restoreAnchor(179, 120);
+  await f.settle();
+  const next = grid.getPosition(180);
+  assert.ok(next.top < tall.top + tall.height, 'Page 1 starts before the tall page-0 image ends');
+  assert.ok(grid.cards.has(179) && grid.cards.has(180), 'Overlapping API-page ranges both render');
+  const anchor = grid.captureAnchor(),
+    focused = grid.cards.get(anchor.index);
+  focused.focus();
+  await grid.refreshVisible();
+  await f.settle();
+  assert.equal(grid.cards.get(anchor.index), focused);
+  assert.equal(document.activeElement, focused);
+  assert.ok(
+    Math.abs(grid.getPosition(anchor.index).top - viewport.scrollTop - anchor.offset) < 0.001
+  );
+  viewport.scrollTop = tall.top + tall.height - 10;
+  grid.render();
+  await f.settle();
+  assert.ok(grid.cards.has(179), 'Earlier-page tall card stays mounted at its bottom edge');
+  grid.reset();
+});
+
+test('distant random jumps and return visits retain anchors with bounded API and DOM windows', async () => {
+  const f = await fixture(179, 600000, 1180, 166),
+    { grid, viewport, settings, wall } = f;
+  for (const index of [500000, 3600, 99000, 179, 599999]) {
+    const calls = f.calls.length;
+    grid.restoreAnchor(index, 96);
+    const pending = grid.captureAnchor();
+    await f.settle();
+    assert.ok(grid.items.has(index));
+    assert.ok(grid.items.size <= 180 * 9);
+    assert.ok(grid.cards.size < 180);
+    assert.ok(f.calls.length - calls < 10, 'A random jump never fetches all predecessors');
+    assert.ok(
+      Math.abs(grid.getPosition(pending.index).top - viewport.scrollTop - pending.offset) < 0.001,
+      `Jump ${index}: the visible placeholder anchor stays at its pixel`
+    );
+    const anchor = grid.captureAnchor();
+    settings.details = !settings.details;
+    settings.density = settings.density === 166 ? 128 : 166;
+    wall.clientWidth = wall.clientWidth === 1180 ? 980 : 1180;
+    grid.layout(false);
+    grid.restoreAnchor(anchor.index, anchor.offset);
+    await f.settle();
+    assert.ok(
+      Math.abs(grid.getPosition(anchor.index).top - viewport.scrollTop - anchor.offset) < 0.001
+    );
+  }
+  grid.reset();
+});
+
+test('unvisited pages preserve equal-height column phase through deep gaps without API walks', async () => {
+  const f = await fixture(0, 600000, 1180, 166),
+    { grid } = f;
+  for (let index = 0; index < 180; index++)
+    f.nodes.set(index, { ...f.make(index), width: 166, height: 166 });
+  await grid.refreshVisible();
+  const calls = f.calls.length,
+    step = 166 + 48 + 8;
+  for (const index of [180, 181, 359, 360, 500000, 599999]) {
+    const p = grid.getPosition(index);
+    assert.ok(Math.abs(p.top - Math.floor(index / grid.cols) * step) < 0.001);
+    assert.equal(p.left, grid.offsetX + (index % grid.cols) * (166 + 8));
+    assert.equal(p.height, 166 + 48);
+  }
+  assert.equal(f.calls.length, calls, 'Geometry lookup never requests predecessors');
+  grid.reset();
+});
+
 test('boundary placeholders stay beside folders and media respects folder-height limits across settings', async () => {
   const f = await fixture(181, 500),
     { grid, settings } = f;
@@ -387,6 +502,227 @@ test('identical 180-row refreshes retain visible media/folder DOM, decoded sourc
     t.diagnostic(
       `folders=${folders}: ${previous.size} visible, ${previous.size} retained, ${created.length - count} new cards`
     );
+    grid.reset();
+  }
+});
+
+test('refreshes retain the toolbar-visible anchor through folder insertion, deletion and in-flight scrolling', async () => {
+  const f = await fixture(13, 420, 1320, 196),
+    { grid, context, viewport, wall } = f,
+    select = context.$,
+    shapes = [
+      [240, 90],
+      [240, 180],
+      [240, 320],
+      [120, 900],
+      [360, 120],
+      [180, 480],
+      [240, 240]
+    ],
+    media = Array.from({ length: 420 }, (_, i) => ({
+      id: 'media-' + i,
+      kind: 'image',
+      width: shapes[i % shapes.length][0],
+      height: shapes[i % shapes.length][1]
+    }));
+  let folders = 13,
+    scan = 1,
+    scroll = 0,
+    gate = null;
+  // Chromium quantizes this scrollport to the nearest CSS pixel.
+  Object.defineProperty(viewport, 'scrollTop', {
+    get: () => scroll,
+    set: (value) => {
+      scroll = Math.round(value);
+    }
+  });
+  wall.getBoundingClientRect = () => ({ top: 219.59375 - viewport.scrollTop });
+  context.$ = (selector) =>
+    selector === '#toolbar' ? { getBoundingClientRect: () => ({ bottom: 104 }) } : select(selector);
+  context.api = async (_, args) => {
+    const rows = [
+      ...Array.from({ length: folders }, (_, i) => ({ id: 'folder-' + i, kind: 'folder' })),
+      ...media
+    ];
+    if (gate) {
+      const pending = gate;
+      gate = null;
+      await pending;
+    }
+    return {
+      total: rows.length,
+      folders,
+      items: rows.slice(args.offset, args.offset + 180).map((node) => ({ ...node, indexed: scan }))
+    };
+  };
+  await grid.load({}, 1);
+  await grid.fetchPage(1);
+  await grid.fetchPage(2);
+  await f.settle();
+  viewport.scrollTop = 10766;
+  grid.render();
+  assert.equal(grid.captureAnchor(0).index, 197, 'The covered top line selects another media card');
+  assert.equal(
+    grid.captureAnchor(116).index,
+    199,
+    'Display policy selects the visible reading anchor'
+  );
+  assert.ok(Math.abs(grid.getPosition(199).top - 10610.74) < 1e-8);
+
+  function remember() {
+    const anchor = grid.captureAnchor(116),
+      node = grid.items.get(anchor.index),
+      card = grid.cards.get(anchor.index);
+    return {
+      ...anchor,
+      id: node.id,
+      card,
+      image: card.querySelector('img'),
+      src: card.querySelector('img').src
+    };
+  }
+  function retained(before) {
+    const [index] = [...grid.items].find(([, node]) => node.id === before.id),
+      card = grid.cards.get(index);
+    assert.equal(card, before.card);
+    assert.equal(card.querySelector('img'), before.image);
+    assert.equal(card.querySelector('img').src, before.src);
+    assert.ok(
+      Math.abs(grid.getPosition(index).top + 219.59375 - viewport.scrollTop - before.offset) <= 0.5,
+      'Restore the same visible ID within native scroll quantization'
+    );
+  }
+  for (const next of [14, 13]) {
+    const before = remember();
+    folders = next;
+    scan++;
+    await grid.refreshGrowing();
+    await f.settle();
+    retained(before);
+    assert.equal(grid.total, folders + media.length);
+  }
+  const beforePageRefresh = remember();
+  media[176] = { ...media[176], height: media[176].height + 73 };
+  await grid.refreshVisible();
+  await f.settle();
+  retained(beforePageRefresh);
+
+  let release;
+  gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  folders = 14;
+  scan++;
+  const pending = grid.refreshGrowing();
+  viewport.scrollTop += 400;
+  grid.render();
+  const afterUserScroll = remember();
+  release();
+  await pending;
+  await f.settle();
+  retained(afterUserScroll);
+  grid.reset();
+});
+
+test('scan stamps and newly learned filesystem identity retain media cards across both refresh paths', async () => {
+  for (const refresh of ['refreshVisible', 'refreshGrowing']) {
+    const f = await fixture(0, 360),
+      { grid, nodes, document, viewport, context, created } = f;
+    for (let i = 0; i < 360; i++)
+      nodes.set(i, {
+        ...f.make(i),
+        kind: i % 2 ? 'video' : 'image',
+        width: 300,
+        height: 450,
+        indexed: 100,
+        fs_identity: null,
+        mtime: 10,
+        bytes: 1000
+      });
+    await grid.refreshVisible();
+    grid.restoreAnchor(178, 0);
+    await f.settle();
+    const anchor = grid.captureAnchor(),
+      focused = grid.cards.get(anchor.index),
+      items = grid.items,
+      count = created.length,
+      before = new Map(
+        [...grid.cards].map(([index, card]) => [
+          index,
+          { card, image: card.querySelector('img'), src: card.querySelector('img').src }
+        ])
+      );
+    focused.focus();
+    for (let scan = 2; scan <= 4; scan++) {
+      for (let i = 0; i < 360; i++)
+        nodes.set(i, {
+          ...f.make(i),
+          indexed: scan * 100,
+          fs_identity: 'v1:f:1:' + (i + 1) + ':1'
+        });
+      context.S.rev++;
+      await grid[refresh]();
+      await f.settle();
+      assert.equal(grid.items, items, refresh + ': item cache remains attached');
+      assert.equal(created.length, count, refresh + ': no unchanged card is recreated');
+      assert.equal(grid.cards.size, before.size);
+      for (const [index, previous] of before) {
+        const card = grid.cards.get(index),
+          image = card.querySelector('img');
+        assert.equal(card, previous.card, refresh + ': retain actual card object');
+        assert.equal(image, previous.image, refresh + ': retain decoded image object');
+        assert.equal(image.src, previous.src);
+        assert.equal(image.writes.length, 1, 'Scan bookkeeping never restarts thumbnail loading');
+        assert.equal(card.removals, 0);
+      }
+      assert.equal(document.activeElement, focused);
+      assert.equal(
+        grid.items.get(anchor.index).indexed,
+        scan * 100,
+        'Cache receives the latest scan'
+      );
+      assert.equal(grid.items.get(anchor.index).fs_identity, 'v1:f:1:' + (anchor.index + 1) + ':1');
+      assert.ok(
+        Math.abs(grid.getPosition(anchor.index).top - viewport.scrollTop - anchor.offset) < 0.001,
+        refresh + ': retain the pixel scroll anchor'
+      );
+    }
+    grid.reset();
+  }
+});
+
+test('content changes and unknown fields still invalidate media cards during either refresh', async () => {
+  const changes = {
+    mtime: 20,
+    bytes: 2000,
+    path: 'changed-file.png',
+    name: 'changed-name.png',
+    crop_x: 25,
+    crop_y: 75,
+    crop_zoom: 2,
+    favorite: 1,
+    cover_revision: 'changed-cover',
+    width: 301,
+    height: 451,
+    seen: 1,
+    unknown_display_field: 'changed'
+  };
+  for (const refresh of ['refreshVisible', 'refreshGrowing']) {
+    const f = await fixture(0, 180),
+      { grid, nodes } = f;
+    for (let i = 0; i < 180; i++)
+      nodes.set(i, { ...f.make(i), width: 300, height: 450, indexed: 100, fs_identity: null });
+    await grid.refreshVisible();
+    for (const [key, value] of Object.entries(changes)) {
+      const before = grid.cards.get(0),
+        image = before.querySelector('img');
+      nodes.set(0, { ...f.make(0), [key]: value, indexed: 200, fs_identity: 'v1:f:1:1:1' });
+      await grid[refresh]();
+      await f.settle();
+      assert.notEqual(grid.cards.get(0), before, refresh + ': ' + key + ' invalidates the card');
+      assert.notEqual(grid.cards.get(0).querySelector('img'), image);
+      assert.equal(before.removals, 1);
+    }
     grid.reset();
   }
 });
@@ -751,7 +1087,7 @@ test('an empty resize before an asynchronous list response selects the final lay
     );
     assert.equal(grid.gap, gap);
     assert.equal(grid.cols, expectedColumns);
-    const expectedRight = expectedColumns * 186 + (expectedColumns - 1) * gap;
+    const expectedRight = grid.offsetX + expectedColumns * 186 + (expectedColumns - 1) * gap;
     assert.ok(Math.abs(modelRight - expectedRight) < 0.001);
     assert.ok(Math.abs(domRight - expectedRight) < 0.001);
     assert.ok(expectedRight <= wall.clientWidth);
@@ -759,7 +1095,55 @@ test('an empty resize before an asynchronous list response selects the final lay
   }
 });
 
-test('continuous card width stays fixed and left aligned at 4K and clamps to narrow widths', async () => {
+test('centered offsets update loaded cards and unvisited placeholders without changing the skyline or pixel anchor', async () => {
+  for (const dpr of [1, 1.25, 1.5, 2]) {
+    const f = await fixture(179, 900, 970, 166, dpr),
+      { grid, wall, viewport } = f;
+    grid.restoreAnchor(200, 120);
+    await f.settle();
+    const anchor = grid.captureAnchor(),
+      card = grid.cards.get(anchor.index),
+      image = card.querySelector('img'),
+      source = image.src,
+      writes = image.writes.length,
+      before = [179, 180, 359, 1000].map((index) => grid.getPosition(index)),
+      oldColumns = grid.cols,
+      oldOffset = grid.offsetX;
+    wall.clientWidth += 13;
+    grid.render();
+    await f.settle();
+    assert.equal(grid.cols, oldColumns);
+    assert.equal(grid.offsetX, oldOffset + 6.5);
+    for (const [i, index] of [179, 180, 359, 1000].entries()) {
+      const after = grid.getPosition(index);
+      assert.equal(after.top, before[i].top);
+      assert.equal(after.height, before[i].height);
+      assert.equal(after.left, before[i].left + 6.5);
+    }
+    assert.equal(grid.cards.get(anchor.index), card);
+    assert.equal(card.querySelector('img'), image);
+    assert.equal(image.src, source);
+    assert.equal(image.writes.length, writes);
+    assert.ok(
+      Math.abs(grid.getPosition(anchor.index).top - viewport.scrollTop - anchor.offset) < 0.001
+    );
+    const reflowAnchor = grid.captureAnchor();
+    wall.clientWidth = 800;
+    grid.render();
+    await f.settle();
+    assert.ok(grid.cols < oldColumns);
+    assert.equal(grid.width, 166);
+    assert.ok(
+      Math.abs(
+        grid.getPosition(reflowAnchor.index).top - viewport.scrollTop - reflowAnchor.offset
+      ) < 0.001
+    );
+    assert.ok(grid.items.size <= 180 * 9);
+    grid.reset();
+  }
+});
+
+test('continuous card width stays fixed with balanced edge remainder and clamps to narrow widths', async () => {
   for (const width of [96, 120, 700, 1180, 3448, 3840])
     for (const density of [120, 158, 186, 222, 297, 360])
       for (const [folders, media] of [
@@ -773,16 +1157,25 @@ test('continuous card width stays fixed and left aligned at 4K and clamps to nar
           columns = Math.max(1, Math.floor((width + gap) / (density + gap)));
         assert.equal(grid.cols, columns);
         assert.equal(grid.gap, gap);
+        const occupied = columns * Math.min(width, density) + (columns - 1) * gap,
+          inset = (width - occupied) / 2;
+        assert.equal(grid.offsetX, inset);
+        assert.ok(inset >= 0);
         for (let column = 0; column < columns; column++) {
           const p = grid.getPosition(column);
           assert.ok(Math.abs(p.width - Math.min(width, density)) < 0.001);
-          assert.ok(Math.abs(p.left - column * (grid.width + gap)) < 0.001);
+          assert.ok(Math.abs(p.left - inset - column * (grid.width + gap)) < 0.001);
           assert.ok(p.left + p.width <= width + 0.001);
-          if (column === columns - 1)
+          if (column === columns - 1) {
             assert.ok(
-              width - p.left - p.width < density + gap,
-              'Trailing space cannot fit another requested card'
+              Math.abs(width - p.left - p.width - inset) < 0.001,
+              'Both edges have equal remainder'
             );
+            assert.ok(
+              inset * 2 < density + gap,
+              'The combined edge remainder cannot fit another requested card'
+            );
+          }
         }
         grid.reset();
       }

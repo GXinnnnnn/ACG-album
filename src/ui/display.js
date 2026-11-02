@@ -1,13 +1,41 @@
 'use strict';
 // One set of display controls for the toolbar, preferences and category previews.
 const cardDisplayPresets = [
-  { width: 158, name: '小', kind: 'compact', count: 4 },
-  { width: 186, name: '中', kind: 'standard', count: 3 },
-  { width: 222, name: '大', kind: 'large', count: 2 }
+  { width: 128, name: '小', kind: 'compact', count: 4 },
+  { width: 166, name: '中', kind: 'standard', count: 3 },
+  { width: 195, name: '大', kind: 'large', count: 2 }
 ];
+function displayViewportWidth() {
+  return document.documentElement.clientWidth || window.innerWidth || 3840;
+}
+function cardPresets(viewportWidth = displayViewportWidth()) {
+  return window.albumAppearanceSpec.cardPresets(viewportWidth);
+}
+function refreshDisplayPresets() {
+  const widths = cardPresets();
+  cardDisplayPresets.forEach((preset, index) => {
+    preset.width = widths[index];
+  });
+  // Existing toolbar markup uses numeric data-density. Give each control a
+  // stable role once, so resizing can update its value without guessing from
+  // the previously selected or manually entered width.
+  $$('[data-density]').forEach((button, index) => {
+    const preset =
+      cardDisplayPresets.find((p) => p.kind === button.dataset.cardPreset) ||
+      cardDisplayPresets[index % cardDisplayPresets.length];
+    button.dataset.cardPreset = preset.kind;
+    button.dataset.density = String(preset.width);
+  });
+  const style = document.documentElement.style,
+    width = Number(S.settings.density) || 166;
+  style.setProperty('--card-base-size', widths[1] + 'px');
+  style.setProperty('--card-scale', String(width / widths[1]));
+  return cardDisplayPresets;
+}
 let displayChangeTask = null,
   pendingDisplay = {};
 function applyDisplaySettings() {
+  refreshDisplayPresets();
   const preset = cardDisplayPresets.find((p) => p.width === Number(S.settings.density));
   document.documentElement.dataset.cardSize = preset?.kind || 'standard';
   document.documentElement.dataset.mediaDetails = S.settings.details === false ? 'off' : 'on';
@@ -167,5 +195,12 @@ function initializeDisplayControls() {
     });
   };
   $('#viewport').addEventListener('scroll', updateScrollActions, { passive: true });
-  window.addEventListener('resize', updateScrollActions, { passive: true });
+  window.addEventListener(
+    'resize',
+    () => {
+      applyDisplaySettings();
+      updateScrollActions();
+    },
+    { passive: true }
+  );
 }

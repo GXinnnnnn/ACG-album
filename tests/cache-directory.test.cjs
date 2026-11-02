@@ -36,11 +36,13 @@ async function client(dataDir, setup = '') {
       }
     }
   );
-  const pending = new Map();
+  const pending = new Map(),
+    events = [];
   let seq = 0;
   await new Promise((resolve, reject) => {
     worker.on('error', reject);
     worker.on('message', (message) => {
+      if (message.event) events.push(message);
       if (message.event === 'ready') resolve();
       if (!message.request) return;
       const job = pending.get(message.request);
@@ -57,6 +59,27 @@ async function client(dataDir, setup = '') {
     });
   return {
     call,
+    events,
+    association(id, after = 0) {
+      const complete = (message) =>
+        message.event === 'association' &&
+        message.data.id === id &&
+        message.data.state === 'complete';
+      if (events.slice(after).some(complete)) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          worker.off('message', check);
+          reject(new Error('Timed out waiting for manual association completion'));
+        }, 10000);
+        const check = (message) => {
+          if (!complete(message)) return;
+          clearTimeout(timer);
+          worker.off('message', check);
+          resolve();
+        };
+        worker.on('message', check);
+      });
+    },
     stop: async () => {
       try {
         await call('shutdown');
@@ -299,12 +322,18 @@ test(
     try {
       await c.call('scan', { path: source, match: false });
       const root = (await c.call('init')).roots[0];
+      const bindingAfter = c.events.length;
       const binding = c.call('bind', { id: root.id, url: '42' });
       await assert.rejects(
         c.call('changeCacheDirectory', { path: path.join(tmp, 'custom') }),
         /稍后再试/
       );
-      const bound = await binding;
+      const identity = await binding;
+      assert.equal(identity.subject_id, 42);
+      assert.equal(identity.manual_subject, 1);
+      assert.equal(identity.enrichment_pending, true);
+      await c.association(root.id, bindingAfter);
+      const bound = await c.call('get', { id: root.id });
       assert.equal(bound.metadata.local_cover, path.join(data, 'covers', '42.webp'));
       await c.call('patch', { id: root.id, changes: { crop_x: 31, crop_y: 64 } });
       await c.call('cleanCache', { mode: 'reset-cache' });

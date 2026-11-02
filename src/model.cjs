@@ -398,7 +398,9 @@ function similarity(a, b) {
     y = grams(b);
   let n = 0;
   for (const v of x) if (y.has(v)) n++;
-  return (2 * n) / (x.size + y.size);
+  // Unique bigrams can collide (abab / ababa). Only normalized equality
+  // above is exact; even a score that displays as 100% is still similarity.
+  return Math.min(1 - Number.EPSILON, (2 * n) / (x.size + y.size));
 }
 function scoreSubject(terms, subject) {
   return Math.max(

@@ -9,6 +9,38 @@ const { createHash } = require('node:crypto');
 const { client } = require('../scripts/check-startup-performance.cjs');
 const { sortKey } = require('../src/natural-sort.cjs');
 const { idFor } = require('../src/model.cjs');
+const { SUBJECT_TYPES } = require('../src/matching-policy.cjs');
+const queuedStamp = JSON.stringify([
+  JSON.stringify({
+    explicit: false,
+    kind: 'work',
+    characterCover: 'local-first',
+    networkEnabled: true,
+    enabled: true,
+    matchDepth: 1,
+    types: [...SUBJECT_TYPES],
+    revision: 0
+  }),
+  44,
+  0
+]);
+async function waitForPausedSweep(client) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const state = await client.call('syncStatus');
+    if (
+      !state.active &&
+      !state.discovering &&
+      state.buffered === 0 &&
+      client.events.some(
+        (event) => event.event === 'online' && event.data?.active && event.data.id === 'queued'
+      )
+    )
+      return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Startup did not finish its bounded paused local sweep');
+}
 const sharp = require('sharp');
 const migrations = ['browseOptimizeVersion', 'matchReviewVersion', 'mediaSeedVersion'];
 const fullStartupSql = (profile) =>
@@ -23,11 +55,14 @@ async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-startup-test-'));
   const f = { directory, data: path.join(directory, 'data'), active: null };
   t.after(async () => {
-    await f.active?.close();
-    const resolved = path.resolve(directory);
-    assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(resolved).startsWith('acg-startup-test-'));
-    await fs.rm(resolved, { recursive: true, force: true });
+    try {
+      await f.active?.close();
+    } finally {
+      const resolved = path.resolve(directory);
+      assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(resolved).startsWith('acg-startup-test-'));
+      await fs.rm(resolved, { recursive: true, force: true });
+    }
   });
   f.active = await client(f.data);
   await f.active.close();
@@ -132,15 +167,36 @@ test('legacy startup repairs commit once and preserve manual media, cover, crop 
       "INSERT INTO media(id,revision,taken,status,width,height,place,place_user,latitude,longitude,coords_user) VALUES('video','old',1,'ready',500,400,'自定义地点',1,30,120,1); INSERT INTO media(id,revision,status) VALUES('orphan','old','ready')"
     );
     for (const key of migrations) db.prepare('DELETE FROM settings WHERE key=?').run(key);
-    // A paused durable queue must remain intact through the migration. An access
-    // pause keeps automatic discovery from consuming this synthetic fixture.
+    // A paused startup now performs one local sweep. It must discard a stale
+    // stamp while retaining current work that still requires paused HTTP.
+    insert.run(
+      'queued',
+      'root',
+      'root',
+      path.join(f.directory, 'legacy/Unknown Queue Work'),
+      'Unknown Queue Work',
+      sortKey('Unknown Queue Work'),
+      'folder',
+      1,
+      0,
+      1,
+      1,
+      44,
+      0,
+      0,
+      0,
+      50,
+      0
+    );
     db.exec("INSERT INTO match_pending VALUES('auto','root','legacy-stamp')");
+    db.prepare('INSERT INTO match_pending VALUES(?,?,?)').run('queued', 'root', queuedStamp);
     const scope = createHash('sha256').update('ACGAlbum Bangumi cache v1\0').digest('hex');
     db.prepare("UPDATE match_resume SET reason='access',scope=?,failures=2 WHERE singleton=1").run(
       scope
     );
   });
   f.active = await client(f.data, { profile: true, suppressMedia: true });
+  await waitForPausedSweep(f.active);
   const firstProfile = await f.active.snapshot();
   assert.equal(
     fullStartupSql(firstProfile).length,
@@ -176,8 +232,19 @@ test('legacy startup repairs commit once and preserve manual media, cover, crop 
     assert.equal(media.longitude, 120);
     assert.equal(db.prepare("SELECT status FROM media WHERE id='orphan'").get().status, 'missing');
     assert.equal(
-      db.prepare("SELECT stamp FROM match_pending WHERE id='auto'").get().stamp,
-      'legacy-stamp'
+      db.prepare("SELECT stamp FROM match_pending WHERE id='auto'").get(),
+      undefined,
+      'the bounded local sweep removes only the stale job'
+    );
+    assert.equal(
+      db.prepare("SELECT stamp FROM match_pending WHERE id='queued'").get().stamp,
+      queuedStamp,
+      'the current durable job survives startup repairs and the paused local sweep'
+    );
+    assert.equal(db.prepare("SELECT subject_id FROM nodes WHERE id='queued'").get().subject_id, 44);
+    assert.equal(
+      db.prepare('SELECT reason FROM match_resume WHERE singleton=1').get().reason,
+      'access'
     );
     assert.equal(
       db.prepare('SELECT failures FROM match_resume WHERE singleton=1').get().failures,
@@ -185,7 +252,16 @@ test('legacy startup repairs commit once and preserve manual media, cover, crop 
     );
   });
   f.active = await client(f.data, { profile: true, suppressMedia: true });
+  await waitForPausedSweep(f.active);
   const repeatedProfile = await f.active.snapshot();
+  assert.equal((await f.active.call('syncStatus')).paused, 'access');
+  database(f, (db) =>
+    assert.equal(
+      db.prepare("SELECT stamp FROM match_pending WHERE id='queued'").get().stamp,
+      queuedStamp,
+      'repeat startup keeps the valid paused job without changing its identity stamp'
+    )
+  );
   assert.deepEqual(
     fullStartupSql(repeatedProfile),
     [],
@@ -213,7 +289,20 @@ test('interrupted startup media repair rolls back its writes and retries before 
       CREATE TRIGGER interrupt_media_repair BEFORE UPDATE OF status ON media
       WHEN OLD.id='orphan' BEGIN SELECT RAISE(ABORT,'test migration interrupted'); END;`);
   });
-  await assert.rejects(() => client(f.data, { suppressMedia: true }), /test migration interrupted/);
+  // `ready` now opens the read shell before deferred migrations. Keep ownership
+  // of that worker and observe the actual background failure contract.
+  f.active = await client(f.data, { profile: true, suppressMedia: true, resumeStartup: false });
+  assert.equal(
+    (await f.active.call('init', { lightweight: true })).taskSnapshot.maintenance.state,
+    'pending'
+  );
+  const failed = await f.active.resumeStartup({ expected: 'error', timeoutMs: 10000 });
+  assert.match(failed.error, /test migration interrupted/);
+  assert.ok(
+    fullStartupSql(await f.active.snapshot(true)).some(({ sql }) =>
+      sql.startsWith('run INSERT INTO media')
+    )
+  );
   database(f, (db) => {
     assert.equal(
       db.prepare('SELECT value FROM settings WHERE key=?').get('mediaSeedVersion'),
@@ -223,7 +312,8 @@ test('interrupted startup media repair rolls back its writes and retries before 
     assert.equal(db.prepare("SELECT status FROM media WHERE id='orphan'").get().status, 'ready');
     db.exec('DROP TRIGGER interrupt_media_repair');
   });
-  f.active = await client(f.data, { profile: true, suppressMedia: true });
+  const retried = await f.active.resumeStartup({ timeoutMs: 10000 });
+  assert.equal(retried.state, 'ready');
   assert.ok(
     fullStartupSql(await f.active.snapshot()).some(({ sql }) =>
       sql.startsWith('run INSERT INTO media')
@@ -241,6 +331,12 @@ test('interrupted startup media repair rolls back its writes and retries before 
     assert.equal(db.prepare("SELECT status FROM media WHERE id='image'").get().status, 'pending');
     assert.equal(db.prepare("SELECT status FROM media WHERE id='orphan'").get().status, 'missing');
   });
+  f.active = await client(f.data, { profile: true, suppressMedia: true });
+  assert.deepEqual(
+    fullStartupSql(await f.active.snapshot()),
+    [],
+    'successful retry marker prevents another startup repair'
+  );
 });
 
 test('new scan seeds media atomically and repeat startup reuses the persisted rows without full-library sync', async (t) => {

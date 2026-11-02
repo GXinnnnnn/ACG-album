@@ -32,6 +32,7 @@
     <link rel="stylesheet" href="readability.css" />
     <link rel="stylesheet" href="progress-refinement.css" />
     <link rel="stylesheet" href="appearance.css" />
+    <link rel="stylesheet" href="rename-dialog.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -100,6 +101,8 @@
           <button
             class="primary import-button"
             id="import-sidebar"
+            disabled
+            aria-busy="true"
             title="导入文件夹"
             aria-label="导入文件夹"
           >
@@ -166,6 +169,19 @@
               <div>
                 <strong id="index-count">本地资料库</strong
                 ><small id="index-status">原图留在原处，热爱随时可见</small>
+                <small id="startup-status" role="status" aria-live="polite" hidden></small>
+                <button id="startup-retry" type="button" class="text-button" hidden>
+                  重试后台任务
+                </button>
+                <button
+                  id="startup-cancel"
+                  type="button"
+                  class="text-button"
+                  title="终止当前批次，下次启动不自动继续"
+                  hidden
+                >
+                  取消后台任务
+                </button>
               </div>
             </div>
           </div>
@@ -216,21 +232,21 @@
                 aria-label="卡片尺寸"
               >
                 <button
-                  data-density="158"
+                  data-density="128"
                   aria-label="小卡片"
                   aria-pressed="false"
                   title="小卡片 · 更多内容"
                 >
                   小</button
                 ><button
-                  data-density="186"
+                  data-density="166"
                   aria-label="中卡片"
                   aria-pressed="false"
                   title="中卡片 · 标准大小"
                 >
                   中</button
                 ><button
-                  data-density="222"
+                  data-density="195"
                   aria-label="大卡片"
                   aria-pressed="false"
                   title="大卡片 · 更清楚的封面"
@@ -252,6 +268,14 @@
                 title="查看设置：卡片尺寸与封面比例"
                 aria-label="查看设置：卡片尺寸与封面比例"
                 data-icon="sliders"
+              ></button
+              ><button
+                id="refresh-button"
+                class="small-icon"
+                title="增量刷新当前目录或全部分类（F5 / Ctrl+R）"
+                aria-label="增量刷新当前目录或全部分类"
+                disabled
+                data-icon="refresh"
               ></button>
             </div>
           </div>

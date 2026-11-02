@@ -10,13 +10,19 @@ const source = fs.readFileSync(filename, 'utf8');
 const start = source.indexOf('let latestOnlineProgress = null');
 const end = source.indexOf('window.album.onEvent(', start);
 assert.ok(start >= 0 && end > start, 'real progress handlers must be present');
-const script = new vm.Script(source.slice(start, end), { filename });
+const busyStart = source.indexOf('let importBusyHeld = false'),
+  busyEnd = source.indexOf('async function enterPendingImport', busyStart);
+assert.ok(busyStart >= 0 && busyEnd > busyStart, 'real import controls must be present');
+const script = new vm.Script(source.slice(busyStart, busyEnd) + source.slice(start, end), {
+  filename
+});
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 
 function harness({ reducedMotion = false } = {}) {
   const elements = new Map();
   const timers = new Map();
   const requests = [];
+  const cancellations = [];
   const animations = [];
   let timerId = 0,
     mutations = 0,
@@ -25,8 +31,16 @@ function harness({ reducedMotion = false } = {}) {
     const attributes = new Map();
     let text = '',
       hidden = false,
+      disabled = false,
       title = '';
     return {
+      get disabled() {
+        return disabled;
+      },
+      set disabled(value) {
+        disabled = value;
+        mutations++;
+      },
       get hidden() {
         return hidden;
       },
@@ -109,12 +123,20 @@ function harness({ reducedMotion = false } = {}) {
     '#progress-bar',
     '#cancel-import',
     '.progress-spinner',
-    '#footer-status'
+    '#footer-status',
+    '#import-sidebar',
+    '#empty-import',
+    '#demo-import'
   ])
     elements.set(selector, element());
   elements.get('#progress-bar').parentElement = element();
   const context = vm.createContext({
     $: (selector) => elements.get(selector) || null,
+    $$: (selectors) =>
+      selectors
+        .split(',')
+        .map((selector) => elements.get(selector))
+        .filter(Boolean),
     document: {
       createElement() {
         created++;
@@ -122,9 +144,9 @@ function harness({ reducedMotion = false } = {}) {
       }
     },
     scanActive: false,
-    pendingImport: {},
+    pendingImport: null,
     progressHideTimer: null,
-    updateImportBusy() {},
+    updateRefreshBusy() {},
     fmt: (value) => String(value || 0),
     matchMedia: () => ({ matches: reducedMotion }),
     clearTimeout: (id) => timers.delete(id),
@@ -134,6 +156,8 @@ function harness({ reducedMotion = false } = {}) {
       return id;
     },
     api(method, args) {
+      if (method === 'cancel')
+        return new Promise((resolve, reject) => cancellations.push({ resolve, reject }));
       assert.equal(method, 'get');
       return new Promise((resolve, reject) => requests.push({ id: args.id, resolve, reject }));
     }
@@ -142,6 +166,7 @@ function harness({ reducedMotion = false } = {}) {
   return {
     context,
     requests,
+    cancellations,
     animations,
     scan: (value) => context.showProgress(value),
     online: (value) => context.showOnlineStatus(value),
@@ -159,8 +184,9 @@ function harness({ reducedMotion = false } = {}) {
   };
 }
 
-test('scan and matching events keep one title, preserve counts and leave cancel available until scanning ends', () => {
+test('scan and matching events keep one title, preserve counts and leave cancel available through the batch', () => {
   const h = harness();
+  h.context.pendingImport = {};
   h.scan({
     active: true,
     name: '分类A',
@@ -186,7 +212,8 @@ test('scan and matching events keep one title, preserve counts and leave cancel 
   assert.equal(h.get('#progress-directory').textContent, '相册B');
   h.scan({ active: false, current: 'C:\\生成目录\\相册B', images: 70, folders: 11 });
   assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
-  assert.equal(h.get('#cancel-import').hidden, true);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  assert.equal(h.get('#import-sidebar').disabled, true);
   assert.equal(h.timerCount(), 0, 'must not hide while matching continues');
 });
 
@@ -340,8 +367,13 @@ test('completion settling accepts the latest idle totals without extending its d
   h.online({ active: true, completed: 2, remaining: 8, total: 10 });
   h.online({ active: false, completed: 9, remaining: 0, total: 10 });
   h.online({ active: false, completed: 10, remaining: 0, total: 10 });
-  assert.equal(h.timerCount(), 1);
+  assert.equal(
+    h.timerCount(),
+    2,
+    'control release and progress completion each retain their first idle deadline'
+  );
   h.flushTimers(300);
+  assert.equal(h.get('#import-sidebar').disabled, false);
   assert.equal(h.get('#progress-detail').textContent, '已处理 10 项 | 待处理 0 项');
   assert.equal(h.get('#progress-percent').textContent, '100%');
   assert.equal(h.timerCount(), 1, 'only the final hide timer remains');
@@ -405,4 +437,106 @@ test('unknown workload motion restarts after pause and other maintenance progres
   assert.equal(h.get('#progress-title').textContent, '正在整理文件名称排序');
   assert.equal(h.get('#progress-directory').hidden, true);
   assert.equal(h.get('#progress-path').textContent, '升级一次');
+});
+
+test('scanner reservation, cancellation draining and online hand-off keep controls stable across transient idle', () => {
+  const h = harness();
+  h.scan({ active: false, busy: true, phase: '正在准备导入' });
+  for (const selector of ['#import-sidebar', '#empty-import', '#demo-import']) {
+    assert.equal(h.get(selector).disabled, true);
+    assert.equal(h.get(selector).getAttribute('aria-busy'), 'true');
+  }
+  assert.equal(h.get('#cancel-import').hidden, false);
+  assert.equal(h.get('#cancel-import').disabled, false);
+  assert.equal(h.get('#progress-panel').dataset.state, 'active');
+  const writes = h.mutationCount();
+  for (let i = 0; i < 100; i++) h.scan({ active: false, busy: true, phase: '正在准备导入' });
+  assert.equal(h.mutationCount(), writes, 'unchanged reservation snapshots never rewrite controls');
+  h.scan({ active: false, busy: false });
+  assert.equal(h.get('#import-sidebar').disabled, true);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  h.online({ active: true, remaining: 4 });
+  h.flushTimers(300);
+  assert.equal(h.get('#import-sidebar').disabled, true);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  h.scan({ active: false, busy: false, cancelling: true });
+  h.online({ active: false, remaining: 0 });
+  h.flushTimers(300);
+  assert.equal(h.get('#progress-title').textContent, '正在取消导入');
+  assert.equal(h.get('#cancel-import').disabled, false);
+  h.scan({ active: false, busy: false, cancelling: false, phase: '已取消导入' });
+  h.flushTimers(300);
+  assert.equal(h.get('#import-sidebar').disabled, false);
+  assert.equal(h.get('#cancel-import').hidden, true);
+});
+
+test('cancel stays available while one request drains, ignores double clicks, and resets for the next batch', async () => {
+  const h = harness();
+  h.scan({ active: true, busy: true });
+  const cancel = h.context.cancelImport();
+  await h.context.cancelImport();
+  assert.equal(h.cancellations.length, 1);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  assert.equal(h.get('#cancel-import').disabled, false);
+  assert.equal(h.get('#cancel-import').textContent, '正在取消…');
+  h.cancellations[0].resolve(true);
+  await cancel;
+  h.scan({ active: false, busy: true, cancelling: true });
+  h.flushTimers(300);
+  assert.equal(
+    h.get('#import-sidebar').disabled,
+    true,
+    'cancel acknowledgement is not worker completion'
+  );
+  assert.equal(h.get('#cancel-import').hidden, false);
+  h.scan({ active: false, busy: false, phase: '已取消导入' });
+  h.flushTimers(300);
+  assert.equal(h.get('#import-sidebar').disabled, false);
+  h.scan({ active: true, busy: true });
+  const again = h.context.cancelImport();
+  assert.equal(h.cancellations.length, 2);
+  h.cancellations[1].resolve(true);
+  await again;
+});
+
+test('cancel rejection restores retry while queued paused work remains cancellable and empty pause unlocks', async () => {
+  const h = harness();
+  h.online({ active: false, paused: 'access', remaining: 2 });
+  assert.equal(h.get('#import-sidebar').disabled, true);
+  assert.equal(h.get('#cancel-import').hidden, false);
+  const cancel = h.context.cancelImport();
+  h.cancellations[0].reject(new Error('generated failure'));
+  await assert.rejects(cancel, /generated failure/);
+  assert.equal(h.get('#cancel-import').textContent, '取消');
+  const retry = h.context.cancelImport();
+  assert.equal(h.cancellations.length, 2);
+  h.cancellations[1].resolve(true);
+  await retry;
+  h.online({ active: false, paused: 'access', remaining: 0, discovering: false });
+  h.flushTimers(300);
+  assert.equal(
+    h.get('#import-sidebar').disabled,
+    false,
+    'a stale pause reason cannot lock importing'
+  );
+  assert.equal(h.get('#cancel-import').hidden, true);
+});
+
+test('picker cancellation releases busy and isolated bind or removal changes cannot invent a batch', () => {
+  const h = harness();
+  h.context.pendingImport = { sawProgress: false };
+  h.context.updateImportBusy();
+  assert.equal(h.get('#import-sidebar').disabled, true);
+  assert.equal(
+    h.get('#cancel-import').hidden,
+    true,
+    'native picker is not a cancellable worker task'
+  );
+  h.context.pendingImport = null;
+  h.context.updateImportBusy();
+  h.flushTimers(300);
+  assert.equal(h.get('#import-sidebar').disabled, false);
+  h.context.updateImportBusy(); // A single-item association or independent removal has no progress/online queue.
+  assert.equal(h.get('#import-sidebar').disabled, false);
+  assert.equal(h.get('#cancel-import').hidden, true);
 });

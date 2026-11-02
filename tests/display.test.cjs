@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/ui/display.js'), 'utf8');
+const spec = require('../src/appearance-settings.cjs');
 function deferred() {
   let resolve, reject;
   const promise = new Promise((done, fail) => {
@@ -28,13 +29,14 @@ function control(dataset = {}) {
     }
   };
 }
-function fixture() {
+function fixture(width = 3840, dpr = 1) {
   const details = control(),
-    buttons = [158, 186, 222].map((density) => control({ density: String(density) }));
+    buttons = [128, 166, 195].map((density) => control({ density: String(density) }));
   for (const button of [details, ...buttons]) button.classList.owner = button;
   const viewport = {
       scrollTop: 700,
       clientHeight: 600,
+      addEventListener() {},
       getBoundingClientRect: () => ({ top: 100 })
     },
     toolbar = { getBoundingClientRect: () => ({ bottom: 160 }) },
@@ -64,20 +66,129 @@ function fixture() {
     '#viewport': viewport,
     '#toolbar': toolbar,
     '#details-toggle': details,
-    '#back-to-top': back
+    '#back-to-top': back,
+    '#card-size-controls': { addEventListener() {} }
   };
+  const styles = new Map(),
+    listeners = new Map(),
+    root = {
+      clientWidth: width,
+      dataset,
+      style: { setProperty: (key, value) => styles.set(key, value) }
+    };
   const context = vm.createContext({
     S: { settings },
+    window: {
+      albumAppearanceSpec: spec,
+      innerWidth: width,
+      devicePixelRatio: dpr,
+      addEventListener: (name, callback) => listeners.set(name, callback)
+    },
     grid,
-    document: { documentElement: { dataset } },
+    document: { documentElement: root },
     $: (selector) => elements[selector] || null,
     $$: (selector) => (selector === '[data-density]' ? buttons : previews),
     api: async (method, args) => events.push({ type: 'persist', method, ...args }),
     applySettings: () => vm.runInContext('applyDisplaySettings()', context)
   });
   vm.runInContext(source, context);
-  return { context, settings, dataset, details, buttons, viewport, grid, events, previews };
+  return {
+    context,
+    settings,
+    dataset,
+    details,
+    buttons,
+    viewport,
+    grid,
+    events,
+    previews,
+    root,
+    styles,
+    listeners
+  };
 }
+
+test('card presets select 128/166/195 and retain arbitrary saved widths', async () => {
+  const f = fixture();
+  const presets = vm.runInContext('cardDisplayPresets.map((preset) => preset.width)', f.context);
+  assert.deepEqual([...presets], [128, 166, 195]);
+  for (const width of [128, 166, 195, 222, 267]) {
+    await f.context.changeDisplaySetting('density', width);
+    assert.equal(f.settings.density, width);
+    assert.equal(
+      f.dataset.cardSize,
+      width === 128 ? 'compact' : width === 195 ? 'large' : 'standard'
+    );
+    assert.deepEqual(
+      f.buttons
+        .filter((button) => button.attributes['aria-pressed'] === 'true')
+        .map((button) => Number(button.dataset.density)),
+      [128, 166, 195].includes(width) ? [width] : []
+    );
+  }
+});
+
+test('responsive preset selection uses CSS viewport widths without multiplying DPR', async () => {
+  for (const [width, expected] of [
+    [1920, [120, 155, 191]],
+    [2560, [123, 159, 192]],
+    [3840, [128, 166, 195]]
+  ]) {
+    for (const dpr of [1, 1.25, 1.5, 2]) {
+      const f = fixture(width, dpr);
+      f.context.applyDisplaySettings();
+      assert.deepEqual([...f.context.cardPresets()], expected);
+      assert.deepEqual(
+        f.buttons.map((button) => Number(button.dataset.density)),
+        expected
+      );
+      assert.equal(f.styles.get('--card-base-size'), expected[1] + 'px');
+      assert.equal(f.styles.get('--card-scale'), String(186 / expected[1]));
+      for (const [index, density] of expected.entries()) {
+        await f.context.changeDisplaySetting('density', density);
+        assert.equal(f.settings.density, density);
+        assert.equal(f.buttons[index].attributes['aria-pressed'], 'true');
+        assert.equal(f.dataset.cardSize, ['compact', 'standard', 'large'][index]);
+      }
+    }
+  }
+});
+
+test('resize updates existing preset objects and controls while preserving a saved continuous width', async () => {
+  const f = fixture(3840),
+    presets = vm.runInContext('cardDisplayPresets', f.context);
+  f.settings.density = 222;
+  f.context.applyDisplaySettings();
+  f.context.initializeDisplayControls();
+  const writes = f.events.length;
+  f.root.clientWidth = 1920;
+  f.listeners.get('resize')();
+  assert.equal(vm.runInContext('cardDisplayPresets', f.context), presets);
+  assert.deepEqual(
+    [...presets].map((preset) => preset.width),
+    [120, 155, 191]
+  );
+  assert.deepEqual(
+    f.buttons.map((button) => Number(button.dataset.density)),
+    [120, 155, 191]
+  );
+  assert.equal(f.settings.density, 222);
+  assert.equal(f.events.length, writes, 'A resize neither persists nor relayouts a numeric width');
+  assert.equal(f.styles.get('--card-scale'), String(222 / 155));
+  assert.ok(f.buttons.every((button) => button.attributes['aria-pressed'] === 'false'));
+  await f.context.changeDisplaySetting('density', Number(f.buttons[1].dataset.density));
+  assert.equal(f.settings.density, 155);
+  assert.equal(f.styles.get('--card-scale'), '1');
+  assert.ok(f.events.some((event) => event.type === 'persist' && event.value === 155));
+  f.root.clientWidth = 2560;
+  f.context.applyDisplaySettings();
+  assert.deepEqual(
+    f.buttons.map((button) => Number(button.dataset.density)),
+    [123, 159, 192]
+  );
+  assert.equal(f.settings.density, 155, 'An earlier preset choice remains the saved numeric value');
+  assert.ok(f.buttons.every((button) => button.attributes['aria-pressed'] === 'false'));
+});
 
 test('details persist before capture so scrolling during a write stays authoritative', async () => {
   const f = fixture(),

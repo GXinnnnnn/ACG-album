@@ -2,7 +2,7 @@
 const { normalize, similarity, subjectNames, genericTitle } = require('./model.cjs');
 const { VERIFIED_ALIAS_VERSION } = require('./verified-title-aliases.cjs');
 
-const MATCHING_POLICY_VERSION = '2026-10-27-number-symbol-v1';
+const MATCHING_POLICY_VERSION = '2026-11-02-known-title-series-v3';
 const MIN_CONFIDENCE = 0.88;
 const IMPORT_MIN_CONFIDENCE = 0.85;
 const POPULAR_SUBTITLE_COLLECTIONS = 1000;
@@ -111,6 +111,7 @@ function evidence(queries, explicit, subject, series = false) {
     numberedSeries: new Set(),
     total: collections(subject),
     date: dateValue(subject.date),
+    exact: false,
     primaryExact: false,
     subtitle: false
   };
@@ -163,13 +164,15 @@ function evidence(queries, explicit, subject, series = false) {
         query.number !== candidate.number
       )
         continue;
-      if (
-        normalize(query.name) === normalize(candidate.name) &&
-        [subject.name, subject.name_cn].some(
-          (name) => typeof name === 'string' && normalize(name) === normalize(query.name)
+      if (normalize(query.name) === normalize(candidate.name)) {
+        item.exact = true;
+        if (
+          [subject.name, subject.name_cn].some(
+            (name) => typeof name === 'string' && normalize(name) === normalize(query.name)
+          )
         )
-      )
-        item.primaryExact = true;
+          item.primaryExact = true;
+      }
       if (subtitleAllowed && subtitleMatch(query, candidate.name)) item.subtitle = true;
       const exactBase = query.number === null && query.base === candidate.base;
       if (exactBase) {
@@ -259,6 +262,26 @@ function titleAgreement(subject, titleGroups, queryHits) {
   }
   return { agreement, primaryParts };
 }
+function chooseEvidenceSeries(items, queries) {
+  if (items.length < 2) return null;
+  const common = [...items[0].series].filter((key) => items.every((item) => item.series.has(key)));
+  let chosen = null;
+  for (const key of common) {
+    const query = queries.find((part) => `${items[0].subject.type}:${part.base}` === key);
+    if (!query) return null;
+    const subject = chooseSeriesSubject(
+      items.map((item) => item.subject),
+      {
+        verified: true,
+        query: query.name,
+        base: key.slice(key.indexOf(':') + 1)
+      }
+    );
+    if (!subject || (chosen && chosen.subject.id !== subject.id)) return null;
+    chosen = items.find((item) => item.subject === subject);
+  }
+  return chosen;
+}
 function rankSubjects(
   terms,
   subjects,
@@ -297,10 +320,10 @@ function rankSubjects(
   const credible = ranked.filter(
     (item) => item.match >= MIN_CONFIDENCE && (!titleGroups.length || item.agreement > 0)
   );
-  let eligible = complete ? credible : credible.filter((item) => item.match === 1);
+  let eligible = complete ? credible : credible.filter((item) => item.exact);
   // A derivative's broad alias must not displace an exact official title.
-  if (eligible.some((item) => item.match === 1 && item.primaryExact))
-    eligible = eligible.filter((item) => item.match !== 1 || item.primaryExact);
+  if (eligible.some((item) => item.exact && item.primaryExact))
+    eligible = eligible.filter((item) => !item.exact || item.primaryExact);
   let chosen = chooseClose(eligible);
   if (titleGroups.length && credible.length) {
     // Popularity and dates cannot settle conflicting bilingual identities.
@@ -312,6 +335,8 @@ function rankSubjects(
           ? best
           : null;
   }
+  if (series && !titleGroups.length && eligible.length > 1)
+    chosen = complete && !explicit.length ? chooseEvidenceSeries(eligible, queries) : null;
   if (!chosen && complete && !explicit.length && !titleGroups.length && ranked.length === 1) {
     const only = ranked[0];
     if (only.subtitle && only.total >= POPULAR_SUBTITLE_COLLECTIONS) chosen = only;
@@ -375,7 +400,7 @@ function rankImportSubjects(
   );
   // Restrict bounded recall before popularity is considered: an exact match
   // must never allow a nearby fuzzy candidate to bypass complete recall.
-  const eligible = complete ? admitted : admitted.filter((item) => item.match === 1);
+  const eligible = complete ? admitted : admitted.filter((item) => item.exact);
   let chosen = chooseClose(eligible) || null;
   if (titleGroups.length && eligible.length) {
     const [best, rival] = eligible;
@@ -386,6 +411,8 @@ function rankImportSubjects(
         ? null
         : best;
   }
+  if (series && !titleGroups.length && eligible.length > 1)
+    chosen = complete && !explicit.length ? chooseEvidenceSeries(eligible, queries) : null;
   // Keep the selected item visible even when chronology promoted an item that
   // appeared below the first ten rows in the evidence ordering.
   const visible = chosen
@@ -405,15 +432,177 @@ function rankImportSubjects(
         ? 'incomplete-recall'
         : !chosen
           ? 'no-eligible-candidate'
-          : chosen.match === 1
-            ? 'exact-popularity-date'
-            : 'similarity-popularity-date'
+          : series && !titleGroups.length && eligible.length > 1
+            ? 'series-representative'
+            : chosen.exact
+              ? 'exact-popularity-date'
+              : 'similarity-popularity-date'
   };
+}
+
+// Reuse names from a bounded, caller-scoped metadata lookup before retrieval.
+// No fuzzy score, popularity or date can establish a known identity. A short Han
+// title may participate only when both complete names already belong to this ID.
+function rankKnownSubjects(query, subjects, types) {
+  const empty = (selectionReason) => ({
+    candidates: [],
+    selected: null,
+    selectedMatch: null,
+    selectionReason
+  });
+  if (
+    typeof query !== 'string' ||
+    query.length > 240 ||
+    normalize(query).length < 2 ||
+    genericTitle(query) ||
+    !Array.isArray(subjects) ||
+    !Array.isArray(types)
+  )
+    return empty('no-known-title-identity');
+  // The caller must not silently turn a truncated metadata lookup into proof.
+  if (subjects.length > 512) return empty('incomplete-known-recall');
+  const key = normalize(query);
+  const matches = new Map();
+  const admittedTypes = types.filter((type) => [1, 2, 4, 6].includes(type));
+  const prove = (terms, subject) => {
+    const queries = terms.map((name) => ({ name, ...installment(name) }));
+    const explicit = queries.filter((part) => part.number !== null);
+    if (new Set(explicit.map((part) => part.number)).size > 1) return false;
+    const item = evidence(queries, explicit, subject);
+    return item.exact && item.match === 1;
+  };
+  for (const subject of subjects) {
+    if (
+      !subject ||
+      !Number.isSafeInteger(subject.id) ||
+      subject.id <= 0 ||
+      !admittedTypes.includes(subject.type)
+    )
+      continue;
+    const names = subjectNames(subject);
+    let proven = names.some((name) => normalize(name) === key) && prove([query], subject);
+    if (!proven) {
+      const han = names.filter((name) =>
+        /^[\p{Script=Han}\d\p{P}\p{S}\s]+$/u.test(name.normalize('NFKC'))
+      );
+      const latin = names.filter(
+        (name) =>
+          /^[\p{Script=Latin}\d\p{P}\p{S}\s]+$/u.test(name.normalize('NFKC')) &&
+          (name.match(/\p{Script=Latin}/gu) || []).length >= 3
+      );
+      for (const left of han) {
+        if ((left.match(/\p{Script=Han}/gu) || []).length < 2) continue;
+        for (const right of latin) {
+          const a = normalize(left),
+            b = normalize(right);
+          if (key !== a + b && key !== b + a) continue;
+          // Visible digits, including years, must agree if both names carry them.
+          const leftDigits = left.normalize('NFKC').match(/\d+/g) || [];
+          const rightDigits = right.normalize('NFKC').match(/\d+/g) || [];
+          if (
+            leftDigits.length &&
+            rightDigits.length &&
+            leftDigits.join(',') !== rightDigits.join(',')
+          )
+            continue;
+          if (prove([left, right], subject)) {
+            proven = true;
+            break;
+          }
+        }
+        if (proven) break;
+      }
+    }
+    if (proven) matches.set(`${subject.type}:${subject.id}`, subject);
+  }
+  const proven = [...matches.values()].sort((a, b) => a.type - b.type || a.id - b.id);
+  const selected = proven.length === 1 ? proven[0] : null;
+  return {
+    candidates: proven.slice(0, 10).map((subject) => ({
+      ...subject,
+      match: 1,
+      collection_total: Number.isFinite(collections(subject)) ? collections(subject) : 0
+    })),
+    selected,
+    selectedMatch: selected ? 1 : null,
+    selectionReason: selected
+      ? 'known-title-identity'
+      : proven.length
+        ? 'ambiguous-known-title-identity'
+        : 'no-known-title-identity'
+  };
+}
+
+// This is a representative policy, never general search ranking. The caller
+// must first prove one series and provide its complete unqualified base title.
+function chooseSeriesSubject(subjects, { verified = false, query = '', base = '' } = {}) {
+  if (
+    !verified ||
+    !Array.isArray(subjects) ||
+    subjects.length < 2 ||
+    subjects.length > 128 ||
+    typeof query !== 'string' ||
+    typeof base !== 'string' ||
+    query.length > 240 ||
+    base.length > 240 ||
+    normalize(query).length < 2 ||
+    normalize(query) !== normalize(base) ||
+    genericTitle(query) ||
+    /\d/u.test(query.normalize('NFKC')) ||
+    subtitleBlocked(query)
+  )
+    return null;
+  const unique = new Map();
+  for (const subject of subjects) {
+    if (
+      !subject ||
+      !Number.isSafeInteger(subject.id) ||
+      subject.id <= 0 ||
+      ![1, 2, 4, 6].includes(subject.type) ||
+      subjectNames(subject).some(seriesSideStory) ||
+      typeof subject.collection?.collect !== 'number' ||
+      !Number.isFinite(subject.collection.collect) ||
+      subject.collection.collect <= 0
+    )
+      return null;
+    const key = `${subject.type}:${subject.id}`;
+    // Conflicting copies cannot silently supply different counts or scores.
+    if (unique.has(key) && unique.get(key) !== subject) return null;
+    unique.set(key, subject);
+  }
+  const items = [...unique.values()];
+  if (items.length < 2 || new Set(items.map((subject) => subject.type)).size !== 1) return null;
+  const popular = [...items].sort((a, b) => b.collection.collect - a.collection.collect);
+  if (popular[0].collection.collect >= popular[1].collection.collect * 5) return popular[0];
+  // Lower-order members cannot beat the comparable-popularity group by rating.
+  const peers = popular.filter(
+    (subject) => subject.collection.collect * 5 > popular[0].collection.collect
+  );
+  if (
+    peers.some(
+      (subject) =>
+        typeof subject.rating?.score !== 'number' ||
+        !Number.isFinite(subject.rating.score) ||
+        subject.rating.score <= 0 ||
+        subject.rating.score > 10
+    )
+  )
+    return null;
+  const highest = Math.max(...peers.map((subject) => subject.rating.score));
+  const lowest = Math.min(...peers.map((subject) => subject.rating.score));
+  if (highest - lowest > 0.3 + 1e-12) {
+    const best = peers.filter((subject) => subject.rating.score === highest);
+    return best.length === 1 ? best[0] : null;
+  }
+  if (peers.some((subject) => !Number.isFinite(dateValue(subject.date)))) return null;
+  const newest = Math.max(...peers.map((subject) => dateValue(subject.date)));
+  const latest = peers.filter((subject) => dateValue(subject.date) === newest);
+  return latest.length === 1 ? latest[0] : null;
 }
 
 // The local reader calls this only after independent, complete bilingual Vol
 // evidence. Explicit-title admission remains in rankImportSubjects above.
-function rankVerifiedSeriesMembers(members, types) {
+function rankVerifiedSeriesMembers(members, types, { query = '', base = '' } = {}) {
   const valid = members.filter(
     ({ subject, volume }) =>
       subject &&
@@ -433,7 +622,14 @@ function rankVerifiedSeriesMembers(members, types) {
     total: Number.isFinite(collections(subject)) ? collections(subject) : 0,
     date: dateValue(subject.date)
   }));
-  const chosen = !ambiguous && volumes.size >= 2 ? chooseClose(ranked) : null;
+  const representative =
+    !ambiguous && volumes.size >= 2
+      ? chooseSeriesSubject(
+          valid.map((item) => item.subject),
+          { verified: true, query, base }
+        )
+      : null;
+  const chosen = ranked.find((item) => item.subject === representative) || null;
   const ordered = chosen ? [chosen, ...ranked.filter((item) => item !== chosen)] : ranked;
   return {
     selected: chosen?.subject || null,
@@ -480,6 +676,8 @@ module.exports = {
   MIN_CONFIDENCE,
   IMPORT_MIN_CONFIDENCE,
   rankImportSubjects,
+  rankKnownSubjects,
+  chooseSeriesSubject,
   rankVerifiedSeriesMembers,
   seriesSideStory,
   installment,

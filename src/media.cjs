@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
-const sharp = require('sharp');
+let sharpImplementation;
+const sharp = (...args) => (sharpImplementation ||= require('sharp'))(...args);
 const HEADER_PIXELS = 80000000,
   PIXELS = 24000000,
   MEMORY = 256 * 1024 * 1024;
@@ -713,6 +714,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
     get,
     stop,
     stats,
+    activity: () => ({ queued: jobs.size, active: !!pumping, background: !!background }),
     setPlace,
     setVideoInfo,
     frame,

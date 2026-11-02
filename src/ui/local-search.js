@@ -38,7 +38,11 @@
   function rememberStatus(status) {
     cachedStatus = status || { available: false };
     document.querySelectorAll('[data-local-index-status]').forEach((element) => {
+      const panel = element.closest('.settings-panel'),
+        atBottom =
+          panel && !panel.hidden && panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 1;
       element.textContent = statusText(cachedStatus);
+      if (atBottom) panel.scrollTop = panel.scrollHeight;
     });
     return cachedStatus;
   }

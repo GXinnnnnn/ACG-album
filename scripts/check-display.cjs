@@ -150,7 +150,7 @@ async function manifest(root) {
       )
     );
     report.categorySizes = [];
-    for (const width of [158, 186, 222]) {
+    for (const width of [128, 166, 195]) {
       await choose(width);
       report.categorySizes.push(
         await page.evaluate(() => ({
@@ -170,7 +170,7 @@ async function manifest(root) {
     await page.locator(`.collection-tile[data-id="${root}"] .category-expand`).click();
     await page.waitForSelector('.collection-preview .album-card');
     report.previewSizes = [];
-    for (const width of [158, 222]) {
+    for (const width of [128, 195]) {
       await choose(width);
       report.previewSizes.push(
         await page.evaluate(() => ({
@@ -214,7 +214,7 @@ async function manifest(root) {
         items: grid.items
       };
     });
-    await choose(158);
+    await choose(128);
     report.anchor = await page.evaluate(() => {
       const before = window.__displayBefore,
         a = before.anchor,
@@ -258,7 +258,7 @@ async function manifest(root) {
         .every((i) => i.complete && i.naturalWidth > 0)
     );
     await settledScreenshot(`artifacts/display-${label}-small.png`);
-    await choose(222);
+    await choose(195);
     await page.waitForFunction(() =>
       [...document.querySelectorAll('.image-card img')]
         .filter((i) => {
@@ -269,10 +269,10 @@ async function manifest(root) {
     );
     await settledScreenshot(`artifacts/display-${label}-large.png`);
     report.rapidChoice = await page.evaluate(async () => {
-      const first = changeDisplaySetting('density', 158);
+      const first = changeDisplaySetting('density', 128);
       await Promise.resolve();
-      changeDisplaySetting('density', 222);
-      changeDisplaySetting('density', 186);
+      changeDisplaySetting('density', 195);
+      changeDisplaySetting('density', 166);
       await first;
       return {
         density: S.settings.density,
@@ -280,22 +280,22 @@ async function manifest(root) {
         selected: $$('#card-size-controls [aria-pressed=true]').length
       };
     });
-    assert.deepEqual(report.rapidChoice, { density: 186, persisted: 186, selected: 1 });
-    await page.locator('#card-size-controls [data-density="222"]').focus();
+    assert.deepEqual(report.rapidChoice, { density: 166, persisted: 166, selected: 1 });
+    await page.locator('#card-size-controls [data-density="195"]').focus();
     await page.keyboard.press('Enter');
-    await settle(222);
+    await settle(195);
     report.keyboard = await page
-      .locator('#card-size-controls [data-density="222"]')
+      .locator('#card-size-controls [data-density="195"]')
       .getAttribute('aria-pressed');
     assert.equal(report.keyboard, 'true');
     await page.locator('#density-button').click();
-    await page.locator('#modal [data-density="158"]').focus();
+    await page.locator('#modal [data-density="128"]').focus();
     await page.keyboard.press('Space');
-    await settle(158);
+    await settle(128);
     report.modalSync = await page.evaluate(() => ({
-      toolbar: $('#card-size-controls [data-density="158"]').getAttribute('aria-pressed'),
-      modal: $('#modal [data-density="158"]').getAttribute('aria-pressed'),
-      focus: document.activeElement === $('#modal [data-density="158"]')
+      toolbar: $('#card-size-controls [data-density="128"]').getAttribute('aria-pressed'),
+      modal: $('#modal [data-density="128"]').getAttribute('aria-pressed'),
+      focus: document.activeElement === $('#modal [data-density="128"]')
     }));
     assert.deepEqual(report.modalSync, { toolbar: 'true', modal: 'true', focus: true });
     report.ratios = [];
@@ -350,7 +350,7 @@ async function manifest(root) {
       await page.evaluate((sidebar) => saveSetting('sidebarMode', sidebar), sidebar);
       for (const theme of ['light', 'dark']) {
         await page.evaluate((theme) => changeTheme(theme), theme);
-        for (const density of [158, 186, 222]) {
+        for (const density of [128, 166, 195]) {
           await choose(density);
           const layout = await page.evaluate(() => {
             const vp = $('#viewport'),
@@ -402,7 +402,7 @@ async function manifest(root) {
     await page.evaluate(async () => {
       await saveSetting('sidebarMode', 'auto');
       await changeTheme('light');
-      await changeDisplaySetting('density', 186);
+      await changeDisplaySetting('density', 166);
       await changeDisplaySetting('ratio', 'square');
     });
     await app.close();
@@ -414,7 +414,7 @@ async function manifest(root) {
       selected: $('#card-size-controls [aria-pressed=true]').textContent.trim(),
       categoryWidth: $('.collection-tile').getBoundingClientRect().width
     }));
-    assert.equal(report.restart.density, 186);
+    assert.equal(report.restart.density, 166);
     assert.equal(report.restart.ratio, 'square');
     assert.equal(report.restart.selected, '中');
     report.errors = [

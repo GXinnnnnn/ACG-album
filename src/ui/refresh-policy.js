@@ -21,22 +21,37 @@ function createScanRefreshGate() {
   };
 }
 
-// Background matches update the browser in batches; the worker's final status
-// flushes the remainder. Manual edits use their existing immediate update path.
-function createMatchRefreshBatch(refresh, size = 10) {
+// Bound how long a partial batch waits while later network resources are slow.
+// The timer starts at the first change and is not postponed by repeated changes.
+function createMatchRefreshBatch(refresh, size = 10, maxWait = 250) {
   const pending = new Set();
+  let timer = null,
+    disposed = false;
+  function clearTimer() {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  }
   function flush() {
-    if (!pending.size) return false;
+    clearTimer();
+    if (disposed || !pending.size) return false;
     pending.clear();
     refresh();
     return true;
   }
   return {
     changed(id) {
-      if (id) pending.add(id);
-      return pending.size >= size ? flush() : false;
+      if (disposed || !id) return false;
+      pending.add(id);
+      if (pending.size >= size) return flush();
+      if (timer === null) timer = setTimeout(flush, maxWait);
+      return false;
     },
     flush,
+    dispose() {
+      disposed = true;
+      clearTimer();
+      pending.clear();
+    },
     get pending() {
       return pending.size;
     }

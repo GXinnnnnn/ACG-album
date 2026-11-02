@@ -28,11 +28,13 @@ async function client(dataDir, { holdFirst = false } = {}) {
     };
     const compiled=new Module(workerData.script,module);compiled.filename=workerData.script;compiled.paths=Module._nodeModulePaths(path.dirname(workerData.script));compiled._compile(source,workerData.script);
   `,
-    { eval: true, workerData: { script, dataDir, watch: false, holdFirst } }
+    { eval: true, workerData: { script, dataDir, watch: false, holdFirst, deferBackground: true } }
   );
   let readyResolve,
     readyReject,
     heldResolve,
+    maintenanceResolve,
+    maintenanceReject,
     seq = 0;
   const ready = new Promise((resolve, reject) => {
     readyResolve = resolve;
@@ -45,11 +47,18 @@ async function client(dataDir, { holdFirst = false } = {}) {
     events = [];
   worker.on('error', (error) => {
     readyReject(error);
+    maintenanceReject?.(error);
     for (const p of pending.values()) p.reject(error);
   });
   worker.on('message', (message) => {
     if (message.event) events.push(message);
     if (message.event === 'ready') readyResolve();
+    if (message.event === 'tasks') {
+      const maintenance = message.data?.maintenance;
+      if (maintenance?.state === 'ready') maintenanceResolve?.();
+      if (maintenance?.state === 'error')
+        maintenanceReject?.(new Error(maintenance.error || 'Startup maintenance failed'));
+    }
     if (message.event === 'policy-held') heldResolve();
     if (message.request) {
       const p = pending.get(message.request);
@@ -58,7 +67,7 @@ async function client(dataDir, { holdFirst = false } = {}) {
     }
   });
   await ready;
-  return {
+  const api = {
     events,
     held,
     release() {
@@ -89,6 +98,33 @@ async function client(dataDir, { holdFirst = false } = {}) {
       }
     }
   };
+  let timer;
+  const maintained = new Promise((resolve, reject) => {
+    maintenanceResolve = resolve;
+    maintenanceReject = reject;
+    timer = setTimeout(
+      () => reject(new Error('Startup maintenance did not become ready within 5000ms')),
+      5000
+    );
+  });
+  try {
+    // Preserve read-ready startup; policy assertions opt into completed maintenance.
+    await Promise.all([api.call('startupResume'), maintained]);
+    const snapshot = await api.call('init', { lightweight: true });
+    assert.equal(snapshot.taskSnapshot.maintenance.state, 'ready');
+    // Drain startup-only changed before counting mutations caused by the test.
+    for (let i = events.length - 1; i >= 0; i--)
+      if (events[i].event === 'changed' && events[i].data?.maintenance === true)
+        events.splice(i, 1);
+    return api;
+  } catch (error) {
+    api.release();
+    await worker.terminate();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    maintenanceResolve = maintenanceReject = null;
+  }
 }
 async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-root-policy-'));

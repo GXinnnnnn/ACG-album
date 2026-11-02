@@ -28,7 +28,7 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 function harness(apiImplementation) {
   const elements = new Map();
   const calls = [];
-  const ui = { open: false, closes: 0, reloads: [], toasts: [] };
+  const ui = { open: false, closes: 0, reloads: [], toasts: [], updates: [], intros: [] };
   const album = { id: 'album-test', name: '测试作品', search_type: 2 };
   let context;
   function element() {
@@ -77,6 +77,14 @@ function harness(apiImplementation) {
       context.modalGeneration++;
       for (const node of elements.values()) node.isConnected = false;
       elements.clear();
+    },
+    S: { current: album, search: '' },
+    updateCoverNode(node) {
+      ui.updates.push(node);
+      if (node?.id === album.id) Object.assign(album, node);
+    },
+    renderIntro(node) {
+      ui.intros.push(node);
     },
     async loadPage(force) {
       ui.reloads.push(force);
@@ -296,13 +304,19 @@ test('manual candidates retain the dialog and explicit repeated Save submits onl
       id: 'album-test',
       url: 'https://bgm.tv/subject/413741'
     });
-    return { subject_id: 413741 };
+    return {
+      id: 'album-test',
+      subject_id: 413741,
+      metadata: { name: '测试作品' },
+      enrichment_pending: true
+    };
   });
   await h.match();
   assertDialogRetained(h);
   assert.deepEqual(h.commands(), ['match']);
   assert.equal(h.get('#subject-url').value, '');
   assert.match(h.get('#candidate-list').innerHTML, /data-subject="413741"/);
+  assert.match(h.get('#candidate-list').innerHTML, /名称相关度，不代表已关联/);
   assert.match(h.get('#candidate-status').textContent, /尚未更改/);
   // Pasting a candidate URL is supported; real candidate click/aria behavior is
   // verified separately against Chromium in check-manual-navigation.cjs.
@@ -312,7 +326,15 @@ test('manual candidates retain the dialog and explicit repeated Save submits onl
   assert.deepEqual(h.commands(), ['match', 'bind']);
   assert.equal(h.ui.open, false);
   assert.equal(h.ui.closes, 1);
-  assert.deepEqual(h.ui.reloads, [true]);
-  assert.equal(h.ui.toasts.length, 1);
-  assert.match(h.ui.toasts[0], /关联已保存/);
+  assert.deepEqual(
+    h.ui.reloads,
+    [],
+    'saving must preserve cards and scroll instead of reloading the page'
+  );
+  assert.equal(h.ui.updates.length, 1);
+  assert.equal(h.ui.updates[0].subject_id, 413741);
+  assert.equal(h.ui.updates[0].enrichment_pending, true);
+  assert.equal(h.ui.intros.length, 1);
+  assert.equal(h.album.metadata.name, '测试作品');
+  assert.deepEqual(h.ui.toasts, ['关联已保存，封面和详情在后台补全']);
 });

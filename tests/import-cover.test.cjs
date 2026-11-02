@@ -218,7 +218,7 @@ test(
 );
 
 test(
-  'target scans preview only visited new folders and never partially index a skipped existing subtree',
+  'target scans traverse existing deep folders and publish complete covers, totals, FTS and media',
   { timeout: 10000 },
   async (t) => {
     const f = await fixture(t);
@@ -229,44 +229,66 @@ test(
     const nested = path.join(existing, 'new');
     await image(path.join(nested, 'a.jpg'));
     await image(path.join(nested, 'b.jpg'));
+    const files = ['a.jpg', 'b.jpg'].map((name) => path.join(nested, name));
+    const imageIds = files.map(idFor);
+    const bytes = (await Promise.all(files.map((file) => fs.stat(file)))).reduce(
+      (sum, stat) => sum + stat.size,
+      0
+    );
+    const assertComplete = async (label) => {
+      const result = await f.active.call('get', { id: idFor(nested) });
+      assert.equal(result.files, 2, label);
+      assert.ok(result.cover, label);
+      assert.equal((await f.active.call('get', { id: idFor(existing) })).files, 2, label);
+      database(f, (db) => {
+        for (const id of imageIds) {
+          assert.equal(
+            db.prepare('SELECT count(*) n FROM nodes WHERE id=? AND missing=0').get(id).n,
+            1,
+            label + ': every discovered image is live'
+          );
+          assert.equal(
+            db.prepare('SELECT count(*) n FROM search_index WHERE id=?').get(id).n,
+            1,
+            label + ': each image has exactly one FTS row'
+          );
+          assert.equal(
+            db.prepare('SELECT count(*) n FROM media WHERE id=?').get(id).n,
+            1,
+            label + ': each image has exactly one media row'
+          );
+          assert.equal(db.prepare('SELECT status FROM media WHERE id=?').get(id).status, 'pending');
+        }
+        for (const [folders, folder] of [nested, existing, f.source].entries()) {
+          const row = db
+            .prepare(
+              'SELECT cover,cover_source,local_newest,files,folders,total_bytes FROM nodes WHERE id=?'
+            )
+            .get(idFor(folder));
+          assert.ok(row.cover, label + ': complete target scan restores ancestor covers');
+          assert.ok(
+            imageIds.includes(row.cover),
+            label + ': covers resolve inside the discovered subtree'
+          );
+          assert.equal(row.cover_source, 'fallback', label);
+          assert.equal(row.files, 2, label);
+          assert.equal(row.folders, folders, label);
+          assert.equal(row.total_bytes, bytes, label);
+          assert.ok(
+            db
+              .prepare("SELECT id FROM nodes WHERE id=? AND kind='image' AND missing=0")
+              .get(row.local_newest),
+            label + ': newest pointers resolve to a fully indexed live image'
+          );
+          assert.ok(imageIds.includes(row.local_newest), label);
+        }
+      });
+      assert.equal(f.active.events.filter((event) => event.event === 'network-observed').length, 0);
+    };
     await f.active.call('scan', { path: f.source, target: f.source, offline: true });
-    database(f, (db) => {
-      assert.equal(
-        db.prepare('SELECT count(*) n FROM nodes WHERE path LIKE ?').get(nested + '%').n,
-        0,
-        'skipped existing subtree must not retain partial preview nodes'
-      );
-      const skipped = db
-        .prepare('SELECT cover,local_newest FROM nodes WHERE id=?')
-        .get(idFor(existing));
-      assert.ok(!skipped.cover);
-      assert.equal(skipped.local_newest, '');
-    });
+    await assertComplete('root target discovers descendants of an existing folder');
     await f.active.call('scan', { path: f.source, target: existing, offline: true });
-    const result = await f.active.call('get', { id: idFor(nested) });
-    assert.equal(result.files, 2);
-    assert.ok(result.cover);
-    assert.equal((await f.active.call('get', { id: idFor(existing) })).files, 2);
-    database(f, (db) => {
-      for (const name of ['a.jpg', 'b.jpg']) {
-        const id = idFor(path.join(nested, name));
-        assert.ok(db.prepare('SELECT id FROM nodes WHERE id=? AND missing=0').get(id));
-        assert.ok(db.prepare('SELECT id FROM search_index WHERE id=?').get(id));
-        assert.ok(db.prepare('SELECT id FROM media WHERE id=?').get(id));
-      }
-      for (const folder of [nested, existing, f.source]) {
-        const row = db
-          .prepare('SELECT cover,local_newest FROM nodes WHERE id=?')
-          .get(idFor(folder));
-        assert.ok(row.cover, 'complete target scan restores ancestor covers');
-        assert.ok(
-          db
-            .prepare("SELECT id FROM nodes WHERE id=? AND kind='image' AND missing=0")
-            .get(row.local_newest),
-          'newest pointers resolve to a fully indexed live image'
-        );
-      }
-    });
+    await assertComplete('repeated subtree target keeps the complete index without duplicate rows');
   }
 );
 

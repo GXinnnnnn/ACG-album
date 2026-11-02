@@ -407,7 +407,7 @@ function updateCoverNode(n) {
     }
   // Pending-only collections need to drop newly confirmed items, but ordinary libraries stay intact.
   if ((S.view === 'pending' || S.filter === 'pending') && !cardReviewMessage(n))
-    attempt(() => loadPage(true));
+    attempt(refreshGrowingView);
 }
 function renderIdentitySettings(content) {
   const $ = (selector) => content.querySelector(selector);

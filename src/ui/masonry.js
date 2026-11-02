@@ -7,7 +7,7 @@
 // Keep the API bound explicit; a normal 4K window needs only 28–42 preview albums.
 function overviewPreviewGeometry(available, preset, gap = 19) {
   const width = Math.max(1, Number(available) || 1),
-    target = Math.min(width, Math.max(1, Number(preset) || 222)),
+    target = Math.min(width, Math.max(1, Number(preset) || 166)),
     spacing = Math.max(0, Number(gap) || 0),
     columns = Math.max(1, Math.floor((width + spacing) / (target + spacing)));
   return {
@@ -207,6 +207,7 @@ function createVirtualGrid() {
     FOLDER_GAP = 19,
     FOLDER_DETAILS_INFO = 70,
     FOLDER_TITLE_INFO = 40,
+    METRIC_LIMIT = 256,
     heights = new Map(),
     loaded = new Set(),
     failed = new Set(),
@@ -214,7 +215,6 @@ function createVirtualGrid() {
   const positions = new Map(),
     cardLayouts = new WeakMap();
   let keys = [],
-    sums = [],
     stamp = '',
     dirty = true,
     pageVersion = 0,
@@ -238,8 +238,9 @@ function createVirtualGrid() {
     args: null,
     version: 0,
     rowHeight: 370,
-    width: 222,
+    width: 166,
     cols: 1,
+    offsetX: 0,
     gap: FOLDER_GAP,
     active: false,
     reset() {
@@ -260,7 +261,6 @@ function createVirtualGrid() {
       stamp = '';
       dirty = true;
       keys = [];
-      sums = [];
       extent = retainedExtent = 0;
       const el = $('#virtual-grid');
       el.replaceChildren();
@@ -303,44 +303,24 @@ function createVirtualGrid() {
       if (index < this.folders)
         return {
           top: Math.floor(index / this.cols) * this.rowHeight,
-          left: (index % this.cols) * (this.width + this.gap),
+          left: this.offsetX + (index % this.cols) * (this.width + this.gap),
           height: cover + folderInfo,
           width: this.width
         };
       const page = Math.floor(index / PAGE),
         local = index - Math.max(this.folders, page * PAGE),
         known = positions.get(index);
-      if (known)
-        return {
-          top: pageTop(page) + known.top,
-          left: known.left,
-          height: known.height,
-          width: this.width
-        };
-      // The first media page starts beside a partial folder row. Its placeholders
-      // must respect the same occupied columns as the loaded geometry.
-      if (page === firstMedia && this.folders % this.cols) {
-        const columns = seedColumns(page);
-        let column = 0;
-        for (let i = 0; i <= local; i++) {
-          column = shortest(columns);
-          if (i < local) columns[column] += estimatedCover() + detail + MEDIA_GAP;
-        }
-        return {
-          top: pageTop(page) + columns[column],
-          left: column * (this.width + MEDIA_GAP),
-          height: estimatedCover() + detail,
-          width: this.width
-        };
-      }
-      // Untouched blocks need no per-item allocation, even for very deep jumps.
-      const h = estimatedCover() + detail,
-        rows = Math.ceil(count(page) / mediaCols),
-        step = pageHeight(page) / Math.max(1, rows);
+      if (known) return { ...known, width: this.width };
+      // Placeholders use the same incoming column frontier as loaded pages.
+      // Advancing equal-height slots is logarithmic even for a deep random jump.
+      const columns = seedColumns(page),
+        h = pageCover(page) + detail;
+      advanceColumns(columns, local, h + MEDIA_GAP);
+      const column = shortest(columns);
       return {
-        top: pageTop(page) + Math.floor(local / mediaCols) * step,
-        left: (local % mediaCols) * (this.width + MEDIA_GAP),
-        height: Math.min(h, step - MEDIA_GAP),
+        top: columns[column],
+        left: this.offsetX + column * (this.width + MEDIA_GAP),
+        height: h,
         width: this.width
       };
     },
@@ -386,7 +366,7 @@ function createVirtualGrid() {
         current = () => this.active && version === this.version && navigation === S.loadVersion;
       const task = (async () => {
         const m = measure(),
-          initial = this.total ? anchorAt(m, 0) : null,
+          initial = this.total ? refreshAnchor(m) : null,
           oldFolders = this.folders,
           pages = visiblePages(m);
         if (!pages.size) pages.add(0);
@@ -429,7 +409,7 @@ function createVirtualGrid() {
         if (!current()) return this.total;
         // Capture again after IO: scrolling while the queries run remains authoritative.
         const latest = measure(),
-          anchor = this.total ? anchorAt(latest, 0) : null,
+          anchor = this.total ? refreshAnchor(latest) : null,
           anchorNode = anchor && this.items.get(anchor.index),
           previousCards = new Map();
         for (const [index, b] of this.cards) {
@@ -463,7 +443,7 @@ function createVirtualGrid() {
             const previous = previousCards.get(String(n.id));
             if (
               previous &&
-              (JSON.stringify(previous.n) === JSON.stringify(n) ||
+              (sameCardData(previous.n, n) ||
                 (n.kind === 'folder' &&
                   previous.n.kind === 'folder' &&
                   typeof updateFolderCard === 'function'))
@@ -554,10 +534,23 @@ function createVirtualGrid() {
       return request.promise;
     }
   };
+  function sameCardData(previous, next) {
+    const a = { ...previous },
+      b = { ...next };
+    if ((a.kind === 'image' || a.kind === 'video') && a.kind === b.kind) {
+      // Scans update indexed and can learn fs_identity for unchanged files.
+      // Neither affects media presentation; keep every content field compared.
+      delete a.indexed;
+      delete b.indexed;
+      delete a.fs_identity;
+      delete b.fs_identity;
+    }
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
   function applyPages(results) {
     if (!results.size) return;
     const m = measure(),
-      anchor = grid.total ? anchorAt(m, 0) : null,
+      anchor = grid.total ? refreshAnchor(m) : null,
       anchorNode = anchor && grid.items.get(anchor.index),
       previousCards = new Map();
     if (!grid.total) {
@@ -584,7 +577,7 @@ function createVirtualGrid() {
         grid.items.set(index, n);
         if (anchorNode?.id === n.id) anchor.index = index;
         const previous = previousCards.get(String(n.id));
-        if (!previous || JSON.stringify(previous.n) !== JSON.stringify(n)) return;
+        if (!previous || !sameCardData(previous.n, n)) return;
         const b = previous.b;
         if (previous.index !== index) {
           b.dataset.index = b.dataset.gridIndex = String(index);
@@ -607,11 +600,13 @@ function createVirtualGrid() {
     const el = $('#virtual-grid'),
       vp = $('#viewport'),
       scroll = vp.scrollTop;
-    const origin = el.getBoundingClientRect().top - vp.getBoundingClientRect().top + scroll;
+    const viewportTop = vp.getBoundingClientRect().top,
+      origin = el.getBoundingClientRect().top - viewportTop + scroll;
     return {
       el,
       vp,
       scroll,
+      viewportTop,
       origin,
       top: scroll - origin,
       height: vp.clientHeight,
@@ -639,10 +634,11 @@ function createVirtualGrid() {
     // same-width folder card. Inter-card spacing is not part of that height.
     return 2 * (cover + folderInfo) - detail;
   }
-  function seedColumns(page) {
-    const occupied = page === firstMedia ? grid.folders % grid.cols : 0;
-    return Array.from({ length: mediaCols }, (_, column) =>
-      column < occupied ? grid.rowHeight : 0
+  function initialColumns() {
+    const occupied = grid.folders % grid.cols;
+    return Array.from(
+      { length: mediaCols },
+      (_, column) => mediaTop + (column < occupied ? grid.rowHeight : 0)
     );
   }
   function shortest(columns) {
@@ -650,22 +646,59 @@ function createVirtualGrid() {
     for (let c = 1; c < columns.length; c++) if (columns[c] < columns[column]) column = c;
     return column;
   }
-  function estimatedPage(page, h = estimatedCover()) {
-    // Only the transition page shares a row with folders. Untouched distant
-    // blocks retain constant-space estimates without walking their predecessors.
-    if (page !== firstMedia || !(grid.folders % grid.cols))
-      return Math.ceil(count(page) / mediaCols) * (h + detail + MEDIA_GAP);
-    const columns = seedColumns(page);
-    for (let i = 0; i < count(page); i++) columns[shortest(columns)] += h + detail + MEDIA_GAP;
-    return Math.max(...columns);
+  function advanceColumns(columns, slots, step) {
+    if (slots <= 0) return columns;
+    // Each column contributes the arithmetic sequence start + k * step.
+    // Count whole levels, then resolve at most one slot per column by the same
+    // leftmost-shortest rule as real cards. No walk through skipped API pages.
+    const base = Math.min(...columns);
+    let lo = 0,
+      hi = Math.ceil((Math.max(...columns) - base) / step) + Math.ceil(slots / mediaCols);
+    const before = (level, start) => Math.max(0, Math.ceil((level - start) / step - 1e-9));
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2),
+        level = base + mid * step;
+      let used = 0;
+      for (const start of columns) used += before(level, start);
+      if (used <= slots) lo = mid;
+      else hi = mid - 1;
+    }
+    const level = base + lo * step;
+    let used = 0;
+    for (let c = 0; c < columns.length; c++) {
+      const n = before(level, columns[c]);
+      columns[c] += n * step;
+      used += n;
+    }
+    for (; used < slots; used++) columns[shortest(columns)] += step;
+    return columns;
   }
-  function estimate(page) {
-    return estimatedPage(page);
+  function seedColumns(page) {
+    let lo = 0,
+      hi = keys.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (keys[mid] < page) lo = mid + 1;
+      else hi = mid;
+    }
+    if (keys[lo] === page) return [...heights.get(page).start];
+    const previous = lo ? keys[lo - 1] : firstMedia - 1,
+      columns = lo ? [...heights.get(previous).end] : initialColumns(),
+      first = Math.max(grid.folders, (previous + 1) * PAGE);
+    return advanceColumns(
+      columns,
+      Math.max(0, page * PAGE - first),
+      estimatedCover() + detail + MEDIA_GAP
+    );
+  }
+  function pageCover(page) {
+    const metric = heights.get(page);
+    return metric ? Math.min(mediaCoverLimit(), metric.mean * grid.width) : estimatedCover();
   }
   function signature(m) {
     return [
       m.width,
-      Number(S.settings.density) || 222,
+      Number(S.settings.density) || 166,
       S.settings.ratio,
       S.settings.details !== false,
       // An empty resize must not cache folder geometry for the later pure-media response.
@@ -677,11 +710,16 @@ function createVirtualGrid() {
     if (stamp === next) return;
     stamp = next;
     dirty = true;
-    const preset = Math.max(1, Number(S.settings.density) || 222);
+    const preset = Math.max(1, Number(S.settings.density) || 166);
     grid.gap = grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
-    // Fixed card widths leave trailing space and clamp to narrow containers.
+    // Preserve the requested card width and split the incomplete column's
+    // remainder equally across both edges, including narrow one-column walls.
     grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (preset + grid.gap)));
     grid.width = Math.min(m.width, preset);
+    grid.offsetX = Math.max(
+      0,
+      (m.width - (grid.cols * grid.width + (grid.cols - 1) * grid.gap)) / 2
+    );
     mediaCols = grid.cols;
     const ratio =
       S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12;
@@ -691,29 +729,14 @@ function createVirtualGrid() {
     folderInfo = S.settings.details === false ? FOLDER_TITLE_INFO : FOLDER_DETAILS_INFO;
     grid.rowHeight = cover + folderInfo + grid.gap;
   }
-  function pageHeight(page) {
+  function pageEnd(page) {
     const metric = heights.get(page);
-    if (!metric) return estimate(page);
-    if (metric.stamp === stamp) return metric.height;
-    return estimatedPage(page, Math.min(mediaCoverLimit(), metric.mean * grid.width));
+    return metric
+      ? metric.end
+      : advanceColumns(seedColumns(page), count(page), pageCover(page) + detail + MEDIA_GAP);
   }
   function pageTop(page) {
-    if (page <= firstMedia) return mediaTop;
-    // Full untouched blocks share an estimate; only visited blocks have corrections.
-    let top =
-      mediaTop +
-      estimate(firstMedia) +
-      (page - firstMedia - 1) *
-        Math.ceil(PAGE / mediaCols) *
-        (estimatedCover() + detail + MEDIA_GAP);
-    let lo = 0,
-      hi = keys.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (keys[mid] < page) lo = mid + 1;
-      else hi = mid;
-    }
-    return top + (lo ? sums[lo - 1] : 0);
+    return Math.min(...seedColumns(page));
   }
   function rebuild() {
     if (!dirty) return;
@@ -723,41 +746,77 @@ function createVirtualGrid() {
     lastPage = Math.ceil(grid.total / PAGE) - 1;
     folderBottom = Math.ceil(grid.folders / grid.cols) * grid.rowHeight;
     mediaTop = Math.floor(grid.folders / grid.cols) * grid.rowHeight;
-    for (const page of loaded) {
-      if (!count(page)) continue;
-      const columns = seedColumns(page);
-      let units = 0;
-      for (
-        let index = Math.max(grid.folders, page * PAGE);
-        index < Math.min(grid.total, (page + 1) * PAGE);
-        index++
-      ) {
-        const n = grid.items.get(index);
-        const h = Math.min(mediaCoverLimit(), naturalMediaCover(n));
-        const column = shortest(columns);
-        positions.set(index, {
-          top: columns[column],
-          left: column * (grid.width + MEDIA_GAP),
-          height: h + detail,
-          cover: h
-        });
-        columns[column] += h + detail + MEDIA_GAP;
-        units += h / grid.width;
-      }
-      heights.set(page, { height: Math.max(...columns), mean: units / count(page), stamp });
+    // Metadata has a fixed budget as well as the existing bounded item window.
+    // Evicted summaries become uniform estimates; draw() preserves its anchor.
+    for (const page of heights.keys()) {
+      if (heights.size <= METRIC_LIMIT) break;
+      if (!loaded.has(page)) heights.delete(page);
     }
-    keys = [...heights.keys()]
-      .filter((page) => page >= firstMedia && page <= lastPage)
+    keys = [...new Set([...heights.keys(), ...loaded])]
+      .filter((page) => page >= firstMedia && page <= lastPage && count(page))
       .sort((a, b) => a - b);
-    sums = [];
-    let sum = 0;
+    let columns = initialColumns(),
+      cursor = firstMedia;
     for (const page of keys) {
-      sum += pageHeight(page) - estimate(page);
-      sums.push(sum);
+      advanceColumns(
+        columns,
+        Math.max(0, page * PAGE - Math.max(grid.folders, cursor * PAGE)),
+        estimatedCover() + detail + MEDIA_GAP
+      );
+      const start = [...columns],
+        top = Math.min(...start),
+        seed = start.map((value) => value - top),
+        previous = heights.get(page);
+      let mean = previous?.mean || estimatedCover() / grid.width;
+      if (loaded.has(page)) {
+        let units = 0;
+        for (
+          let index = Math.max(grid.folders, page * PAGE);
+          index < Math.min(grid.total, (page + 1) * PAGE);
+          index++
+        ) {
+          const h = Math.min(mediaCoverLimit(), naturalMediaCover(grid.items.get(index))),
+            column = shortest(columns);
+          positions.set(index, {
+            top: columns[column],
+            left: grid.offsetX + column * (grid.width + MEDIA_GAP),
+            height: h + detail,
+            cover: h
+          });
+          columns[column] += h + detail + MEDIA_GAP;
+          units += h / grid.width;
+        }
+        mean = units / count(page);
+        // Refresh insertion order for the bounded summary cache.
+        heights.delete(page);
+      } else if (
+        previous?.stamp === stamp &&
+        seed.every((value, column) => Math.abs(value - previous.seed[column]) < 0.001)
+      ) {
+        // Offscreen pages retain exact outgoing tails while their input matches.
+        columns = previous.tail.map((value) => top + previous.advance + value);
+      } else {
+        advanceColumns(
+          columns,
+          count(page),
+          Math.min(mediaCoverLimit(), mean * grid.width) + detail + MEDIA_GAP
+        );
+      }
+      const bottom = Math.min(...columns);
+      heights.set(page, {
+        start,
+        end: [...columns],
+        seed,
+        advance: bottom - top,
+        tail: columns.map((value) => value - bottom),
+        mean,
+        stamp
+      });
+      cursor = page + 1;
     }
     extent =
       grid.total > grid.folders
-        ? pageTop(lastPage) + pageHeight(lastPage) - MEDIA_GAP
+        ? Math.max(...pageEnd(lastPage)) - MEDIA_GAP
         : Math.max(0, folderBottom - grid.gap);
   }
   function pageAt(top) {
@@ -765,7 +824,9 @@ function createVirtualGrid() {
       hi = lastPage;
     while (lo < hi) {
       const mid = Math.floor((lo + hi) / 2);
-      if (pageTop(mid) + pageHeight(mid) <= top) lo = mid + 1;
+      // Pages overlap vertically: search their maximum outgoing edge, not
+      // the next page's minimum start, so earlier tall cards remain visible.
+      if (Math.max(...pageEnd(mid)) <= top) lo = mid + 1;
       else hi = mid;
     }
     return lo;
@@ -789,6 +850,13 @@ function createVirtualGrid() {
         pages.add(page);
     }
     return pages;
+  }
+  function refreshAnchor(m) {
+    // Match captureDisplayAnchor: preserve the card at the visible reading line,
+    // below the floating toolbar, when an insertion reshuffles the columns.
+    const bottom = $('#toolbar')?.getBoundingClientRect?.().bottom,
+      clearance = Number.isFinite(bottom) ? Math.max(0, bottom - m.viewportTop + 12) : 0;
+    return anchorAt(m, clearance);
   }
   function anchorAt(m, clearance) {
     const line = m.top + Math.max(0, Number(clearance) || 0);

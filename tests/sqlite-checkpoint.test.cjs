@@ -45,6 +45,22 @@ function fixture(t, production = false) {
 function seed(db, count) {
   const indexing = createIndexing(db);
   const stat = { size: 1024, mtimeMs: 1700000000000, birthtimeMs: 1700000000000 };
+  // Missing/cyclic/newer ancestor chains must remain protected in production.
+  // These removal benchmarks need a real registered root with an older stamp.
+  indexing.upsert(
+    {
+      id: 'root',
+      root: 'root',
+      parent: null,
+      path: 'C:\\fixture-only',
+      name: 'fixture-only',
+      sortkey: 'fixture-only',
+      kind: 'folder',
+      depth: 0
+    },
+    { ...stat, size: 0 },
+    1
+  );
   for (let start = 0; start < count; start += 128) {
     db.exec('BEGIN');
     for (let i = start; i < Math.min(start + 128, count); i++) {
@@ -54,7 +70,7 @@ function seed(db, count) {
           id: String(i).padStart(32, '0'),
           root: 'root',
           parent: 'root',
-          path: path.join('C:\\fixture-only\\album', name),
+          path: path.join('C:\\fixture-only', name),
           name,
           sortkey: name,
           kind: 'image',
@@ -152,7 +168,13 @@ test(
     assert.equal(db.prepare('PRAGMA synchronous').get().synchronous, 2);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM nodes WHERE missing=1').get().n, 8192);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM media WHERE status='missing'").get().n, 8192);
-    assert.equal(db.prepare('SELECT COUNT(*) n FROM search_index').get().n, 0);
+    assert.deepEqual(
+      db
+        .prepare('SELECT id FROM search_index ORDER BY id')
+        .all()
+        .map((row) => row.id),
+      ['root']
+    );
     assert.ok(heartbeats > 0);
     assert.ok(maxGap < 2000, `event loop maximum gap ${maxGap.toFixed(1)}ms`);
     // PASSIVE leaves its high-water file allocated, but the next writer reuses it.
@@ -177,7 +199,9 @@ test(
 test('nested subtree pruning yields after at most 128 missing nodes', async (t) => {
   const { db, maintenance } = fixture(t, true);
   seed(db, 1024);
-  db.exec("UPDATE nodes SET parent='removed-folder'");
+  db.prepare(
+    "UPDATE nodes SET parent='removed-folder',depth=2,path=?||name WHERE parent='root' AND kind='image'"
+  ).run('C:\\fixture-only\\album\\');
   const indexing = createIndexing(db, maintenance);
   indexing.upsert(
     {
@@ -208,7 +232,13 @@ test('nested subtree pruning yields after at most 128 missing nodes', async (t) 
     `synchronous removal batches: ${batches}`
   );
   assert.equal(db.prepare("SELECT COUNT(*) n FROM media WHERE status='missing'").get().n, 1024);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM search_index').get().n, 0);
+  assert.deepEqual(
+    db
+      .prepare('SELECT id FROM search_index ORDER BY id')
+      .all()
+      .map((row) => row.id),
+    ['root']
+  );
   assert.equal(db.prepare('SELECT COUNT(*) n FROM scan_prune').get().n, 0);
 });
 

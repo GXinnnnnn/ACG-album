@@ -13,7 +13,9 @@ const out = path.join(
   path.resolve(process.env.ACG_RELEASE_OUTPUT || path.join(root, 'release', metadata.version)),
   'standard'
 );
-const archive = fs.realpathSync(path.join(root, 'artifacts'));
+const archive = path.resolve(
+  process.env.ACG_CHECK_STAGE || path.join(root, 'release', 'installer-acceptance')
+);
 const isolated = path.join(
   archive,
   'standard',

@@ -46,6 +46,17 @@
   font-size: 12px;
   min-height: 32px;
 }
+/* Range focus stays visible without changing native thumb/arrow-key behavior.
+   Match popup and editor specificity so their generic two-pixel rings do not win. */
+:root input[type='range']:focus-visible,
+:root
+  :is(.modal, .context-menu, .album-select-list, .progress-panel, .toolbar-right, .topbar > *)
+  input[type='range']:focus-visible,
+:root #media-editor input[type='range']:focus-visible {
+  outline: 1px solid var(--control-focus-color, var(--accent));
+  outline-offset: -1px;
+  border-radius: 6px;
+}
 /* The preview geometry and virtual masonry both keep the requested card width. */
 :root .category-overview {
   justify-content: flex-start;

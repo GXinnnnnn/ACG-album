@@ -715,6 +715,27 @@ h1 {
   width: 16px;
   height: 16px;
 }
+/* Center the enhanced select's line box with its icon, then correct only the
+   label's optical baseline. The chevron and keyboard focus box stay centered. */
+#toolbar .sort-label .album-select-button {
+  height: 30px;
+  min-height: 30px;
+  padding-block: 0;
+  line-height: 1;
+}
+#toolbar .sort-label .album-select-value {
+  transform: translateY(-1px);
+}
+#toolbar .sort-label select:not(.album-select-source) {
+  height: 30px;
+  padding-block: 0;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+/* Use the capsule's shared gap for both action pairs at every breakpoint. */
+#toolbar .toolbar-right > :is(#details-toggle, #density-button, #refresh-button) {
+  margin-inline: 0;
+}
 .toolbar-divider {
   height: 18px;
   background: var(--line);
@@ -769,9 +790,21 @@ h1 {
   width: 6px;
   height: 6px;
 }
-.card-bottom-overlay {
-  padding: 11px 12px;
-  font-size: 10px;
+/* display.js supplies density / responsive medium width; medium is always 1.
+   Anchor these rules to the viewport so legacy compact/media overrides in the
+   later sheets cannot replace continuous scaling with fixed pixel sizes. */
+#viewport .album-card .card-bottom-overlay {
+  padding: calc(8px * var(--card-scale, 1));
+  gap: calc(5px * var(--card-scale, 1));
+  font-size: calc(10px * var(--card-scale, 1));
+}
+#viewport .album-card .card-bottom-overlay > svg {
+  width: calc(14px * var(--card-scale, 1));
+  height: calc(14px * var(--card-scale, 1));
+  flex-shrink: 0;
+}
+#viewport .album-card .card-rating {
+  padding: calc(3px * var(--card-scale, 1)) calc(6px * var(--card-scale, 1));
 }
 .album-card:not(.media-card) .card-info {
   padding-top: 6px;
@@ -783,18 +816,18 @@ h1 {
 .album-card:not(.media-card) .card-subtitle {
   margin-top: 6px;
 }
-.album-card:not(.media-card) .card-bottom-overlay {
+#viewport .album-card:not(.media-card) .card-bottom-overlay {
   bottom: 8px;
   left: 8px;
   right: 8px;
   padding: 0;
-  gap: 6px;
-  font-size: 17px;
+  gap: calc(6px * var(--card-scale, 1));
+  font-size: calc(17px * var(--card-scale, 1));
   line-height: 1.2;
 }
-.album-card:not(.media-card) .card-bottom-overlay > svg {
-  width: 20px;
-  height: 20px;
+#viewport .album-card:not(.media-card) .card-bottom-overlay > svg {
+  width: calc(20px * var(--card-scale, 1));
+  height: calc(20px * var(--card-scale, 1));
   flex-shrink: 0;
 }
 .album-card:not(.media-card) .card-bottom-overlay > span:not(.card-rating) {
@@ -806,6 +839,7 @@ h1 {
 .album-card:not(.media-card) .card-count {
   display: inline-flex;
   align-items: center;
+  transform: translateY(1px);
 }
 .album-card:not(.media-card) .card-count-value {
   min-width: 0;
@@ -817,9 +851,9 @@ h1 {
   flex-shrink: 0;
   white-space: pre;
 }
-.album-card:not(.media-card) .card-rating {
+#viewport .album-card:not(.media-card) .card-rating {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--card-scale, 1));
   line-height: 1.4;
 }
 .collection-tile {
@@ -855,6 +889,9 @@ h1 {
   padding: 18px;
   gap: 16px;
   border-radius: 0 0 24px 24px;
+}
+:root .category-overview .collection-preview {
+  justify-content: center;
 }
 .collection-preview .album-card {
   background: transparent;

@@ -56,6 +56,40 @@ async function client(dataDir, fixture) {
       pending.set(request, { resolve, reject, timer });
       worker.postMessage({ request, method, args });
     });
+  // ready only exposes cached reads. Sorting assertions require the real
+  // startup migrations to finish, including their final sortMigration event.
+  try {
+    await call('startupResume');
+    await new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        worker.off('message', onMessage);
+        worker.off('error', onError);
+        worker.off('exit', onExit);
+        error ? reject(error) : resolve();
+      };
+      const onMessage = (message) => {
+        if (message.event !== 'tasks') return;
+        const maintenance = message.data?.maintenance;
+        if (maintenance?.state === 'ready') finish();
+        else if (maintenance?.state === 'error')
+          finish(new Error(maintenance.error || 'Worker maintenance failed'));
+      };
+      const onError = (error) => finish(error);
+      const onExit = (code) => finish(new Error('Worker exited before maintenance: ' + code));
+      const timer = setTimeout(() => finish(new Error('Worker maintenance timeout')), 60000);
+      worker.on('message', onMessage);
+      worker.once('error', onError);
+      worker.once('exit', onExit);
+      // Maintenance may have finished before startupResume replied. Check the
+      // already captured stream after subscribing so neither ordering is lost.
+      const latest = events.filter((message) => message.event === 'tasks').at(-1);
+      if (latest) onMessage(latest);
+    });
+  } catch (error) {
+    await worker.terminate();
+    throw error;
+  }
   let closePromise;
   return {
     call,

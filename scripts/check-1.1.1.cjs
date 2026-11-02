@@ -711,12 +711,33 @@ async function themeDialogs(theme) {
             roots: S.roots.length
           };
         });
+        report.samples.push({ firstLaunch: first });
+        if (first.bottomGap > 1 || !first.tokenVisible) {
+          report.samples.push({
+            firstLaunchAfterFonts: await page.evaluate(async () => {
+              await document.fonts.ready;
+              await new Promise((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(resolve))
+              );
+              const panel = document.querySelector('#settings-panel-metadata'),
+                input = document.querySelector('#token-input');
+              return {
+                scrollTop: panel.scrollTop,
+                bottomGap: panel.scrollHeight - panel.clientHeight - panel.scrollTop,
+                tokenVisible:
+                  input.getBoundingClientRect().bottom <= panel.getBoundingClientRect().bottom + 1,
+                focused: document.activeElement === input,
+                fonts: document.fonts.status,
+                viewport: [innerWidth, innerHeight]
+              };
+            })
+          });
+        }
         assert.equal(first.marker, true);
         assert.equal(first.roots, 0);
         assert.equal(first.glass, true);
         assert.equal(first.motion, 'high');
         assert.ok(first.bottomGap <= 1 && first.tokenVisible);
-        report.samples.push({ firstLaunch: first });
         await shot('fresh-first-metadata');
         await page.locator('#modal-close').click();
         await closeApp();

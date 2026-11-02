@@ -212,7 +212,7 @@ test('automatic import binds only direct first-level work albums while nested ma
   assert.equal((await c.call('get', { id: idFor(child) })).manual_subject, 1);
 });
 
-test('series fallback compares at most four immediate child names and binds only the parent by popularity and newest date', async (t) => {
+test('series fallback compares four verified children and uses recency within the similar-rating series cohort', async (t) => {
   const f = await fixture(t, '未能识别的机甲作品集');
   const subjects = [];
   for (let i = 1; i <= 6; i++) {
@@ -221,6 +221,7 @@ test('series fallback compares at most four immediate child names and binds only
     subjects.push(
       entry(100 + i, `装甲核心${i}`, {
         collection: { collect: i === 2 ? 950 : i === 3 ? 899 : 1000 },
+        rating: { score: i === 2 ? 8.1 : i === 4 ? 7.9 : 8.0 },
         date: i === 2 ? '2024-01-01' : i === 3 ? '2025-01-01' : '2000-01-01'
       })
     );
@@ -228,21 +229,28 @@ test('series fallback compares at most four immediate child names and binds only
   const c = (f.client = await client(f.data, responder(subjects, f.png)));
   await importRoot(c, f);
   const parent = await c.call('get', { id: idFor(f.folder) });
-  assert.equal(parent.subject_id, 102, 'recent work in the inclusive 90% popularity cohort wins');
-  assert.equal(parent.metadata.summary, 'summary 102');
+  assert.equal(
+    parent.subject_id,
+    103,
+    'Comparable collection counts and ratings within 0.3 prefer the latest release'
+  );
+  assert.equal(parent.metadata.summary, 'summary 103');
   assert.equal(parent.cover_source, 'bangumi');
-  assert.equal(parent.cover, 'subject:102');
+  assert.equal(parent.cover, 'subject:103');
   const queries = [...new Set(c.requests.filter((r) => r.body).map((r) => r.body.keyword))];
   assert.deepEqual(
     queries.filter((name) => name.startsWith('装甲核心')),
     ['装甲核心1', '装甲核心2', '装甲核心3', '装甲核心4']
   );
   assert.ok(!queries.includes('ForbiddenDeep'));
-  for (let i = 1; i <= 6; i++)
+  for (let i = 1; i <= 6; i++) {
+    const child = path.join(f.folder, `装甲核心${i}`);
+    assert.equal((await c.call('get', { id: idFor(child) })).subject_id, null);
     assert.equal(
-      (await c.call('get', { id: idFor(path.join(f.folder, `装甲核心${i}`)) })).subject_id,
+      (await c.call('get', { id: idFor(path.join(child, 'ForbiddenDeep')) })).subject_id,
       null
     );
+  }
 });
 
 test('generic first-level work collections use at most four child names and bind only the parent', async (t) => {
@@ -258,6 +266,7 @@ test('generic first-level work collections use at most four child names and bind
         subjects.push(
           entry(500 + number, `装甲核心${number}`, {
             type: 4,
+            rating: { score: 8.0 },
             date: number === 6 ? '2024-01-01' : number > 9 ? '2025-01-01' : '2000-01-01'
           })
         );
@@ -294,6 +303,46 @@ test('generic first-level work collections use at most four child names and bind
         ],
         [parent.id]
       );
+    });
+});
+
+test('verified child matches cannot manufacture a parent series or replace a missing rating', async (t) => {
+  for (const scenario of ['unrelated-series', 'one-missing-rating'])
+    await t.test(scenario, async (t) => {
+      const f = await fixture(t, '合集');
+      const names =
+        scenario === 'unrelated-series'
+          ? ['装甲核心1', '装甲核心2', '银河战士3', '银河战士4']
+          : ['装甲核心1', '装甲核心2', '装甲核心3', '装甲核心4'];
+      const subjects = names.map((name, index) =>
+        entry(700 + index, name, {
+          type: 4,
+          ...(scenario === 'one-missing-rating' && index === 2 ? {} : { rating: { score: 8.0 } }),
+          date: `202${index}-01-01`
+        })
+      );
+      for (const name of names)
+        await fs.mkdir(path.join(f.folder, name, 'ForbiddenDeep'), { recursive: true });
+      const c = (f.client = await client(f.data, responder(subjects, f.png)));
+      await importRoot(c, f, { subjectTypes: [4] });
+      assert.equal((await c.call('get', { id: idFor(f.folder) })).subject_id, null, scenario);
+      assert.deepEqual(
+        c.requests
+          .filter((request) => request.body)
+          .map((request) => request.body.keyword)
+          .sort(),
+        [...names].sort(),
+        'Each immediate child has independent search evidence within the four-name budget'
+      );
+      assert.ok(!c.requests.some((request) => request.body?.keyword === 'ForbiddenDeep'));
+      for (const name of names) {
+        const child = path.join(f.folder, name);
+        assert.equal((await c.call('get', { id: idFor(child) })).subject_id, null);
+        assert.equal(
+          (await c.call('get', { id: idFor(path.join(child, 'ForbiddenDeep')) })).subject_id,
+          null
+        );
+      }
     });
 });
 

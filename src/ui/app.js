@@ -16,7 +16,7 @@ const icons = {
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   moon: '<path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
-  refresh: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 6a8 8 0 0 1 13 2M5 16a8 8 0 0 0 13 2"/>',
+  refresh: '<path d="M20 11a8 8 0 1 0-2.3 6.7M20 4v7h-7"/>',
   sort: '<path d="M4 6h16M4 12h11M4 18h6"/>',
   'arrow-down': '<path d="M12 4v16m-6-6 6 6 6-6"/>',
   sliders: '<path d="M5 3v5m0 4v9M12 3v10m0 4v4M19 3v2m0 4v12"/><path d="M2 8h6m1 9h6m1-12h6"/>',
@@ -32,6 +32,7 @@ const icons = {
   image:
     '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m21 16-6-6L3 21"/>',
   crop: '<path d="M6 3v15h15M3 6h15v15"/>',
+  edit: '<path d="m16 3 5 5-12 12-6 1 1-6L16 3Z"/><path d="m13 6 5 5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/>',
   link: '<path d="m9 15 6-6M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M13 17a4 4 0 0 0 6 0l4-4a4 4 0 0 0-6-6l-1 1" transform="translate(1 -1) scale(.9)"/>',
   external: '<path d="M14 3h7v7m0-7L10 14M10 3H4v17h17v-6"/>',
@@ -110,7 +111,7 @@ async function attempt(action) {
     return null;
   }
 }
-function thumb(n, width = Number(S.settings.density || 222), priority = false) {
+function thumb(n, width = Number(S.settings.density || 166), priority = false) {
   const desired = width * (window.devicePixelRatio || 1) * 1.3;
   const size = desired <= 512 ? 512 : desired <= 768 ? 768 : 1024;
   const source = n.kind === 'folder' && /^[a-f0-9]{24}$/.test(n.cover) ? n.cover : n.id;
@@ -178,6 +179,7 @@ function snapshot() {
   return {
     view: S.view,
     parent: S.parent,
+    parentPath: S.current?.path || null,
     search: S.search,
     filter: S.filter,
     sort: S.sort,
@@ -215,10 +217,180 @@ function updateSidebar() {
   $('#root-count').textContent = S.roots.length;
   window.renderFolderTree?.();
 }
-let summarySettingsApplied = false;
+let startupTaskSnapshot = { known: false, busy: true },
+  startupTaskVersion = 0,
+  startupResumeScheduled = false,
+  startupResumeAttempted = false,
+  startupResumeFinished = false,
+  startupResumeError = '';
+function hasStartupTaskWork() {
+  return !startupTaskSnapshot.known || !!startupTaskSnapshot.busy;
+}
+function hasStartupScanWork() {
+  return !!(
+    startupTaskSnapshot.known &&
+    ['queued', 'running', 'paused', 'blocked'].includes(startupTaskSnapshot.scan?.status)
+  );
+}
+function hasStartupCancelableWork() {
+  return (
+    hasStartupScanWork() || !!(startupTaskSnapshot.known && startupTaskSnapshot.matching?.hasWork)
+  );
+}
+function renderStartupStatus() {
+  const status = $('#startup-status'),
+    retry = $('#startup-retry'),
+    cancel = $('#startup-cancel');
+  if (!status) return;
+  const task = startupTaskSnapshot;
+  const scan = task.scan?.status;
+  let text = '';
+  if (startupResumeError) text = '后台任务未能恢复；已缓存相册仍可浏览。';
+  else if (!task.known) text = '正在读取已保存的后台任务状态…';
+  else if (scan === 'queued') text = '发现未完成的索引任务，将在后台继续。';
+  else if (scan === 'running') text = '正在后台继续索引，已缓存相册可浏览。';
+  else if (scan === 'paused') text = '索引任务已暂停，进度已保留。';
+  else if (scan === 'blocked') text = '索引任务暂不能继续，请检查原目录是否可用。';
+  else if (task.matching?.hasWork && task.matching.pausedReason)
+    text = '作品资料补全已暂停，任务已保留。';
+  else if (task.matching?.hasWork) text = '正在后台继续补全作品资料。';
+  else if (task.maintenance?.state === 'error') text = '后台整理未完成；已缓存相册仍可浏览。';
+  else if (['pending', 'running'].includes(task.maintenance?.state))
+    text = '正在后台整理资料，已缓存相册可浏览。';
+  if (status.textContent !== text) status.textContent = text;
+  status.hidden = !text;
+  status.title = [
+    ...new Set(
+      [
+        startupResumeError,
+        task.maintenance?.error,
+        task.scan?.reason,
+        task.matching?.pausedReason
+      ].filter(Boolean)
+    )
+  ].join('\n');
+  const cancelling = typeof cancelImportRequested === 'boolean' && cancelImportRequested;
+  if (retry) {
+    retry.hidden = !(
+      startupResumeError ||
+      task.maintenance?.state === 'error' ||
+      ['paused', 'blocked'].includes(scan)
+    );
+    retry.disabled =
+      cancelling || startupResumeScheduled || (startupResumeAttempted && !startupResumeFinished);
+    retry.onclick = () => {
+      startupResumeAttempted = false;
+      startupResumeFinished = false;
+      startupResumeError = '';
+      renderStartupStatus();
+      scheduleStartupResume();
+    };
+  }
+  if (cancel) {
+    const hidden = !hasStartupCancelableWork(),
+      label = cancelling ? '正在取消…' : '取消后台任务';
+    if (cancel.hidden !== hidden) cancel.hidden = hidden;
+    if (cancel.textContent !== label) cancel.textContent = label;
+    const busy = String(cancelling);
+    if (cancel.getAttribute('aria-busy') !== busy) cancel.setAttribute('aria-busy', busy);
+    cancel.onclick = () => attempt(cancelImport);
+  }
+}
+function applyTaskSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot.known !== 'boolean') return;
+  startupTaskSnapshot = snapshot;
+  startupTaskVersion++;
+  renderStartupStatus();
+  updateImportBusy();
+}
+function scheduleStartupResume() {
+  if (startupResumeScheduled || startupResumeAttempted) return;
+  startupResumeScheduled = true;
+  renderStartupStatus();
+  // Cached cards and their click handlers already exist; give the browser a paint before resuming work.
+  requestAnimationFrame(() =>
+    setTimeout(async () => {
+      startupResumeScheduled = false;
+      startupResumeAttempted = true;
+      const version = startupTaskVersion;
+      try {
+        const result = await api('startupResume', {});
+        startupResumeError = '';
+        if (version === startupTaskVersion) applyTaskSnapshot(result.taskSnapshot);
+      } catch (error) {
+        startupResumeError = error.message || String(error);
+      } finally {
+        startupResumeFinished = true;
+        renderStartupStatus();
+        scheduleSummaryDetails();
+      }
+    }, 0)
+  );
+}
+let summarySettingsApplied = false,
+  summaryDetailsDirty = false,
+  summaryDetailsScheduled = false,
+  summaryDetailsVersion = 0,
+  localIndexStatusRequested = false;
+function renderSummaryStats(stats) {
+  if (!stats) return;
+  $('#index-count').textContent = stats.images
+    ? fmt(stats.images) + ' 个媒体项目已索引'
+    : '本地资料库';
+  $('#index-status').textContent = stats.images
+    ? `${fmt(stats.folders)} 个文件夹 · 索引已保存`
+    : '原图留在原处，热爱随时可见';
+}
+function scheduleSummaryDetails() {
+  if (typeof scheduleStartupResume === 'function' && !startupResumeFinished) {
+    scheduleStartupResume();
+    return;
+  }
+  if (!summaryDetailsDirty || summaryDetailsScheduled) return;
+  summaryDetailsScheduled = true;
+  // Let the cached library paint before submitting optional database/index work.
+  requestAnimationFrame(() => {
+    const loadDetails = () => {
+      summaryDetailsScheduled = false;
+      if (!summaryDetailsDirty) return;
+      summaryDetailsDirty = false;
+      const version = summaryDetailsVersion;
+      void api('statistics')
+        .then((stats) => {
+          if (version === summaryDetailsVersion) renderSummaryStats(stats);
+        })
+        .catch(() => {});
+      if (!localIndexStatusRequested) {
+        localIndexStatusRequested = true;
+        void api('localIndexStatus')
+          .then((status) => {
+            window.albumLocalSearch?.setStatus(status);
+          })
+          .catch(() => {
+            localIndexStatusRequested = false;
+          });
+      }
+    };
+    if (typeof requestIdleCallback === 'function')
+      requestIdleCallback(loadDetails, { timeout: 1500 });
+    else setTimeout(loadDetails, 180);
+  });
+}
 async function loadSummary() {
   const appearanceRevision = window.albumAppearanceControls.snapshot();
-  const init = await api('init');
+  const taskVersion = typeof startupTaskVersion === 'number' ? startupTaskVersion : null;
+  const init = await api('init', { lightweight: true });
+  if (typeof applyTaskSnapshot === 'function' && taskVersion === startupTaskVersion)
+    applyTaskSnapshot(init.taskSnapshot);
+  S.dataDir = init.dataDir;
+  summaryDetailsDirty = true;
+  summaryDetailsVersion++;
+  if (init.settings.densityConfigured === false) {
+    init.settings.density =
+      summarySettingsApplied && S.settings.densityConfigured === false
+        ? S.settings.density
+        : cardPresets(document.documentElement.clientWidth || window.innerWidth)[1];
+  }
   init.settings = window.albumAppearanceControls.mergeSummary(init.settings, appearanceRevision);
   if (init.localIndex) window.albumLocalSearch?.setStatus(init.localIndex);
   S.roots = init.roots;
@@ -230,12 +402,7 @@ async function loadSummary() {
     applySettings();
     summarySettingsApplied = true;
   }
-  $('#index-count').textContent = init.stats.images
-    ? fmt(init.stats.images) + ' 个媒体项目已索引'
-    : '本地资料库';
-  $('#index-status').textContent = init.stats.images
-    ? `${fmt(init.stats.folders)} 个文件夹 · 索引已保存`
-    : '原图留在原处，热爱随时可见';
+  renderSummaryStats(init.stats);
   updateSidebar();
   return init;
 }
@@ -280,8 +447,7 @@ async function loadPage(keepScroll = false) {
         }[S.view];
   $('#footer-location').textContent = S.current?.path || 'ACG-album · 本地相册';
   $('#footer-location').title = S.current?.path || '';
-  const refreshButton = $('#refresh-button');
-  if (refreshButton) refreshButton.disabled = libraryRefreshBusy || scanActive || !S.roots.length;
+  updateRefreshBusy();
   $$('.filter-tabs button').forEach((b) => {
     const active = b.dataset.filter === S.filter;
     b.classList.toggle('active', active);
@@ -310,6 +476,7 @@ async function loadPage(keepScroll = false) {
   if (keepScroll) $('#viewport').scrollTop = scroll;
   else $('#viewport').scrollTop = 0;
   updateScrollActions();
+  scheduleSummaryDetails();
 }
 let filterResizeObserver;
 function updateFilterIndicator() {
@@ -364,22 +531,8 @@ function renderEmpty(first = true) {
     ? `<div class="empty-panel"><div class="empty-art" aria-hidden="true"><span class="art-spark">✧</span><div class="art-photo one"></div><div class="art-photo two"></div></div><h2>你的热爱，值得好好收藏</h2><p>选择一个文件夹，把游戏、动画与漫画的画面收入相册。<br>目录会成为分类，子文件夹会成为一张张封面卡片。</p><div class="empty-actions"><button class="primary" id="empty-import">${svg('plus')}导入第一个文件夹</button><button class="subtle-button" id="demo-import">${svg('sparkles')}体验示例图库</button></div><p class="empty-helper">原图留在原处 · 本地索引与缩略图 · 支持多层目录</p></div>`
     : `<div class="empty-panel empty-search">${svg(S.view === 'favorites' ? 'heart' : S.view === 'pending' ? 'check-circle' : 'search')}<h2>${S.view === 'favorites' ? '特别的画面，留给特别收藏' : S.view === 'pending' ? '需要核对的项目都已确认' : '这里暂时没有内容'}</h2><p>${S.view === 'favorites' ? '右键相册或图片，选择「加入特别收藏」。' : S.view === 'pending' ? '之后需要核对的作品匹配和封面，会在这里显示。' : '换个搜索词或筛选条件，或更新文件夹索引。'}</p></div>`;
   $('#empty-import')?.addEventListener('click', importFolder);
-  $('#demo-import')?.addEventListener('click', () =>
-    attempt(async () => {
-      const b = $('#demo-import');
-      b.disabled = true;
-      try {
-        const result = await api('demo');
-        if (result) {
-          await loadSummary();
-          await navigate({ parent: result.root });
-          toast('示例图库已导入，其中图片为程序生成的演示素材。');
-        }
-      } finally {
-        if (b.isConnected) b.disabled = false;
-      }
-    })
-  );
+  $('#demo-import')?.addEventListener('click', () => attempt(startDemoImport));
+  updateImportBusy();
 }
 function cardCountText(value, abbreviated = true) {
   const count = Math.max(0, Math.floor(Number(value) || 0));
@@ -413,7 +566,7 @@ function card(
   n,
   index = 0,
   inline = false,
-  width = Number(S.settings.density || 222),
+  width = Number(S.settings.density || 166),
   priority = false
 ) {
   const b = document.createElement('button');
@@ -460,7 +613,7 @@ function updateFolderCard(
   b,
   n,
   index = Number(b.dataset.index) || 0,
-  width = Number(S.settings.density || 222)
+  width = Number(S.settings.density || 166)
 ) {
   b.dataset.index = index;
   b.title = n.name;
@@ -785,11 +938,12 @@ function characterBindModal(n) {
       if (mode.value === 'custom')
         args.custom = { name: $('#character-name').value, summary: $('#character-summary').value };
       else args.url = url.value;
-      await api('bind', args);
+      const result = await api('bind', args);
       if (!connected()) return;
       closeModal();
-      await loadPage(true);
-      toast('角色资料已保存');
+      updateCoverNode(result);
+      if (result && S.current?.id === result.id && !S.search) renderIntro(S.current);
+      toast(result?.enrichment_pending ? '关联已保存，封面和详情在后台补全' : '角色资料已保存');
     } catch (exception) {
       if (connected()) error.textContent = exception.message;
     } finally {
@@ -804,7 +958,7 @@ function openModal(title, html, width = 610) {
   if (!$('#modal').open)
     modalReturnFocus = window.albumDialogInteraction.rememberFocus(document.activeElement);
   const d = $('#modal');
-  d.classList.remove('binding-modal', 'display-dialog');
+  d.classList.remove('binding-modal', 'display-dialog', 'rename-dialog');
   $('#modal-title').textContent = title;
   $('#modal-heading-actions').replaceChildren();
   $('#modal-content').innerHTML = html;
@@ -945,17 +1099,18 @@ function bindModal(n) {
       keywordInput.disabled =
       urlInput.disabled =
         true;
-    b.textContent = '正在获取…';
+    b.textContent = '正在保存…';
     candidateList.querySelectorAll('.candidate').forEach((el) => (el.disabled = true));
     $('#bind-error').textContent = '';
     try {
       await waitForTypeChange();
       if (generation !== modalGeneration || !b.isConnected) return;
-      await api('bind', { id: n.id, url });
+      const result = await api('bind', { id: n.id, url });
       if (generation !== modalGeneration || !b.isConnected) return;
       closeModal();
-      await loadPage(true);
-      toast('作品关联已保存，简介已写入本地 Markdown');
+      updateCoverNode(result);
+      if (result && S.current?.id === result.id && !S.search) renderIntro(S.current);
+      toast('关联已保存，封面和详情在后台补全');
     } catch (e) {
       if (errorArea.isConnected) errorArea.textContent = e.message;
     } finally {
@@ -1008,7 +1163,7 @@ function bindModal(n) {
         candidateList.innerHTML = (result.candidates || [])
           .map(
             (c) =>
-              `<button class="candidate" data-subject="${c.id}" aria-pressed="false"><span><strong>${esc(c.name_cn || c.name)}</strong><small>${esc(c.name)} · ${esc(typeNames[c.type] || '作品')} · ${esc(c.date || '日期未知')}</small></span><span class="chip">${Math.round(c.match * 100)}% 相关</span></button>`
+              `<button class="candidate" data-subject="${c.id}" aria-pressed="false"><span><strong>${esc(c.name_cn || c.name)}</strong><small>${esc(c.name)} · ${esc(typeNames[c.type] || '作品')} · ${esc(c.date || '日期未知')}</small></span><span class="chip" title="名称相关度，不代表已关联；同名作品或类型歧义仍需手动核对并保存。">${Math.round(c.match * 100)}% 相关</span></button>`
           )
           .join('');
         candidateStatus.textContent = result.candidates?.length
@@ -1073,6 +1228,182 @@ function confirmModal(title, message, onConfirm, label = '确认') {
         throw e;
       }
     });
+}
+function renameParts(n) {
+  const name = String(n.path?.split(/[\\/]/).filter(Boolean).at(-1) || n.name || '');
+  const dot = name.lastIndexOf('.');
+  return n.kind !== 'folder' && dot > 0
+    ? { basename: name.slice(0, dot), extension: name.slice(dot) }
+    : { basename: name, extension: '' };
+}
+function renameNameError(name) {
+  if (!name || name === '.' || name === '..') return '请输入有效名称。';
+  if (/[<>:"/\\|?*\u0000-\u001f]/.test(name)) return '名称不能包含 \\ / : * ? " < > | 或控制字符。';
+  if (/[.\s]$/.test(name)) return '名称不能以句点或空格结尾。';
+  if (/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name))
+    return '该名称是 Windows 保留名称，请换一个。';
+  if (name.length > 255) return '名称过长，请缩短到 255 个字符以内。';
+  return '';
+}
+function renamedPath(path, oldPath, newPath) {
+  if (typeof path !== 'string') return path;
+  const fold = (value) => value.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const old = fold(oldPath),
+    current = fold(path);
+  if (current === old) return newPath;
+  return current.startsWith(old + '/') ? newPath + path.slice(oldPath.length) : path;
+}
+function captureRenameNavigation(n) {
+  const nodes = new Map([[n.id, n]]);
+  const remember = (node) => {
+    if (node?.id && node.path) nodes.set(node.id, { ...node });
+  };
+  S.roots.forEach(remember);
+  remember(S.current);
+  for (const entry of S.history)
+    if (entry.parent && entry.parentPath) remember({ id: entry.parent, path: entry.parentPath });
+  for (const node of grid.items.values()) remember(node);
+  if (typeof folderTree !== 'undefined') {
+    for (const node of folderTree.openNodes.values()) remember(node);
+    for (const page of folderTree.pages.values()) page.items.forEach(remember);
+  }
+  return { key: viewKey(), version: S.loadVersion, scroll: $('#viewport').scrollTop, nodes };
+}
+async function applyRenameNavigation(result, saved) {
+  if (!result?.renamed) return;
+  if (S.current?.path) saved.nodes.set(S.current.id, { ...S.current });
+  const mappings = new Map([[result.oldId, result.node]]);
+  const needed = new Set([S.parent, ...S.history.map((entry) => entry.parent), V.node?.id]);
+  for (const key of S.scrolls.keys()) {
+    try {
+      needed.add(JSON.parse(key)[1]);
+    } catch {
+      /* Ignore non-view keys. */
+    }
+  }
+  if (typeof folderTree !== 'undefined') for (const id of folderTree.open) needed.add(id);
+  for (const [id, node] of saved.nodes) {
+    const path = renamedPath(node.path, result.oldPath, result.path);
+    if (needed.has(id) && path !== node.path && !mappings.has(id)) {
+      const current = await api('get', { path });
+      if (current) mappings.set(id, current);
+    }
+  }
+  const remapId = (id) => mappings.get(id)?.id || (id === result.oldId ? result.id : id);
+  for (const entry of S.history) {
+    entry.parent = remapId(entry.parent);
+    entry.parentPath = renamedPath(entry.parentPath, result.oldPath, result.path);
+  }
+  const scrolls = new Map();
+  for (const [key, scroll] of S.scrolls) {
+    try {
+      const parts = JSON.parse(key);
+      parts[1] = remapId(parts[1]);
+      scrolls.set(JSON.stringify(parts), scroll);
+    } catch {
+      scrolls.set(key, scroll);
+    }
+  }
+  S.scrolls = scrolls;
+  if (typeof folderTree !== 'undefined') {
+    folderTree.open = new Set([...folderTree.open].map(remapId));
+    folderTree.openNodes = new Map(
+      [...folderTree.openNodes].map(([id, node]) => {
+        const updated = mappings.get(id) || node;
+        return [updated.id, updated];
+      })
+    );
+  }
+  const sameBrowse = saved.version === S.loadVersion && saved.key === viewKey();
+  S.parent = remapId(S.parent);
+  if (mappings.has(S.current?.id)) S.current = mappings.get(S.current.id);
+  if (V.node && mappings.has(V.node.id)) V.node = mappings.get(V.node.id);
+  const restoredKey = viewKey(),
+    restoredVersion = S.loadVersion;
+  await loadSummary();
+  window.invalidateFolderTree?.();
+  if (sameBrowse && restoredKey === viewKey() && restoredVersion === S.loadVersion) {
+    await loadPage(true);
+    if (restoredKey === viewKey() && S.loadVersion === restoredVersion + 1)
+      $('#viewport').scrollTop = saved.scroll;
+  } else await refreshGrowingView(result);
+}
+const renamingNodes = new Set();
+let renameDeferredChanged = false;
+function renameModal(n) {
+  if (renamingNodes.size) return toast('正在完成重命名，请稍后。');
+  const { basename, extension } = renameParts(n);
+  const dialog = openModal(
+    '重命名' + (n.kind === 'folder' ? '文件夹' : '文件'),
+    `<form id="rename-form" class="rename-form" novalidate><p id="rename-help" class="field-help">将直接重命名磁盘上的${n.kind === 'folder' ? '文件夹及其路径' : '文件'}。作品关联、手动封面与已缓存资料会保留。</p><p class="rename-path" id="rename-original-path"></p><label for="rename-name">${extension ? '文件名称（保留扩展名）' : '新名称'}</label><div class="rename-input-row"><input id="rename-name" class="field-input" type="text" autocomplete="off" spellcheck="false" maxlength="255" aria-describedby="rename-help rename-error"${extension ? ' aria-details="rename-extension"' : ''}>${extension ? '<span id="rename-extension" class="rename-extension"></span>' : ''}</div><p id="rename-error" class="inline-error" role="alert" aria-atomic="true"></p><div class="modal-actions"><button id="rename-cancel" class="subtle-button" type="button">取消</button><button id="rename-save" class="primary" type="submit">重命名</button></div></form>`,
+    560
+  );
+  dialog.classList.add('rename-dialog');
+  const generation = modalGeneration,
+    form = $('#rename-form'),
+    input = $('#rename-name'),
+    save = $('#rename-save'),
+    error = $('#rename-error');
+  const connected = () => generation === modalGeneration && form.isConnected && dialog.open;
+  $('#rename-original-path').textContent = n.path || n.name;
+  input.value = basename;
+  if (extension) $('#rename-extension').textContent = extension;
+  $('#rename-cancel').onclick = closeModal;
+  input.oninput = () => {
+    error.textContent = '';
+    input.removeAttribute('aria-invalid');
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (!connected() || save.disabled || renamingNodes.size) return;
+    const name = input.value + extension;
+    const validation = renameNameError(input.value) || renameNameError(name);
+    if (validation) {
+      error.textContent = validation;
+      input.setAttribute('aria-invalid', 'true');
+      input.focus({ preventScroll: true });
+      return;
+    }
+    const saved = captureRenameNavigation(n);
+    renamingNodes.add(n.id);
+    save.disabled = true;
+    input.disabled = true;
+    save.setAttribute('aria-busy', 'true');
+    save.textContent = '正在重命名…';
+    error.textContent = '';
+    let result;
+    try {
+      result = await api('rename', { id: n.id, name });
+      if (connected()) closeModal();
+      await applyRenameNavigation(result, saved);
+      toast(result?.renamed ? '名称已更新，关联与缓存已保留' : '名称未改变');
+    } catch (failure) {
+      if (result?.renamed) {
+        toast(
+          `磁盘名称已更新，页面刷新失败：${failure.message || String(failure)}。请刷新当前页面。`,
+          true
+        );
+      } else if (connected()) {
+        error.textContent = failure.message || String(failure);
+        input.setAttribute('aria-invalid', 'true');
+      } else toast(failure.message || String(failure), true);
+    } finally {
+      renamingNodes.delete(n.id);
+      if (renameDeferredChanged) {
+        renameDeferredChanged = false;
+        if (!result?.renamed) scheduleGrowingRefresh();
+      }
+      if (connected()) {
+        save.disabled = false;
+        input.disabled = false;
+        save.removeAttribute('aria-busy');
+        save.textContent = '重命名';
+        input.focus({ preventScroll: true });
+      }
+    }
+  };
+  input.focus({ preventScroll: true });
+  input.select();
 }
 function showContext(e, n) {
   e.preventDefault();
@@ -1147,6 +1478,8 @@ function showContext(e, n) {
     await loadPage(true);
     toast(n.favorite ? '已移出特别收藏' : '已加入特别收藏');
   });
+  if (['folder', 'image', 'video'].includes(n.kind))
+    action('重命名…', 'edit', () => renameModal(n), { disabled: !!renamingNodes.size });
   action('在资源管理器中定位', 'external', () => api('reveal', { id: n.id }));
   action('复制文件地址', 'copy', async () => {
     await api('copyPath', { id: n.id });
@@ -1257,11 +1590,95 @@ let pendingImport = null,
   overviewLast = 0;
 // Subject/cover changes do not invalidate directory structure or open tree pages.
 const matchRefreshBatch = createMatchRefreshBatch(scheduleGrowingRefresh);
+window.addEventListener('pagehide', () => matchRefreshBatch.dispose(), { once: true });
 const scanRefreshNeeded = createScanRefreshGate();
+let importBusyHeld = false,
+  importBusyTimer = null,
+  importCancelVisible = false,
+  cancelImportRequested = false,
+  cancelImportInFlight = false;
+function hasBatchOnlineWork(data) {
+  // A saved pause reason without any queued work must not lock importing forever.
+  return !!(
+    data &&
+    (data.hasWork ||
+      data.active ||
+      Number(data.remaining ?? data.pending) > 0 ||
+      data.discovering ||
+      Number(data.buffered) > 0)
+  );
+}
+function hasImportWork() {
+  return (
+    !!pendingImport ||
+    (typeof hasStartupTaskWork === 'function' && hasStartupTaskWork()) ||
+    !!(latestScanProgress?.busy ?? scanActive) ||
+    !!latestScanProgress?.cancelling ||
+    hasBatchOnlineWork(latestOnlineProgress) ||
+    cancelImportInFlight
+  );
+}
+function isImportBusy() {
+  return importBusyHeld || hasImportWork();
+}
+function renderImportControls() {
+  const busy = isImportBusy();
+  for (const button of $$('#import-sidebar,#empty-import,#demo-import')) {
+    if (button.disabled !== busy) button.disabled = busy;
+    setProgressAttribute(button, 'aria-busy', String(busy));
+  }
+  const cancel = $('#cancel-import');
+  if (cancel) {
+    if (cancel.hidden !== !importCancelVisible) cancel.hidden = !importCancelVisible;
+    // Cancellation remains a stable escape route while the worker drains; repeated clicks are single-flight.
+    if (cancel.disabled) cancel.disabled = false;
+    setProgressAttribute(cancel, 'aria-busy', String(cancelImportRequested));
+    setProgressText(cancel, cancelImportRequested ? '正在取消…' : '取消');
+  }
+  if (typeof renderStartupStatus === 'function') renderStartupStatus();
+  updateRefreshBusy();
+}
 function updateImportBusy() {
-  for (const b of $$('#import-sidebar,#empty-import,#demo-import')) {
-    b.disabled = !!pendingImport || scanActive;
-    b.setAttribute('aria-busy', String(b.disabled));
+  if (hasImportWork()) {
+    clearTimeout(importBusyTimer);
+    importBusyTimer = null;
+    importBusyHeld = true;
+    if (
+      scanActive ||
+      (typeof hasStartupCancelableWork === 'function' && hasStartupCancelableWork()) ||
+      latestScanProgress?.busy ||
+      latestScanProgress?.cancelling ||
+      pendingImport?.sawProgress ||
+      hasBatchOnlineWork(latestOnlineProgress)
+    )
+      importCancelVisible = true;
+    if (latestScanProgress?.cancelling) cancelImportRequested = true;
+  } else if (importBusyHeld && importBusyTimer == null) {
+    // Scanner hand-off and queue refill can publish idle between adjacent pieces of one batch.
+    importBusyTimer = setTimeout(() => {
+      importBusyTimer = null;
+      if (hasImportWork()) return updateImportBusy();
+      importBusyHeld = false;
+      importCancelVisible = false;
+      cancelImportRequested = false;
+      renderImportControls();
+    }, 300);
+  }
+  renderImportControls();
+}
+async function cancelImport() {
+  if (!importCancelVisible || cancelImportRequested || cancelImportInFlight) return;
+  cancelImportRequested = true;
+  cancelImportInFlight = true;
+  updateImportBusy();
+  try {
+    await api('cancel');
+  } catch (error) {
+    cancelImportRequested = false;
+    throw error;
+  } finally {
+    cancelImportInFlight = false;
+    updateImportBusy();
   }
 }
 async function enterPendingImport(p) {
@@ -1287,15 +1704,19 @@ async function enterPendingImport(p) {
     token.entering = false;
   }
 }
-async function refreshGrowingView() {
+async function refreshGrowingView(renameResult = null) {
   const version = S.loadVersion,
     key = viewKey();
   await loadSummary();
   updateImportBusy();
+  if (renamingNodes.size && !renameResult?.renamed) {
+    renameDeferredChanged = true;
+    return;
+  }
   if (version !== S.loadVersion || key !== viewKey()) return;
   if (isOverview()) {
     if ($('#viewer').open) return;
-    if (Date.now() - overviewLast < 1500) {
+    if (scanActive && Date.now() - overviewLast < 1500) {
       growingDirty = true;
       return;
     }
@@ -1310,26 +1731,48 @@ async function refreshGrowingView() {
     if (version !== S.loadVersion || key !== viewKey()) return;
     setResultCount(`${fmt(total)} 项`);
     if (total) $('#empty-state').replaceChildren();
+    else renderEmpty(false);
     if (S.parent) {
       const current = await api('get', { id: S.parent });
       if (version !== S.loadVersion || key !== viewKey()) return;
-      if (current) {
-        if (JSON.stringify(S.current?.metadata) !== JSON.stringify(current.metadata))
-          renderIntro(current);
-        S.current = current;
+      if (!current) return loadPage(true);
+      const identityChanged = S.current?.name !== current.name || S.current?.path !== current.path;
+      if (!S.search && JSON.stringify(S.current?.metadata) !== JSON.stringify(current.metadata))
+        renderIntro(current);
+      S.current = current;
+      if (!S.search) {
+        if (identityChanged) {
+          $('#page-title').textContent = current.name;
+          $('#page-title').insertAdjacentHTML('beforeend', '<span class="heading-dot">.</span>');
+          const ancestors = await api('ancestors', { id: current.id });
+          if (version !== S.loadVersion || key !== viewKey()) return;
+          renderBreadcrumbs(ancestors);
+        }
         $('#page-description').textContent =
           `${fmt(current.folders)} 个子相册 · ${fmt(current.files)} 个媒体项目 · ${bytes(current.total_bytes)}`;
       }
+      $('#footer-location').textContent = current.path;
+      $('#footer-location').title = current.path;
     }
   }
   updateScrollActions();
+  scheduleSummaryDetails();
 }
 function scheduleGrowingRefresh() {
+  if (renamingNodes.size) {
+    renameDeferredChanged = true;
+    return;
+  }
   growingDirty = true;
   if (growingTimer !== null || growingTask) return;
   growingTimer = setTimeout(
     () => {
       growingTimer = null;
+      if (renamingNodes.size) {
+        renameDeferredChanged = true;
+        growingDirty = false;
+        return;
+      }
       growingDirty = false;
       growingLast = Date.now();
       growingTask = attempt(refreshGrowingView).finally(() => {
@@ -1348,7 +1791,7 @@ const importChoices = {
   matchDepth: 1
 };
 function importFolder() {
-  if (pendingImport || scanActive) return;
+  if (isImportBusy()) return;
   showImportOptions();
 }
 async function rootBindingModal(n) {
@@ -1359,7 +1802,7 @@ async function rootBindingModal(n) {
   showImportOptions({ node: n, policy });
 }
 function showImportOptions(editing = null) {
-  if (!editing && (pendingImport || scanActive)) return;
+  if (!editing && isImportBusy()) return;
   const choices = editing
     ? {
         onlineMatch: editing.policy.onlineMatch,
@@ -1466,13 +1909,7 @@ function showImportOptions(editing = null) {
   });
   $('#import-options-cancel').onclick = closeModal;
   $('#import-options-confirm').onclick = async () => {
-    if (
-      submitted ||
-      (!editing && (pendingImport || scanActive)) ||
-      !root.isConnected ||
-      !dialog.open
-    )
-      return;
+    if (submitted || (!editing && isImportBusy()) || !root.isConnected || !dialog.open) return;
     if (choices.directoryKind === 'work' && choices.onlineMatch && !choices.subjectTypes.length) {
       error.textContent = '请至少选择一种作品类型，或关闭联网匹配。';
       error.hidden = false;
@@ -1530,8 +1967,25 @@ function showImportOptions(editing = null) {
   updateChoices();
   kindSelect.focus({ preventScroll: true });
 }
+async function startDemoImport() {
+  if (isImportBusy()) return;
+  const token = { sawProgress: false, entered: true };
+  pendingImport = token;
+  updateImportBusy();
+  try {
+    const result = await api('demo');
+    if (result) {
+      await loadSummary();
+      await navigate({ parent: result.root });
+      toast('示例图库已导入，其中图片为程序生成的演示素材。');
+    }
+  } finally {
+    if (pendingImport === token) pendingImport = null;
+    updateImportBusy();
+  }
+}
 async function startFolderImport(options) {
-  if (pendingImport || scanActive) return;
+  if (isImportBusy()) return;
   const token = { key: viewKey(), version: S.loadVersion, sawProgress: false, entered: false };
   pendingImport = token;
   updateImportBusy();
@@ -1555,33 +2009,38 @@ async function startFolderImport(options) {
   });
 }
 let libraryRefreshBusy = false;
-async function refreshLibrary() {
-  if (libraryRefreshBusy || scanActive) return;
-  const b = $('#refresh-button');
-  libraryRefreshBusy = true;
-  if (b) {
-    b.disabled = true;
-    b.setAttribute('aria-busy', 'true');
+function updateRefreshBusy() {
+  for (const button of $$('#refresh-button,#display-refresh-button')) {
+    const disabled = libraryRefreshBusy || isImportBusy() || !S.roots.length;
+    if (button.disabled !== disabled) button.disabled = disabled;
+    setProgressAttribute(button, 'aria-busy', String(libraryRefreshBusy));
   }
+}
+async function refreshLibrary() {
+  if (libraryRefreshBusy || isImportBusy() || !S.roots.length) return;
+  libraryRefreshBusy = true;
+  updateRefreshBusy();
   try {
-    if (S.parent) await api('refresh', { id: S.parent });
-    else for (const n of S.roots) await api('refresh', { id: n.id });
-    await loadSummary();
-    await loadPage(true);
-    toast('索引已更新，未改变的缩略图已复用');
+    const failures = [];
+    const targets = S.parent
+      ? [{ id: S.parent, name: S.current?.name || '当前文件夹' }]
+      : [...S.roots];
+    for (const node of targets) {
+      try {
+        await api('refresh', { id: node.id });
+      } catch (error) {
+        failures.push(`${node.name}：${error.message || String(error)}`);
+      }
+    }
+    await refreshGrowingView();
+    if (failures.length)
+      toast(`刷新完成，${failures.length} 个目录未能更新。${failures.join('；')}`, true);
+    else toast('索引已更新，未改变的缩略图已复用');
   } catch (e) {
     toast(e.message, true);
   } finally {
     libraryRefreshBusy = false;
-    if (b?.isConnected) {
-      b.disabled = false;
-      b.removeAttribute('aria-busy');
-    }
-    const current = $('#refresh-button');
-    if (current && current !== b) {
-      current.disabled = false;
-      current.removeAttribute('aria-busy');
-    }
+    updateRefreshBusy();
   }
 }
 function densityModal() {
@@ -1595,14 +2054,13 @@ function densityModal() {
   dialog.classList.add('display-dialog');
   window.albumAppearanceControls.mount(dialog);
   const refreshButton = document.createElement('button');
-  refreshButton.id = 'refresh-button';
+  refreshButton.id = 'display-refresh-button';
   refreshButton.className = 'subtle-button display-refresh';
   refreshButton.innerHTML = `${svg('refresh')}<span>批量增量更新</span>`;
   refreshButton.title = S.parent ? '增量更新当前目录及其子文件夹' : '增量更新全部已导入分类';
-  refreshButton.disabled = libraryRefreshBusy || scanActive;
-  refreshButton.setAttribute('aria-busy', String(libraryRefreshBusy));
   refreshButton.onclick = () => attempt(refreshLibrary);
   $('#modal-heading-actions').append(refreshButton);
+  updateRefreshBusy();
   applyDisplaySettings();
   $$('#modal [data-density]').forEach(
     (b) =>
@@ -1921,7 +2379,15 @@ async function settingsModal(tab = 'appearance') {
             if (alive() && current === content) closeModal();
           });
       }
-      if (tab === 'cache') await prepareCacheSettings(content, { alive, dialog });
+      if (tab === 'cache') {
+        await prepareCacheSettings(content, { alive, dialog });
+        if (alive() && S.dataDir) {
+          const location = document.createElement('p');
+          location.className = 'cache-path';
+          location.textContent = '当前资料目录：' + S.dataDir;
+          content.querySelector('#open-data')?.before(location);
+        }
+      }
     }
   }
   async function switchTab(name) {
@@ -2166,7 +2632,11 @@ function setProgressAttribute(element, name, value) {
 function hasOnlineWork(data) {
   return !!(
     data &&
-    (data.active || (data.remaining ?? data.pending) > 0 || data.discovering || data.paused)
+    (data.hasWork ||
+      data.active ||
+      (data.remaining ?? data.pending) > 0 ||
+      data.discovering ||
+      data.paused)
   );
 }
 function paintProgress({
@@ -2214,9 +2684,8 @@ function paintProgress({
   setProgressText($('#progress-path'), current);
   if ($('#progress-path').title !== current) $('#progress-path').title = current;
   setProgressText($('#progress-percent'), label);
-  const cancel = $('#cancel-import'),
-    spinner = $('.progress-spinner');
-  if (cancel.hidden !== (!scan || !active)) cancel.hidden = !scan || !active;
+  const spinner = $('.progress-spinner');
+  renderImportControls();
   if (spinner.hidden !== (!active || paused)) spinner.hidden = !active || paused;
   const width = percent == null ? '35%' : `${percent}%`;
   if (bar.style.width !== width) bar.style.width = width;
@@ -2244,14 +2713,17 @@ function showProgress(p) {
   if (p.active && !scanActive) preferScanSummary = !hasOnlineWork(latestOnlineProgress);
   latestScanProgress = p;
   scanActive = !!p.active;
+  if ((p.active || p.busy) && pendingImport) pendingImport.sawProgress = true;
   updateImportBusy();
-  if (p.active && pendingImport) pendingImport.sawProgress = true;
   renderOnlineProgress(latestOnlineProgress || {});
 }
 function renderOnlineProgress(data, settled = false) {
   // Adjacent queue snapshots can briefly report idle between two pieces of work.
   // Keep the live panel steady until the idle state survives one short settling window.
-  if (!scanActive && !hasOnlineWork(data) && !settled) {
+  const resumedScan = typeof hasStartupScanWork === 'function' && hasStartupScanWork();
+  const scanning =
+    !!(latestScanProgress?.busy ?? scanActive) || !!latestScanProgress?.cancelling || resumedScan;
+  if (!scanning && !hasOnlineWork(data) && !settled) {
     progressCompletionData = data;
     if (progressCompletionTimer == null)
       progressCompletionTimer = setTimeout(() => {
@@ -2266,48 +2738,63 @@ function renderOnlineProgress(data, settled = false) {
   progressCompletionTimer = null;
   progressCompletionData = null;
   if (preferScanSummary && !hasOnlineWork(data)) data = {};
+  const countsKnown = data.countsKnown !== false;
   const remaining = Math.max(0, Number(data.remaining ?? data.pending) || 0),
     completed = Math.max(0, Number(data.completed) || 0),
     // The worker reports the known workload even while discovery is still growing it.
     total = completed + remaining,
-    active = scanActive || hasOnlineWork(data),
-    paused = !scanActive && !!data.paused,
+    active = scanning || hasOnlineWork(data),
+    paused = !scanning && !!data.paused && !cancelImportRequested,
     cancelled = !active && latestScanProgress?.phase?.startsWith('已取消');
-  const cleaning = scanActive && latestScanProgress?.phase === '正在清理旧分类';
-  const title = scanActive
-    ? cleaning
-      ? '正在清理旧分类'
-      : '正在检索作品简介'
-    : data.paused === 'access'
-      ? '作品检索已暂停'
-      : paused
-        ? '作品检索等待重试'
+  const cleaning = scanning && latestScanProgress?.phase === '正在清理旧分类';
+  const title =
+    cancelImportRequested && active
+      ? '正在取消导入'
+      : scanning
+        ? cleaning
+          ? '正在清理旧分类'
+          : '正在检索作品简介'
+        : data.paused === 'access'
+          ? '作品检索已暂停'
+          : paused
+            ? '作品检索等待重试'
+            : active
+              ? '正在检索作品简介'
+              : cancelled
+                ? '导入已取消'
+                : total
+                  ? '作品检索完成'
+                  : '导入完成';
+  const detail = countsKnown
+    ? `已处理 ${fmt(completed)} 项 | 待处理 ${fmt(remaining)} 项`
+    : '已保存待续任务，正在读取后台进度…';
+  const percent =
+    !countsKnown && active
+      ? null
+      : total
+        ? Math.floor((completed / total) * 100)
         : active
-          ? '正在检索作品简介'
-          : cancelled
-            ? '导入已取消'
-            : total
-              ? '作品检索完成'
-              : '导入完成';
-  const detail = `已处理 ${fmt(completed)} 项 | 待处理 ${fmt(remaining)} 项`;
-  const percent = total ? Math.floor((completed / total) * 100) : active ? null : 100;
+          ? null
+          : 100;
   const current =
-    data.paused === 'access'
-      ? '请在偏好设置更新 Access Token，任务进度已保留'
-      : paused
-        ? `任务进度已保留，将于 ${new Date(data.retryAt).toLocaleTimeString([], { hour12: false })} 后重试`
-        : active
-          ? cleaning
-            ? '正在分批清理旧索引，完成后继续导入；可继续浏览相册'
-            : '作品简介在后台检索，可继续浏览相册'
-          : latestScanProgress?.errors
-            ? `导入跳过 ${fmt(latestScanProgress.errors)} 项，可查看属性或日志；可在「待确认项目」中核对匹配`
-            : '可在「待确认项目」中核对未满分匹配';
+    cancelImportRequested && active
+      ? '正在停止批量任务，已索引内容保留；可继续浏览相册'
+      : data.paused === 'access'
+        ? '请在偏好设置更新 Access Token，任务进度已保留'
+        : paused
+          ? `任务进度已保留，将于 ${new Date(data.retryAt).toLocaleTimeString([], { hour12: false })} 后重试`
+          : active
+            ? cleaning
+              ? '正在分批清理旧索引，完成后继续导入；可继续浏览相册'
+              : '作品简介在后台检索，可继续浏览相册'
+            : latestScanProgress?.errors
+              ? `导入跳过 ${fmt(latestScanProgress.errors)} 项，可查看属性或日志；可在「待确认项目」中核对匹配`
+              : '可在「待确认项目」中核对未满分匹配';
   paintProgress({
     title,
     detail,
     current,
-    directory: scanActive
+    directory: scanning
       ? latestScanProgress?.current || latestScanProgress?.name || ''
       : hasOnlineWork(data)
         ? onlineProgressDirectory || latestScanProgress?.current || latestScanProgress?.name || ''
@@ -2316,17 +2803,31 @@ function renderOnlineProgress(data, settled = false) {
     scan: scanActive,
     paused,
     percent,
-    label: paused ? '已暂停' : cancelled ? '已取消' : percent == null ? '整理中…' : `${percent}%`
+    label:
+      cancelImportRequested && active
+        ? '正在取消…'
+        : paused
+          ? '已暂停'
+          : cancelled
+            ? '已取消'
+            : percent == null
+              ? '整理中…'
+              : `${percent}%`
   });
   setProgressText(
     $('#footer-status'),
-    active ? `${title} · 待处理 ${fmt(remaining)} 项${data.discovering ? '以上' : ''}` : '就绪'
+    active
+      ? countsKnown
+        ? `${title} · 待处理 ${fmt(remaining)} 项${data.discovering ? '以上' : ''}`
+        : `${title} · 正在读取进度`
+      : '就绪'
   );
 }
 function showOnlineStatus(data) {
   if (hasOnlineWork(data)) preferScanSummary = false;
   const wasWorking = hasOnlineWork(latestOnlineProgress);
   latestOnlineProgress = data;
+  updateImportBusy();
   const directoryId = hasOnlineWork(data) ? data.id || onlineProgressDirectoryId : '';
   if (directoryId !== onlineProgressDirectoryId) {
     onlineProgressDirectoryId = directoryId;
@@ -2356,16 +2857,34 @@ function showOnlineStatus(data) {
   else setProgressText(status, '就绪');
 }
 window.album.onEvent((event) => {
+  if (event.type === 'tasks') {
+    const hadScanWork = hasStartupScanWork();
+    applyTaskSnapshot(event.data);
+    if (hadScanWork || hasStartupScanWork() || hasOnlineWork(latestOnlineProgress))
+      renderOnlineProgress(latestOnlineProgress || {});
+  }
+  if (event.type === 'summary') {
+    attempt(async () => {
+      await loadSummary();
+      if (startupResumeFinished) scheduleSummaryDetails();
+    });
+  }
+  if (event.type === 'changed' && !event.data.cover && !event.data.matching && renamingNodes.size) {
+    renameDeferredChanged = true;
+    return;
+  }
   if (event.type === 'sortMigration') {
     const active = event.data.active !== false;
     paintProgress({
       title: active ? '正在整理文件名称排序' : '文件名称排序已更新',
       detail: `已整理 ${fmt(event.data.processed)} 项 · 本次升级仅需处理一次`,
-      current: '保留作品关联、手动封面与个人资料，整理完成后载入相册。',
+      current: '保留作品关联、手动封面与个人资料；已缓存相册可继续浏览。',
       active,
       label: active ? '整理中…' : '完成'
     });
-    $('#footer-status').textContent = active ? '正在升级名称排序索引…' : '正在载入相册…';
+    $('#footer-status').textContent = active
+      ? '后台正在整理名称排序，可继续浏览相册'
+      : '名称排序已更新';
   }
   if (event.type === 'progress') {
     showProgress(event.data);
@@ -2378,7 +2897,12 @@ window.album.onEvent((event) => {
   if (event.type === 'changed' && event.data.matching) {
     matchRefreshBatch.changed(event.data.id);
   } else if (event.type === 'changed' && event.data.cover) {
-    attempt(async () => updateCoverNode(await api('get', { id: event.data.id })));
+    attempt(async () => {
+      const node = await api('get', { id: event.data.id });
+      updateCoverNode(node);
+      if (node && event.data.association && S.current?.id === node.id && !S.search)
+        renderIntro(S.current);
+    });
   } else if (event.type === 'changed') {
     window.invalidateFolderTree?.();
     if (
@@ -2394,9 +2918,15 @@ window.album.onEvent((event) => {
       changedTimer = setTimeout(
         () =>
           attempt(async () => {
-            S.rev = Date.now();
-            await loadSummary();
-            if (!$('#viewer').open) await loadPage(true);
+            if (renamingNodes.size) {
+              renameDeferredChanged = true;
+              return;
+            }
+            if (!$('#viewer').open) await refreshGrowingView();
+            else {
+              await loadSummary();
+              scheduleSummaryDetails();
+            }
           }),
         380
       );
@@ -2477,8 +3007,9 @@ $('#density-button').title = '查看设置：卡片尺寸、封面比例与批�
 $('#density-button').setAttribute('aria-label', $('#density-button').title);
 $('#density-button').setAttribute('aria-haspopup', 'dialog');
 $('#density-button').onclick = densityModal;
+$('#refresh-button').onclick = () => attempt(refreshLibrary);
 $('#theme-button').onclick = () => attempt(toggleTheme);
-$('#cancel-import').onclick = () => attempt(() => api('cancel'));
+$('#cancel-import').onclick = () => attempt(cancelImport);
 $('#collapse-all').onclick = () => {
   S.overviewExpanded.clear();
   attempt(() => navigate({}));
@@ -2510,8 +3041,8 @@ $('#search').addEventListener('input', (e) => {
   }, 220);
 });
 document.addEventListener('keydown', (e) => {
-  const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
-  if ($('#modal').open || $('#media-editor')?.open || $('#local-search-dialog')?.open) return;
+  const editing = densityWheelEditing(document.activeElement) || densityWheelEditing(e.target);
+  if (document.querySelector('dialog[open]:not(#viewer)')) return;
   if ($('#viewer').open) {
     if (e.key === 'Escape') {
       hideContext();
@@ -2535,6 +3066,17 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if ($('#modal').open) return;
+  if (
+    !editing &&
+    !e.altKey &&
+    !e.shiftKey &&
+    !e.defaultPrevented &&
+    (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r'))
+  ) {
+    e.preventDefault();
+    attempt(refreshLibrary);
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     $('#search').focus();
@@ -2560,7 +3102,7 @@ document.addEventListener(
   () =>
     attempt(async () => {
       const init = await loadSummary();
-      if (init.progress.active) showProgress(init.progress);
+      if (init.progress.active || init.progress.busy) showProgress(init.progress);
       if (init.online) showOnlineStatus(init.online);
       await loadPage();
       if (!scanActive && !hasOnlineWork(latestOnlineProgress))

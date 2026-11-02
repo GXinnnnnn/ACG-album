@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const context = vm.createContext({});
+const context = vm.createContext({ setTimeout: () => 0, clearTimeout() {} });
 vm.runInContext(
   fs.readFileSync(path.join(__dirname, '../src/ui/refresh-policy.js'), 'utf8'),
   context

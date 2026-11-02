@@ -9,16 +9,27 @@ const { DatabaseSync } = require('node:sqlite');
 
 async function client(dataDir) {
   const worker = new Worker(path.resolve(__dirname, '../src/library-worker.cjs'), {
-    workerData: { dataDir, watch: false }
+    workerData: { dataDir, watch: false, deferBackground: true }
   });
   let sequence = 0;
   const pending = new Map(),
     events = [];
+  let maintenanceResolve, maintenanceReject;
   const ready = new Promise((resolve, reject) => {
-    worker.once('error', reject);
+    worker.once('error', (error) => {
+      reject(error);
+      maintenanceReject?.(error);
+      for (const request of pending.values()) request.reject(error);
+    });
     worker.on('message', (m) => {
       if (m.event) events.push(m);
       if (m.event === 'ready') resolve();
+      if (m.event === 'tasks') {
+        const maintenance = m.data?.maintenance;
+        if (maintenance?.state === 'ready') maintenanceResolve?.();
+        if (maintenance?.state === 'error')
+          maintenanceReject?.(new Error(maintenance.error || 'Startup maintenance failed'));
+      }
       const item = pending.get(m.request);
       if (item) {
         pending.delete(m.request);
@@ -27,7 +38,7 @@ async function client(dataDir) {
     });
   });
   await ready;
-  return {
+  const api = {
     events,
     call(method, args = {}) {
       return new Promise((resolve, reject) => {
@@ -44,6 +55,33 @@ async function client(dataDir) {
       }
     }
   };
+  let timer;
+  const maintained = new Promise((resolve, reject) => {
+    maintenanceResolve = resolve;
+    maintenanceReject = reject;
+    timer = setTimeout(
+      () => reject(new Error('Startup maintenance did not become ready within 5000ms')),
+      5000
+    );
+  });
+  try {
+    // `ready` only promises cached reads. These migration/transaction fixtures
+    // explicitly resume and await maintenance without changing that product contract.
+    await Promise.all([api.call('startupResume'), maintained]);
+    // A later reply drains the worker's ready -> changed(maintenance) message pair.
+    const snapshot = await api.call('init', { lightweight: true });
+    assert.equal(snapshot.taskSnapshot.maintenance.state, 'ready');
+    for (let i = events.length - 1; i >= 0; i--)
+      if (events[i].event === 'changed' && events[i].data?.maintenance === true)
+        events.splice(i, 1);
+    return api;
+  } catch (error) {
+    await worker.terminate();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    maintenanceResolve = maintenanceReject = null;
+  }
 }
 async function fixture(t, seed, { legacyReview = false } = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-review-worker-'));

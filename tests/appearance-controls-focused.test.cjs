@@ -78,9 +78,13 @@ test('appearance defaults/ranges reject invalid data and include all legacy pres
     liquidTransparency: 18,
     frostTransparency: 8,
     cardRadius: 16,
-    density: 222
+    density: 166
   });
-  for (const width of [120, 158, 186, 222, 360]) assert.equal(spec.valid('density', width), true);
+  for (const width of [120, 128, 158, 166, 186, 195, 222, 267, 360]) {
+    assert.equal(spec.valid('density', width), true);
+    assert.equal(spec.normalize({ density: width }).density, width, 'Never migrate a saved width');
+  }
+  assert.equal(spec.normalize({}).density, 166);
   for (const [key, range] of Object.entries(spec.ranges)) {
     for (const value of [NaN, Infinity, null, '18', range.min - 1, range.max + 1])
       assert.equal(spec.valid(key, value), false);
@@ -233,12 +237,16 @@ const fixture = vm.runInNewContext(
   masonryTestSource.slice(0, masonryTestSource.indexOf('function disjoint(')) + '\nfixture;',
   { require, __dirname, console, AbortController }
 );
-test('continuous virtual and overview widths stay top-left and clamp at narrow containers', async () => {
+test('continuous virtual and overview widths stay fixed with balanced virtual edges and narrow clamping', async () => {
   for (const available of [90, 120, 700, 3448])
     for (const density of [120, 158, 186, 222, 267, 360]) {
       const f = await fixture(24, 0, available, density);
       assert.equal(f.grid.width, Math.min(available, density));
-      assert.equal(f.grid.getPosition(0).left, 0);
+      const occupied = f.grid.cols * f.grid.width + (f.grid.cols - 1) * f.grid.gap,
+        inset = (available - occupied) / 2;
+      assert.equal(f.grid.getPosition(0).left, inset);
+      const lastColumn = f.grid.getPosition(f.grid.cols - 1);
+      assert.ok(Math.abs(available - lastColumn.left - lastColumn.width - inset) < 0.001);
       assert.equal(f.grid.getPosition(0).top, 0);
       const overview = f.context.overviewPreviewGeometry(available, density);
       assert.equal(overview.width, Math.min(available, density));
@@ -474,5 +482,10 @@ test('worker persists five appearance keys across restart and rejects malformed 
   call = await open();
   const saved = (await call('init')).settings;
   for (const [key, value] of Object.entries(changed)) assert.equal(saved[key], value);
+  await call('settings', { key: 'density', value: 222 });
+  await call('shutdown');
+  await worker.terminate();
+  call = await open();
+  assert.equal((await call('init')).settings.density, 222, 'A saved legacy width survives restart');
   await call('shutdown');
 });

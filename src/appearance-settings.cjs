@@ -5,7 +5,7 @@
     liquidTransparency: { min: 0, max: 90, default: 18 },
     frostTransparency: { min: 0, max: 90, default: 8 },
     cardRadius: { min: 0, max: 36, default: 16 },
-    density: { min: 120, max: 360, default: 222 }
+    density: { min: 120, max: 360, default: 166 }
   });
   const defaults = Object.freeze({
     textShadow: false,
@@ -30,7 +30,19 @@
       ])
     );
   }
-  const spec = Object.freeze({ ranges, defaults, valid, normalize });
+  function cardPresets(viewportWidth = 3840) {
+    // CSS pixels already account for OS scaling and browser zoom. Physical
+    // screen pixels would make a scaled 4K desktop select oversized targets.
+    const width = Number(viewportWidth),
+      progress = Math.max(
+        0,
+        Math.min(1, ((Number.isFinite(width) && width > 0 ? width : 3840) - 1920) / 1920)
+      );
+    return [120, 155, 191].map((compact, index) =>
+      Math.round(compact + ([128, 166, 195][index] - compact) * progress)
+    );
+  }
+  const spec = Object.freeze({ ranges, defaults, valid, normalize, cardPresets });
   if (typeof module === 'object' && module.exports) module.exports = spec;
   else root.albumAppearanceSpec = spec;
 })(typeof window === 'object' ? window : globalThis);

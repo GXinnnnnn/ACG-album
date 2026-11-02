@@ -327,16 +327,20 @@ test('newest image reducer ignores name precedence and breaks equal-time ties de
   assert.equal(newestImage(tied, latest), tied);
 });
 
-test('native import cancellation has no scan side effects and only passes sanitized options', async () => {
+function nativeImportHarness({
+  init = async () => ({ progress: { busy: false, active: false }, online: {} }),
+  choose = async () => ({ canceled: false, filePaths: ['C:\\fixture'] }),
+  scan = async () => 'scanned'
+} = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
-  const block = source.slice(
-    source.indexOf("  ipcMain.handle('library:import'"),
-    source.indexOf("  ipcMain.handle('library:refresh'")
-  );
+  const start = source.indexOf("  ipcMain.handle('library:import'"),
+    end = source.indexOf("  ipcMain.handle('library:refresh'", start);
+  assert.ok(start >= 0 && end > start, 'real native import handler must be present');
   let handler,
-    canceled = true;
+    pickers = 0;
   const calls = [];
-  vm.runInNewContext(block, {
+  const context = {
+    importReserved: false,
     ipcMain: {
       handle: (_, fn) => {
         handler = fn;
@@ -347,21 +351,119 @@ test('native import cancellation has no scan side effects and only passes saniti
       assert.equal(name, './matching-policy.cjs');
       return { importOptions };
     },
-    dialog: { showOpenDialog: async () => ({ canceled, filePaths: ['C:\\fixture'] }) },
-    call: (...args) => {
-      calls.push(args);
-      return 'scanned';
+    dialog: {
+      showOpenDialog: (...args) => {
+        pickers++;
+        return choose(...args);
+      }
+    },
+    call: (method, args) => {
+      calls.push([method, args]);
+      if (method === 'init') {
+        assert.equal(JSON.stringify(args), JSON.stringify({ lightweight: true }));
+        return init();
+      }
+      assert.equal(method, 'scan');
+      return scan(args);
     }
-  });
-  assert.equal(await handler(null, { onlineMatch: false }), null);
-  assert.equal(calls.length, 0);
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  return { handler, calls, pickers: () => pickers, reserved: () => context.importReserved };
+}
+
+test('native import cancellation has no scan side effects and only passes sanitized options', async () => {
+  let canceled = true;
+  const h = nativeImportHarness({ choose: async () => ({ canceled, filePaths: ['C:\\fixture'] }) });
+  assert.equal(await h.handler(null, { onlineMatch: false }), null);
+  assert.equal(
+    JSON.stringify(h.calls),
+    JSON.stringify([['init', { lightweight: true }]]),
+    'cancellation permits only a read-only lightweight busy check'
+  );
+  assert.equal(h.reserved(), false);
   canceled = false;
   assert.equal(
-    await handler(null, { onlineMatch: true, subjectTypes: [4], token: 'injected', path: 'bad' }),
+    await h.handler(null, { onlineMatch: true, subjectTypes: [4], token: 'injected', path: 'bad' }),
     'scanned'
   );
   assert.equal(
-    JSON.stringify(calls),
-    JSON.stringify([['scan', { path: 'C:\\fixture', onlineMatch: true, subjectTypes: [4] }]])
+    JSON.stringify(h.calls),
+    JSON.stringify([
+      ['init', { lightweight: true }],
+      ['init', { lightweight: true }],
+      ['scan', { path: 'C:\\fixture', onlineMatch: true, subjectTypes: [4] }]
+    ])
+  );
+  assert.equal(h.pickers(), 2);
+  assert.equal(h.reserved(), false);
+});
+
+test('native import reserves synchronously across precheck, picker and scan, then releases', async () => {
+  let releaseInit, releasePicker, releaseScan;
+  const h = nativeImportHarness({
+    init: () =>
+      new Promise((resolve) => {
+        releaseInit = resolve;
+      }),
+    choose: () =>
+      new Promise((resolve) => {
+        releasePicker = resolve;
+      }),
+    scan: () =>
+      new Promise((resolve) => {
+        releaseScan = resolve;
+      })
+  });
+  const first = h.handler(null, { onlineMatch: false });
+  assert.equal(h.reserved(), true);
+  await assert.rejects(h.handler(null), /已有导入任务/);
+  assert.equal(h.calls.length, 1, 'duplicate is refused before another read-only precheck');
+  assert.equal(h.pickers(), 0);
+  releaseInit({ progress: { busy: false }, online: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.pickers(), 1);
+  await assert.rejects(h.handler(null), /已有导入任务/);
+  releasePicker({ canceled: false, filePaths: ['C:\\fixture'] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.filter(([method]) => method === 'scan').length, 1);
+  await assert.rejects(h.handler(null), /已有导入任务/);
+  releaseScan('scanned');
+  assert.equal(await first, 'scanned');
+  assert.equal(h.reserved(), false);
+});
+
+test('native import refuses actual background batch work before opening the picker and always releases its reservation', async () => {
+  for (const state of [
+    { progress: { busy: true } },
+    { progress: { active: true } },
+    ...[
+      { active: true },
+      { remaining: 2 },
+      { pending: 2 },
+      { discovering: true },
+      { buffered: 1 }
+    ].map((online) => ({ online }))
+  ]) {
+    const h = nativeImportHarness({ init: async () => state });
+    await assert.rejects(h.handler(null), /已有导入或批量检索任务/, JSON.stringify(state));
+    assert.equal(h.pickers(), 0);
+    assert.equal(h.calls.filter(([method]) => method === 'scan').length, 0);
+    assert.equal(h.reserved(), false);
+  }
+  const failed = nativeImportHarness({
+    init: async () => {
+      throw new Error('generated precheck failure');
+    }
+  });
+  await assert.rejects(failed.handler(null), /generated precheck failure/);
+  assert.equal(failed.reserved(), false);
+  assert.equal(failed.pickers(), 0);
+  const stalePause = nativeImportHarness({
+    init: async () => ({ progress: {}, online: { paused: 'access', remaining: 0 } })
+  });
+  assert.equal(
+    await stalePause.handler(null),
+    'scanned',
+    'an empty saved pause reason is not background work'
   );
 });

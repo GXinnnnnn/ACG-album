@@ -19,7 +19,7 @@ const ranges = {
   liquidTransparency: { id: 'appearance-liquid-transparency', min: 0, max: 90, default: 18 },
   frostTransparency: { id: 'appearance-frost-transparency', min: 0, max: 90, default: 8 },
   cardRadius: { id: 'appearance-card-radius', min: 0, max: 36, default: 16 },
-  density: { id: 'appearance-density', min: 120, max: 360, default: 222 }
+  density: { id: 'appearance-density', min: 120, max: 360, default: 166 }
 };
 // prettier-ignore
 const report = {
@@ -468,10 +468,23 @@ async function assertIdentity(label) {
   }
   report.samples.push({ label, identity: result });
 }
+async function parkPointerOutsideCards() {
+  // The native draggable titlebar does not reliably dispatch DOM pointerout on Windows.
+  // Leave through an actual client-area element before measuring resting geometry.
+  const heading = await page.locator('#page-title').boundingBox();
+  assert.ok(heading);
+  await page.mouse.move(
+    heading.x + Math.min(24, heading.width / 2),
+    heading.y + heading.height / 2
+  );
+  await page.waitForFunction(
+    () => !document.querySelector('#virtual-grid .effects-active, #virtual-grid .album-card:hover')
+  );
+  await settle();
+}
 async function densityEvidence(value) {
   await navigateGallery();
-  await page.mouse.move(4, 4);
-  await settle();
+  await parkPointerOutsideCards();
   await page.evaluate(() => {
     const viewport = document.querySelector('#viewport');
     const clearance = Math.max(
@@ -504,8 +517,7 @@ async function densityEvidence(value) {
   }, value);
   await persisted('density', value);
   await closeModal();
-  await page.mouse.move(4, 4);
-  await settle();
+  await parkPointerOutsideCards();
   const sample = await page.evaluate(
     ({ value, anchor }) => {
       const viewport = document.querySelector('#viewport'),
@@ -521,6 +533,7 @@ async function densityEvidence(value) {
         label: 'density-' + value,
         value,
         count: cards.length,
+        offsetX: grid.offsetX,
         rect: rect.toJSON(),
         cards,
         viewport: {
@@ -568,7 +581,13 @@ async function densityEvidence(value) {
   const columns = [...new Set(sample.positions.map((pos) => Math.round(pos.left)))].sort(
     (a, b) => a - b
   );
-  closeTo(columns[0], 0, 'First column starts at grid left', 1);
+  closeTo(columns[0], sample.offsetX, 'First column follows the centered grid offset', 1);
+  closeTo(
+    columns[0],
+    sample.rect.width - columns.at(-1) - sample.cards[0].rect.width,
+    'Actual columns leave balanced horizontal margins',
+    2
+  );
   const rowTops = new Map();
   for (const card of sample.cards) {
     const row = Math.round(card.rect.top);
@@ -818,11 +837,20 @@ async function fixture() {
         const input = page.locator('#' + range.id);
         await expect(input).toHaveAttribute('min', String(range.min));
         await expect(input).toHaveAttribute('max', String(range.max));
-        await expect(input).toHaveValue(String(range.default));
+        const freshDefault =
+          key === 'density' ? await page.evaluate(() => cardPresets()[1]) : range.default;
+        await expect(input).toHaveValue(String(freshDefault));
         const reset = page.locator(`#settings-panel-appearance [data-appearance-reset="${key}"]`);
         await expect(reset).toHaveAttribute('title', '恢复默认值');
         await expect(reset).toHaveAttribute('aria-label', '恢复默认值');
-        assert.equal((await settings())[key], range.default);
+        if (key === 'density') {
+          assert.equal(await page.evaluate(() => S.settings.density), freshDefault);
+          assert.equal((await settings()).density, range.default);
+          assert.equal(
+            (await rpc('init', { lightweight: true })).settings.densityConfigured,
+            false
+          );
+        } else assert.equal((await settings())[key], freshDefault);
       }
       await expect(page.locator('#appearance-text-shadow')).not.toBeChecked();
       assert.equal((await settings()).textShadow, false);
@@ -1014,9 +1042,9 @@ async function fixture() {
     }
   );
   await check(
-    'density 120/158/186/222/360 preserves scroll anchor and actual grid/cover alignment without horizontal overflow',
+    'density 120/128/158/166/186/195/222/360 preserves scroll anchor and actual grid/cover alignment without horizontal overflow',
     async () => {
-      for (const value of [120, 158, 186, 222, 360]) await densityEvidence(value);
+      for (const value of [120, 128, 158, 166, 186, 195, 222, 360]) await densityEvidence(value);
     }
   );
   await check(

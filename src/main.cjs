@@ -48,6 +48,7 @@ let win,
   tokenPath;
 const pending = new Map();
 let closing = false;
+let importReserved = false;
 const log = (...args) => {
   console.log(...args);
   if (dataDir)
@@ -78,6 +79,7 @@ function bootWorker() {
       workerData: {
         dataDir,
         token,
+        deferBackground: true,
         resourcesPath: app.isPackaged
           ? process.resourcesPath
           : path.join(__dirname, '..', 'resources'),
@@ -181,6 +183,9 @@ function handlers() {
     'setAlbumKind',
     'storeVideoThumb',
     'init',
+    'statistics',
+    'startupResume',
+    'rename',
     'localIndexStatus',
     'searchLocalIndex',
     'list',
@@ -240,19 +245,39 @@ function handlers() {
     return first;
   });
   ipcMain.handle('library:import', async (_, options = {}) => {
-    const safeOptions = require('./matching-policy.cjs').importOptions(options);
-    const result = await dialog.showOpenDialog(win, {
-      title: '选择要导入的相册分类',
-      properties: ['openDirectory', 'dontAddToRecent']
-    });
-    if (result.canceled || !result.filePaths?.length) return null;
-    return call('scan', { path: result.filePaths[0], ...safeOptions });
+    if (importReserved) throw new Error('已有导入任务正在准备或运行，请等待完成或先取消。');
+    importReserved = true;
+    try {
+      const safeOptions = require('./matching-policy.cjs').importOptions(options);
+      const state = await call('init', { lightweight: true });
+      const online = state.online || {};
+      if (
+        state.progress?.busy ||
+        state.progress?.active ||
+        state.taskSnapshot?.busy ||
+        online.hasWork ||
+        online.active ||
+        online.remaining > 0 ||
+        online.pending > 0 ||
+        online.discovering ||
+        online.buffered > 0
+      )
+        throw new Error('已有导入或批量检索任务正在运行，请等待完成或先取消。');
+      const result = await dialog.showOpenDialog(win, {
+        title: '选择要导入的相册分类',
+        properties: ['openDirectory', 'dontAddToRecent']
+      });
+      if (result.canceled || !result.filePaths?.length) return null;
+      return await call('scan', { path: result.filePaths[0], ...safeOptions });
+    } finally {
+      importReserved = false;
+    }
   });
   ipcMain.handle('library:refresh', async (_, args) => {
     const n = await call('get', args);
     if (!n) throw new Error('分类不存在');
     const root = await call('get', { id: n.root });
-    return call('scan', { path: root.path });
+    return call('scan', { path: root.path, matchNewOnly: true });
   });
   ipcMain.handle('library:chooseAvatar', async () => {
     const result = await dialog.showOpenDialog(win, {

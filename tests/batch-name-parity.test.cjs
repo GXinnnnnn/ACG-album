@@ -8,6 +8,7 @@ const { Worker } = require('node:worker_threads');
 const { DatabaseSync } = require('node:sqlite');
 const { createLocalIndex } = require('../src/local-index.cjs');
 const { normalize, subjectNames, idFor, searchPlan } = require('../src/model.cjs');
+const { rankVerifiedSeriesMembers } = require('../src/matching.cjs');
 
 // Identity fields from the read-only Full archive, not network responses.
 const games = [
@@ -561,6 +562,49 @@ test('short script pairing keeps media qualifiers inside their complete titles',
     assert.deepEqual(searchPlan(query).titleGroups, [], query);
 });
 
+test('archived Nekopara equal-rated volumes follow the new series recency rule', () => {
+  // Read-only PK checks against the reviewed Full archive, 2026-11-02:
+  // Vol.1 has 2494 collects and Vol.4 has 994, below the fivefold lead.
+  // Both scores are 6.1, so the later full date selects Vol.4, not Vol.1.
+  const members = [
+    {
+      volume: 1,
+      subject: {
+        id: 107596,
+        type: 4,
+        name: 'ネコぱら vol.1 ソレイユ開店しました！',
+        name_cn: '猫娘乐园 Vol.1',
+        aliases: ['NEKOPARA Vol. 1'],
+        collection: { collect: 2494 },
+        rating: { score: 6.1 },
+        date: '2014-12-30'
+      }
+    },
+    {
+      volume: 4,
+      subject: {
+        id: 215928,
+        type: 4,
+        name: 'ネコぱら vol.4 ネコとパティシエのノエル',
+        name_cn: '猫娘乐园 Vol.4',
+        aliases: ['NEKOPARA Vol. 4'],
+        collection: { collect: 994 },
+        rating: { score: 6.1 },
+        date: '2020-11-26'
+      }
+    }
+  ];
+  for (const candidates of [members, [...members].reverse()]) {
+    const result = rankVerifiedSeriesMembers(candidates, [4], {
+      query: '猫娘乐园NEKOPARA',
+      base: '猫娘乐园NEKOPARA'
+    });
+    assert.equal(result.selected?.id, 215928);
+    assert.equal(result.selectedMatch, 0.97);
+    assert.equal(result.selectionReason, 'bilingual-series-representative');
+  }
+});
+
 const fullIndexPath = process.env.ACG_PARITY_FULL_INDEX;
 test(
   'optional real Full four-name local and batch parity without live network',
@@ -614,7 +658,7 @@ test(
       { query: '命运2Desiny 2', id: 185085, score: 1 },
       { query: '命运2Destiny 2', id: 185085, score: 1 },
       { query: "漫威蜘蛛侠Marvel's spider-man", id: 216993, score: 1 },
-      { query: '猫娘乐园NEKOPARA', id: 107596, score: 0.97 },
+      { query: '猫娘乐园NEKOPARA', id: 215928, score: 0.97 },
       { query: '命运-冠位指定FGO', id: 109378, score: 1 },
       { query: '千恋万花', id: 172612, score: 1 },
       { query: "漫威蜘蛛侠Marvel's Spider-Man Remastered", id: 499487, score: 1 },
@@ -692,7 +736,7 @@ test(
     const { MATCHING_POLICY_VERSION } = require('../src/matching.cjs');
     const entries = [
       { query: '命运2Desiny 2', id: 185085 },
-      { query: '猫娘乐园NEKOPARA', id: 107596 },
+      { query: '猫娘乐园NEKOPARA', id: 215928 },
       { query: "漫威蜘蛛侠Marvel's Spider-Man Remastered", id: 499487 },
       { query: '千恋万花SenrenBanka', id: 172612 }
     ];

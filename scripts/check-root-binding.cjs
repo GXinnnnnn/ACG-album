@@ -426,31 +426,49 @@ function seedLegacyReview() {
     }
   );
   await check(
-    'incremental update belongs to display modal heading and backdrop or Escape follow dialog policy',
+    'unique toolbar refresh follows density, shares busy state with display heading and preserves dialog policy',
     async () => {
-      await expect(page.locator('#refresh-button:visible')).toHaveCount(0);
+      await expect(page.locator('#refresh-button')).toHaveCount(1);
+      await expect(page.locator('#refresh-button')).toBeVisible();
+      assert.equal(
+        await page.locator('#density-button').evaluate((button) => button.nextElementSibling?.id),
+        'refresh-button'
+      );
       await page.locator('#density-button').click();
       await expect(page.locator('#modal-title')).toHaveText('查看设置');
-      const button = page.locator('#modal-heading-actions #refresh-button');
+      const button = page.locator('#modal-heading-actions #display-refresh-button');
       await expect(button).toBeVisible();
       await expect(button).toHaveText('批量增量更新');
+      await expect(page.locator('#refresh-button')).toHaveCount(1);
+      await expect(page.locator('#display-refresh-button')).toHaveCount(1);
       const titleRect = await page.locator('#modal-title').boundingBox(),
         buttonRect = await button.boundingBox();
       assert.ok(
         buttonRect.x >= titleRect.x + titleRect.width,
         'Update action sits to the right of the modal title'
       );
+      await expect(button).toBeEnabled();
+      const busy = await button.evaluate((action) => {
+        action.click();
+        return [...document.querySelectorAll('#refresh-button,#display-refresh-button')].map(
+          (node) => ({ id: node.id, disabled: node.disabled, busy: node.getAttribute('aria-busy') })
+        );
+      });
+      assert.equal(busy.length, 2);
+      assert.ok(busy.every((node) => node.disabled && node.busy === 'true'));
+      await page.waitForFunction(() => !libraryRefreshBusy);
+      await expect(button).toBeEnabled();
+      await expect(page.locator('#refresh-button')).toHaveAttribute('aria-busy', 'false');
       await backdrop();
       await page.keyboard.press('Escape');
       await expect(page.locator('#modal')).not.toBeVisible();
-      await expect(page.locator('#refresh-button:visible')).toHaveCount(0);
+      await expect(page.locator('#refresh-button')).toHaveCount(1);
+      await expect(page.locator('#refresh-button')).toBeVisible();
       assert.equal(
-        await page
-          .locator('#refresh-button')
-          .evaluateAll((buttons) => buttons.every((b) => !!b.closest('#modal'))),
+        await page.locator('#refresh-button').evaluate((node) => node.closest('#toolbar') !== null),
         true
       );
-      return { titleRect, buttonRect };
+      return { titleRect, buttonRect, busy };
     }
   );
   await closeApp();

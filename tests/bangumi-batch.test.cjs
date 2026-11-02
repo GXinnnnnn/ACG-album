@@ -211,6 +211,18 @@ async function client(
         after = nextAfter;
       }
     },
+    association(id, after = 0) {
+      return c.until(
+        () =>
+          events
+            .slice(after)
+            .some(
+              ({ event, data }) =>
+                event === 'association' && data.id === id && data.state === 'complete'
+            ),
+        'manual association completion'
+      );
+    },
     paused(reason, after = 0) {
       return c.until(
         () =>
@@ -406,7 +418,12 @@ test('queued forced metadata refreshes bypass newly filled raw cache and keep AP
   try {
     await c.call('scan', { path: f.source, onlineMatch: false });
     const id = idFor(f.folders[0]);
-    await c.call('bind', { id, url: 'https://bgm.tv/subject/42' });
+    const bindingAfter = c.events.length;
+    const binding = await c.call('bind', { id, url: 'https://bgm.tv/subject/42' });
+    assert.equal(binding.subject_id, 42);
+    assert.equal(binding.manual_subject, 1);
+    assert.equal(binding.enrichment_pending, true);
+    await c.association(id, bindingAfter);
     const before = c.requests.length;
     holdNext = true;
     const first = c.call('refreshMetadata', { id });
@@ -448,8 +465,8 @@ test(
       );
       assert.equal(new Set(activity.map((e) => e.data.id)).size, 1000);
       assert.ok(
-        activity.every((e) => e.data.buffered <= 63 && e.data.remaining <= 64),
-        'durable remaining includes active and the page never exceeds 64'
+        activity.every((e) => e.data.buffered <= 63 && e.data.remaining >= e.data.buffered + 1),
+        'the memory page stays bounded while durable remaining includes buffered and active jobs'
       );
       assert.equal((await c.call('syncStatus')).completed, 1000);
       const statuses = c.events.filter((e) => e.event === 'online').map((e) => e.data);
@@ -481,7 +498,8 @@ test(
           albums: 1000,
           requests: c.requests.length,
           milliseconds: Math.round(performance.now() - started),
-          maxQueued: Math.max(...activity.map((e) => e.data.pending))
+          maxBuffered: Math.max(...activity.map((e) => e.data.buffered)),
+          maxDurablePending: Math.max(...activity.map((e) => e.data.pending))
         })
       );
     } finally {
@@ -599,7 +617,7 @@ test(
 );
 
 test(
-  'hard termination mid-page retains active job and acknowledged frontier covers all eligible albums',
+  'hard termination after local discovery retains active and all unacknowledged jobs',
   { timeout: SCALE_TIMEOUT },
   async () => {
     const f = await fixture(140);
@@ -617,14 +635,17 @@ test(
         state.pending.some((n) => n.id === idFor(heldFolder)),
         'active request remains durable until terminal acknowledgement'
       );
-      assert.equal(state.frontier.length, 1);
-      assert.ok(state.frontier[0].after_id, 'page cursor committed before held HTTP');
+      assert.equal(
+        state.frontier.length,
+        0,
+        'local discovery finishes before the first HTTP request'
+      );
       const pendingIds = new Set(state.pending.map((n) => n.id));
-      for (const folder of f.folders.filter((p) => idFor(p) <= state.frontier[0].after_id)) {
+      for (const folder of f.folders) {
         const terminal = before.slice(0, -1).some((r) => r.body.keyword === path.basename(folder));
         assert.ok(
           terminal || pendingIds.has(idFor(folder)),
-          'advanced frontier cannot lose unacknowledged page member'
+          'exhausted discovery cannot lose any unacknowledged folder'
         );
       }
       const now = await c.clock();
@@ -756,8 +777,13 @@ test(
       });
       await checkManual();
       await c.call('token', { value: 'fake-batch-access-b' });
-      const tokenBefore = c.requests.length;
-      await c.call('bind', { id: idFor(extra), url: '42' });
+      const tokenBefore = c.requests.length,
+        bindingAfter = c.events.length;
+      const binding = await c.call('bind', { id: idFor(extra), url: '42' });
+      assert.equal(binding.subject_id, 42);
+      assert.equal(binding.manual_subject, 1);
+      assert.equal(binding.enrichment_pending, true);
+      await c.association(idFor(extra), bindingAfter);
       assert.deepEqual(counts(c.requests.slice(tokenBefore)), {
         search: 0,
         detail: 1,

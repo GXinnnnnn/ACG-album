@@ -505,9 +505,18 @@ test('switching subjects with no new cover restores local fallback and retains e
 
 test('manual bind saves offline first, enriches best effort online and stays immune to auto rebinding', async (t) => {
   const f = await fixture(t, { respond: detailsOnly });
-  const node = await f.call('bind', { id: f.id, url: '2' });
-  assert.equal(node.subject_id, 2);
-  assert.equal(node.manual_subject, 1);
+  const saved = await f.call('bind', { id: f.id, url: '2' });
+  assert.equal(saved.subject_id, 2);
+  assert.equal(saved.manual_subject, 1);
+  assert.equal(saved.enrichment_pending, true);
+  assert.equal(saved.metadata.details_source, 'local-index');
+  await f.until(() =>
+    f.events.some(
+      (event) =>
+        event.event === 'association' && event.data.id === f.id && event.data.state === 'complete'
+    )
+  );
+  const node = await f.call('get', { id: f.id });
   assert.equal(node.metadata.details_source, 'online');
   assert.equal(node.metadata.rating.score, 9.1);
   assert.equal(node.cover, 'subject:2');

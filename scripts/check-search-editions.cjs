@@ -12,7 +12,9 @@ const root = path.resolve(__dirname, '..');
 const releaseRoot = path.resolve(
   process.env.ACG_RELEASE_OUTPUT || path.join(root, 'release', metadata.version)
 );
-const archive = fs.realpathSync(path.join(root, 'artifacts'));
+const archive = path.resolve(
+  process.env.ACG_CHECK_STAGE || path.join(root, 'release', 'installer-acceptance')
+);
 const run = path.join(
   archive,
   'search-editions',

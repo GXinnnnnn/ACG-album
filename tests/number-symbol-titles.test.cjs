@@ -48,7 +48,7 @@ function fixture(t, rows, { omitVerifiedKeys = false } = {}) {
       '[]',
       JSON.stringify(s.collection),
       JSON.stringify(s.aliases),
-      '{}'
+      s.raw_json ?? JSON.stringify(s.rating ? { score: s.rating.score } : {})
     );
     for (const name of subjectNames(s).filter(
       (name) => !omitVerifiedKeys || normalize(name) !== 'senrenbanka'
@@ -80,6 +80,7 @@ const family = (extra = []) => [
     name: 'Stellar Garden Vol. 1',
     name_cn: '星河花园 第1卷',
     collection: { collect: 1000 },
+    rating: { score: 8.1 },
     date: '2018-01-01'
   },
   {
@@ -87,6 +88,7 @@ const family = (extra = []) => [
     name: 'Stellar Garden Vol. 2',
     name_cn: '星河花园 第2卷',
     collection: { collect: 950 },
+    rating: { score: 8.0 },
     date: '2024-01-01'
   },
   ...extra
@@ -255,7 +257,7 @@ test('a conflicting archived foreign identity or two possible repairs remain man
   assert.equal(exact('命运2Desiny 2', 'import', [2]).selected, null);
 });
 
-test('two fully proven bilingual volumes select a labeled representative by existing popularity/date policy', (t) => {
+test('two fully proven bilingual volumes use collection dominance then similar-rating recency', (t) => {
   const search = fixture(t, family());
   for (const mode of ['manual', 'import']) {
     const r = search('星河花园Stellar Garden', mode);
@@ -274,6 +276,45 @@ test('two fully proven bilingual volumes select a labeled representative by exis
     popular('星河花园Stellar Garden').selected?.id,
     11,
     'Much weaker popularity cannot be replaced merely by a newer date'
+  );
+});
+
+test('local series ratings use only valid archived numeric scores and remain manual when absent', (t) => {
+  const base = family();
+  const higherRated = fixture(
+    t,
+    base.map((s) => ({
+      ...s,
+      raw_json: JSON.stringify({ rating: { score: s.id === 11 ? 9 : 8 } })
+    }))
+  );
+  const rated = higherRated('星河花园Stellar Garden');
+  assert.equal(rated.selected?.id, 11, 'Higher rating outranks the newer same-order volume');
+  assert.equal(rated.selected.rating.score, 9);
+  assert.equal('raw_json' in rated.selected, false);
+  assert.equal('archive_score' in rated.selected, false);
+  for (const raw_json of [
+    '{}',
+    '{broken json',
+    '{"score":"8.5"}',
+    '{"score":0}',
+    '{"score":11}',
+    '{"score":null}'
+  ]) {
+    const search = fixture(
+      t,
+      base.map((s) => ({ ...s, raw_json }))
+    );
+    assert.equal(search('星河花园Stellar Garden').selected, null, raw_json);
+  }
+  const dominant = fixture(
+    t,
+    base.map((s) => ({ ...s, raw_json: '{}', collection: { collect: s.id === 11 ? 10000 : 1000 } }))
+  );
+  assert.equal(
+    dominant('星河花园Stellar Garden').selected?.id,
+    11,
+    'Fivefold collection proof does not require a rating'
   );
 });
 
