@@ -20,6 +20,7 @@ const allowed = new Set([
   'openMedia',
   'init',
   'startupResume',
+  'filesystemSync',
   'rename',
   'statistics',
   'localIndexStatus',

@@ -200,6 +200,7 @@ const cacheReadMethods = new Set([
   'get',
   'ancestors',
   'syncStatus',
+  'filesystemSync',
   'localIndexStatus',
   'getRootMatchPolicy',
   'searchLocalIndex',
@@ -1062,7 +1063,8 @@ async function scan(rootPath, options = {}) {
   }
 }
 async function scanContents(rootPath, options = {}) {
-  const { target = null, offline = false, matchNewOnly = false } = options;
+  let { target = null } = options;
+  const { offline = false, matchNewOnly = false } = options;
   const matchOptions = importOptions(options);
   if (stopping) throw new Error('媒体服务已停止。');
   rootPath = path.resolve(rootPath);
@@ -1084,6 +1086,19 @@ async function scanContents(rootPath, options = {}) {
     throw new Error('不能将程序数据或缓存目录导入为相册，请选择原图库文件夹。');
   await cacheDirectory.validateCacheLocation(cacheHome, [rootPath]);
   const id = idFor(rootPath);
+  const previousRoot = getNode(id);
+  // A child-only scan must not advance the root's stat baseline past an
+  // unobserved sibling change. Enumerate the root before accepting that stat.
+  if (
+    options.externalSync &&
+    target &&
+    target !== rootPath &&
+    previousRoot &&
+    (previousRoot.mtime !== stat.mtimeMs ||
+      previousRoot.fs_identity !== stat.fsIdentity ||
+      previousRoot.scan_error)
+  )
+    target = rootPath;
   const containing = roots().find(
     (r) =>
       r.id !== id &&
@@ -1101,6 +1116,9 @@ async function scanContents(rootPath, options = {}) {
         options,
         started: Math.max(Date.now(), (progress.scanStamp || 0) + 1)
       });
+  // Persist a widened target before accepting the root stat. A second pause
+  // must resume the root frame even after that stat baseline has advanced.
+  if (options.resumeJobId && target !== job.target) scanJournal.checkpoint({ target });
   const started = job.started;
   scanJournal.resume(job.id);
   indexing.setJob(job.id);
@@ -1334,7 +1352,8 @@ async function scanContents(rootPath, options = {}) {
             item.move = await scanIdentity.prepare(item.node, item.s, checkpoint);
             if (cancelled || stopping) return;
           }
-          const previewFolders = [];
+          const previewFolders = [],
+            externalRenames = [];
           let published = false;
           db.exec('BEGIN');
           try {
@@ -1346,9 +1365,53 @@ async function scanContents(rootPath, options = {}) {
                 continue;
               }
               const n = item.node,
-                kind = n.kind;
-              scanIdentity.apply(item.move, frame.stamp);
+                kind = n.kind,
+                previous = getNode(n.id);
+              const moved = scanIdentity.apply(item.move, frame.stamp);
               indexing.upsert(n, item.s, frame.stamp);
+              if (options.externalSync && kind === 'folder') {
+                // Background reconciliation enumerates changed directories and
+                // genuinely new preview rows, without revisiting every unchanged
+                // media subtree. The selected frames survive a shutdown as well.
+                const changed =
+                  !previous ||
+                  previous.missing ||
+                  previous.scan_error ||
+                  previous.path !== n.path ||
+                  previous.mtime !== item.s.mtimeMs ||
+                  previous.fs_identity !== item.s.fsIdentity;
+                if (changed || one('SELECT 1 FROM scan_new WHERE job=? AND id=?', job.id, n.id)) {
+                  const existing = scanJournal.directory(n.id);
+                  if (existing?.phase === 'done')
+                    scanJournal.reopenDirectory(n.id, {
+                      snapshot: item.s,
+                      stamp: Math.max(Date.now(), frame.stamp, existing.stamp + 1)
+                    });
+                  else scanJournal.discoverDirectory({ ...n, stamp: frame.stamp });
+                }
+              }
+              const source = moved ? item.move.rows[0].source : previous;
+              const caseOnly =
+                !moved &&
+                source &&
+                source.path !== n.path &&
+                source.path.toLowerCase() === n.path.toLowerCase() &&
+                source.fs_identity &&
+                source.fs_identity === item.s.fsIdentity;
+              if (moved || caseOnly)
+                externalRenames.push({
+                  renamed: true,
+                  external: true,
+                  oldId: source.id,
+                  id: n.id,
+                  oldRoot: source.root,
+                  root: n.root,
+                  oldPath: source.path,
+                  path: n.path,
+                  node: hydrate(getNode(n.id)),
+                  count: moved ? item.move.rows.length : 1,
+                  caseOnly: !!caseOnly
+                });
               consider(candidates, n, item.s);
               if (kind === 'folder') {
                 progress.queued++;
@@ -1368,6 +1431,10 @@ async function scanContents(rootPath, options = {}) {
             throw e;
           }
           dirtyEntries += entries.length;
+          // Publish only after the enclosing transaction committed. The renderer
+          // can remap an open album before its old ID disappears from navigation.
+          if (externalRenames.length)
+            send('changed', { root: id, revision: libraryRevision, renames: externalRenames });
           if (published) emitProgress(true);
           await checkpoint();
           for (const child of previewFolders) {
@@ -1432,7 +1499,13 @@ async function scanContents(rootPath, options = {}) {
       );
       if (!children.length) break;
       for (const child of children) {
-        await visit(child);
+        if (
+          !options.externalSync ||
+          options.deepSync ||
+          scanJournal.directory(child.id) ||
+          one('SELECT 1 FROM scan_new WHERE job=? AND id=?', job.id, child.id)
+        )
+          await visit(child);
         if (cancelled || stopping) throw scanInterrupted();
         scanJournal.checkpointDirectory(folder.id, { afterChild: child.id });
       }
@@ -3606,85 +3679,366 @@ async function selectCoverPath({ id, file }) {
   if (!running && !stopping) media.start().catch((e) => send('error', { message: e.message }));
   return setCover({ id, imageId });
 }
+const { createWatchQueue, watchTarget } = require('./filesystem-sync.cjs');
 const watchers = new Map(),
-  watchPending = new Map();
-let watchTimer;
-function queueWatch(root, filename) {
-  if (!getNode(root.id)) return;
-  const absolute = filename ? path.join(root.path, String(filename)) : root.path;
-  const changed = getNode(idFor(absolute))?.kind === 'folder' ? absolute : path.dirname(absolute);
-  if (
-    changed.toLowerCase().startsWith(home.toLowerCase() + path.sep) ||
-    changed.toLowerCase() === home.toLowerCase()
-  )
-    return;
-  if (!watchPending.has(root.id)) watchPending.set(root.id, new Set());
-  watchPending.get(root.id).add(changed);
-  clearTimeout(watchTimer);
-  watchTimer = setTimeout(drainWatches, 1400);
+  watchPending = createWatchQueue(),
+  watchFailures = new Set(),
+  deepWatchRoots = new Set(),
+  watchEventCounts = new Map(),
+  browseSyncTimes = new Map(),
+  directoryProbeCursors = new Map();
+let watchTimer,
+  watchTimerDue = 0,
+  watchRepairTimer,
+  directoryProbeTimer,
+  directoryProbeInterval,
+  watchDrainTask = null,
+  directoryProbeTask = null,
+  directoryProbeWanted = false,
+  lastDirectoryProbeRequest = 0;
+function filesystemSyncEnabled() {
+  return !stopping && setting('watchChanges') && workerData.watch !== false;
 }
-async function drainWatches() {
-  if (stopping) return;
-  if (!maintenanceComplete || cacheChanging || running || scanReserved || renameReserved) {
-    watchTimer = setTimeout(drainWatches, 1400);
+function canSynchronizeFilesystem() {
+  return (
+    filesystemSyncEnabled() &&
+    maintenanceComplete &&
+    !cacheChanging &&
+    !running &&
+    !scanReserved &&
+    !renameReserved
+  );
+}
+function withinDirectory(parent, child) {
+  const relative = path.relative(parent, child);
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))
+  );
+}
+function armWatchTimer(delay = watchPending.nextDelay()) {
+  if (!filesystemSyncEnabled() || delay == null) {
+    clearTimeout(watchTimer);
+    watchTimer = null;
+    watchTimerDue = 0;
     return;
   }
-  const entry = watchPending.entries().next().value;
+  const wait = canSynchronizeFilesystem() ? Math.max(25, delay) : 500;
+  const due = Date.now() + wait;
+  if (watchTimer && watchTimerDue <= due) return;
+  clearTimeout(watchTimer);
+  watchTimerDue = due;
+  watchTimer = setTimeout(drainWatches, wait);
+  watchTimer.unref();
+}
+function queueWatch(root, filename, eventType = 'rename') {
+  if (!filesystemSyncEnabled() || !getNode(root.id)) return;
+  const target = watchTarget(root.path, filename, eventType, (p) => getNode(idFor(p)));
+  if (!target || [home, cacheHome].some((directory) => withinDirectory(directory, target))) return;
+  const count = (watchEventCounts.get(root.id) || 0) + 1;
+  watchEventCounts.set(root.id, count);
+  // A notification overflow or absent filename may describe a changed media
+  // file whose parent's mtime did not change. Retain a conservative deep pass.
+  if (!filename || count > 64) deepWatchRoots.add(root.id);
+  watchPending.add(root.id, root.path, target);
+  armWatchTimer();
+}
+async function safeDirectoryStat(rootPath, target, memo = new Map()) {
+  if (!withinDirectory(rootPath, target)) throw new Error('同步目录超出相册范围。');
+  const absolute = path.resolve(target),
+    volume = path.parse(absolute).root;
+  let current = volume,
+    stat;
+  for (const part of ['', ...absolute.slice(volume.length).split(path.sep).filter(Boolean)]) {
+    if (part) current = path.join(current, part);
+    const key = process.platform === 'win32' ? current.toLowerCase() : current;
+    if (!memo.has(key)) memo.set(key, readScanStat(current));
+    stat = await memo.get(key);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw Object.assign(new Error('同步目录不可用或已成为目录联接。'), { code: 'ENOTDIR' });
+  }
+  return stat;
+}
+function reportWatchError(root, error) {
+  send('watch', { root: root.id, error: error.message, unavailable: true });
+}
+function releaseFailedExternalScan() {
+  const job = scanJournal.load();
+  if (!job?.options.externalSync || stopping) return;
+  db.exec('BEGIN');
+  try {
+    indexing.setJob(job.id);
+    indexing.reset();
+    scanJournal.cancel();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  scanReserved = !!nextScanJob();
+  publishTasks();
+}
+async function drainWatchBatch() {
+  if (!canSynchronizeFilesystem()) {
+    armWatchTimer(500);
+    return;
+  }
+  const entry = watchPending.take();
   if (!entry) return;
-  const [rootId, paths] = entry;
-  watchPending.delete(rootId);
-  const root = getNode(rootId);
-  if (root && !root.missing) {
-    const targets = [];
-    for (let p of [...paths].sort((a, b) => a.length - b.length)) {
-      while (
-        p.toLowerCase().startsWith(root.path.toLowerCase()) &&
-        (!getNode(idFor(p)) || !fs.existsSync(p)) &&
-        p !== root.path
-      )
-        p = path.dirname(p);
-      if (!targets.includes(p)) targets.push(p);
-    }
-    for (const target of targets) {
-      try {
-        await scan(root.path, { target, offline: root.path.includes(path.join('src', 'demo')) });
-      } catch (e) {
-        send('watch', { error: e.message, root: rootId });
+  const root = getNode(entry.rootId);
+  if (!root || root.parent || root.missing || root.path !== entry.rootPath) return;
+  const deepSync = deepWatchRoots.delete(root.id);
+  watchEventCounts.delete(root.id);
+  try {
+    // An absent drive or root must retain all cached associations. Never start
+    // a deletion scan until the registered root itself has been validated.
+    await safeDirectoryStat(root.path, root.path);
+    for (let target of entry.targets) {
+      if (stopping || !filesystemSyncEnabled()) return;
+      while (target !== root.path) {
+        const node = getNode(idFor(target));
+        try {
+          if (node?.kind === 'folder' && !node.missing) {
+            await safeDirectoryStat(root.path, target);
+            break;
+          }
+        } catch (error) {
+          if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+        }
+        target = path.dirname(target);
+      }
+      if (rootRemoval.isHidden(root.id) || getNode(root.id)?.path !== root.path) return;
+      const result = await scan(root.path, {
+        target,
+        externalSync: true,
+        deepSync,
+        matchNewOnly: true,
+        offline: root.path.includes(path.join('src', 'demo'))
+      });
+      if (stopping) return;
+      if (result.cancelled) return;
+      if (result.errors) {
+        deepWatchRoots.add(root.id);
+        throw new Error('部分目录暂时无法读取，后台将自动重试。');
       }
     }
+    send('watch', { root: root.id, synchronized: true });
+  } catch (error) {
+    if (stopping) return;
+    releaseFailedExternalScan();
+    if (deepSync) deepWatchRoots.add(root.id);
+    watchPending.requeue(entry);
+    reportWatchError(root, error);
   }
-  if (watchPending.size) watchTimer = setTimeout(drainWatches, 500);
+}
+function drainWatches() {
+  clearTimeout(watchTimer);
+  watchTimer = null;
+  watchTimerDue = 0;
+  if (stopping || watchDrainTask) return watchDrainTask;
+  watchDrainTask = drainWatchBatch().finally(() => {
+    watchDrainTask = null;
+    if (watchPending.size)
+      armWatchTimer(canSynchronizeFilesystem() ? watchPending.nextDelay() : 500);
+  });
+  watchDrainTask.catch((error) => send('error', { message: error.message }));
+  return watchDrainTask;
+}
+function scheduleWatchRepair() {
+  if (watchRepairTimer || !filesystemSyncEnabled()) return;
+  watchRepairTimer = setTimeout(() => {
+    watchRepairTimer = null;
+    if (!filesystemSyncEnabled()) return;
+    reconcileWatches();
+    requestFilesystemSync({ reason: 'watch-retry' });
+  }, 5000);
+  watchRepairTimer.unref();
+}
+function scheduleDirectoryProbe(delay = 500) {
+  if (directoryProbeTimer || directoryProbeTask || !filesystemSyncEnabled()) return;
+  directoryProbeTimer = setTimeout(runDirectoryProbe, delay);
+  directoryProbeTimer.unref();
+}
+function requestFilesystemSync({ reason = 'focus', id } = {}) {
+  if (!filesystemSyncEnabled()) return { accepted: false };
+  if (reason === 'test' && maintenanceComplete && !renameReserved) reconcileWatches();
+  if (id) {
+    const node = getNode(id),
+      root = node && getNode(node.root);
+    if (
+      node?.kind === 'folder' &&
+      !node.missing &&
+      root &&
+      Date.now() - (browseSyncTimes.get(id) || 0) >= 5000
+    ) {
+      browseSyncTimes.set(id, Date.now());
+      if (browseSyncTimes.size > 256) browseSyncTimes.delete(browseSyncTimes.keys().next().value);
+      watchPending.add(root.id, root.path, node.path);
+      armWatchTimer();
+    }
+  }
+  if (reason !== 'focus' || Date.now() - lastDirectoryProbeRequest >= 2000) {
+    lastDirectoryProbeRequest = Date.now();
+    directoryProbeWanted = true;
+    scheduleDirectoryProbe();
+  }
+  return { accepted: true };
+}
+async function probeKnownDirectories() {
+  send('watch', { checking: true });
+  const liveRoots = roots();
+  for (const [id, cursor] of directoryProbeCursors)
+    if (!liveRoots.some((root) => root.id === id && root.path === cursor.path))
+      directoryProbeCursors.delete(id);
+  for (const root of liveRoots) {
+    if (!canSynchronizeFilesystem()) {
+      directoryProbeWanted = true;
+      return;
+    }
+    let cursor = directoryProbeCursors.get(root.id);
+    if (!cursor) {
+      cursor = { path: root.path, after: '', complete: false };
+      directoryProbeCursors.set(root.id, cursor);
+    }
+    if (cursor.complete) continue;
+    try {
+      await safeDirectoryStat(root.path, root.path);
+    } catch (error) {
+      reportWatchError(root, error);
+      cursor.complete = true;
+      continue;
+    }
+    while (canSynchronizeFilesystem()) {
+      const page = q(
+        "SELECT id,parent,path,mtime,fs_identity FROM nodes WHERE root=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
+        root.id,
+        cursor.after
+      );
+      if (!page.length) {
+        cursor.complete = true;
+        break;
+      }
+      let memo = new Map();
+      for (let offset = 0; offset < page.length; offset += 4) {
+        if (!canSynchronizeFilesystem()) {
+          directoryProbeWanted = true;
+          return;
+        }
+        await Promise.all(
+          page.slice(offset, offset + 4).map(async (folder) => {
+            try {
+              const stat = await safeDirectoryStat(root.path, folder.path, memo);
+              if (folder.mtime !== stat.mtimeMs || folder.fs_identity !== stat.fsIdentity)
+                watchPending.add(
+                  root.id,
+                  root.path,
+                  folder.parent ? path.dirname(folder.path) : root.path
+                );
+            } catch (error) {
+              if (['ENOENT', 'ENOTDIR'].includes(error.code))
+                watchPending.add(
+                  root.id,
+                  root.path,
+                  folder.parent ? path.dirname(folder.path) : root.path
+                );
+              else reportWatchError(root, error);
+            }
+          })
+        );
+        // Save progress before yielding to scans; continuous native events must
+        // not restart every compensation pass at the first directory.
+        cursor.after = page[Math.min(offset + 4, page.length) - 1].id;
+        if (watchPending.size) armWatchTimer();
+        if (memo.size > 256) memo = new Map();
+        await yieldNow();
+      }
+    }
+    if (!canSynchronizeFilesystem()) {
+      directoryProbeWanted = true;
+      return;
+    }
+  }
+  directoryProbeCursors.clear();
+  send('watch', { checking: false });
+  armWatchTimer();
+}
+function runDirectoryProbe() {
+  directoryProbeTimer = null;
+  if (!directoryProbeWanted || !filesystemSyncEnabled()) return;
+  if (!canSynchronizeFilesystem()) {
+    scheduleDirectoryProbe(1000);
+    return;
+  }
+  directoryProbeWanted = false;
+  directoryProbeTask = probeKnownDirectories()
+    .catch((error) => send('watch', { error: error.message }))
+    .finally(() => {
+      directoryProbeTask = null;
+      if (directoryProbeWanted) scheduleDirectoryProbe(1000);
+    });
 }
 function reconcileWatches() {
-  const live =
-    maintenanceComplete &&
-    !stopping &&
-    !renameReserved &&
-    setting('watchChanges') &&
-    workerData.watch !== false
-      ? roots()
-      : [];
-  for (const [id, w] of watchers)
-    if (!live.some((n) => n.id === id)) {
-      w.close();
+  const live = maintenanceComplete && filesystemSyncEnabled() && !renameReserved ? roots() : [];
+  for (const [id, watcher] of watchers)
+    if (!live.some((root) => root.id === id)) {
+      watcher.close();
       watchers.delete(id);
+      watchFailures.delete(id);
     }
+  if (!filesystemSyncEnabled()) {
+    clearTimeout(watchTimer);
+    watchTimer = null;
+    watchTimerDue = 0;
+    clearTimeout(watchRepairTimer);
+    clearTimeout(directoryProbeTimer);
+    clearInterval(directoryProbeInterval);
+    directoryProbeInterval = watchRepairTimer = directoryProbeTimer = null;
+    watchPending.clear();
+    directoryProbeCursors.clear();
+    directoryProbeWanted = false;
+    return;
+  }
   for (const root of live)
     if (!watchers.has(root.id)) {
       try {
-        const w = fs.watch(root.path, { recursive: true }, (_, filename) =>
-          queueWatch(root, filename)
+        const retrying = watchFailures.has(root.id);
+        if (fs.lstatSync(root.path).isSymbolicLink()) throw new Error('相册目录已成为目录联接。');
+        const watcher = fs.watch(root.path, { recursive: true }, (eventType, filename) =>
+          queueWatch(root, filename, eventType)
         );
-        w.on('error', (e) => {
-          send('watch', { error: e.message, root: root.id });
-          w.close();
+        watcher.on('error', (error) => {
+          if (watchers.get(root.id) !== watcher) return;
+          watcher.close();
           watchers.delete(root.id);
+          watchFailures.add(root.id);
+          deepWatchRoots.add(root.id);
+          reportWatchError(root, error);
+          scheduleWatchRepair();
         });
-        watchers.set(root.id, w);
-      } catch (e) {
-        send('watch', { error: e.message, root: root.id });
+        watchers.set(root.id, watcher);
+        watchFailures.delete(root.id);
+        if (retrying) {
+          deepWatchRoots.add(root.id);
+          watchPending.add(root.id, root.path, root.path);
+          armWatchTimer();
+        }
+        // Catch the interval between the last snapshot and installing this
+        // watcher, including program shutdown and explicit rename reservations.
+        requestFilesystemSync({ reason: 'watch-attached' });
+      } catch (error) {
+        watchFailures.add(root.id);
+        deepWatchRoots.add(root.id);
+        reportWatchError(root, error);
       }
     }
+  if (watchFailures.size) scheduleWatchRepair();
+  if (maintenanceComplete && !directoryProbeInterval) {
+    directoryProbeInterval = setInterval(() => {
+      reconcileWatches();
+      requestFilesystemSync({ reason: 'periodic' });
+    }, 30000);
+    directoryProbeInterval.unref();
+  }
 }
 const methods = {
   getRootMatchPolicy,
@@ -3730,6 +4084,7 @@ const methods = {
     return hydrate(getNode(id));
   },
   startupResume,
+  filesystemSync: requestFilesystemSync,
   rename: renameNode,
   ancestors: ({ id }) =>
     getNode(id)
@@ -4073,11 +4428,18 @@ const methods = {
     if (renameTask) await renameTask.catch(() => {});
     await rootRemoval.stop();
     if (scanTask) await scanTask.catch(() => {});
+    if (watchDrainTask) await watchDrainTask.catch(() => {});
+    if (directoryProbeTask) await directoryProbeTask.catch(() => {});
     if (onlineTask) await onlineTask.catch(() => {});
     await Promise.allSettled([...subjectJobs]);
     await requestTail;
     for (const w of watchers.values()) w.close();
     clearTimeout(watchTimer);
+    watchTimer = null;
+    watchTimerDue = 0;
+    clearTimeout(watchRepairTimer);
+    clearTimeout(directoryProbeTimer);
+    clearInterval(directoryProbeInterval);
     clearTimeout(mediaStartupTimer);
     clearTimeout(titleSeedTimer);
     await videoSaveTail;
@@ -4127,13 +4489,27 @@ async function resumeDurableScans() {
     scanReserved = true;
     publishTasks();
     try {
-      await scan(job.path, {
+      const result = await scan(job.path, {
         ...JSON.parse(job.options),
         target: job.target || undefined,
         resumeJobId: job.id
       });
+      if (!stopping && JSON.parse(job.options).externalSync && result.errors) {
+        deepWatchRoots.add(job.root);
+        throw new Error('部分目录暂时无法读取，后台将自动重试。');
+      }
     } catch (error) {
-      scanJournal.setJob(job.id);
+      if (one('SELECT 1 FROM scan_jobs WHERE id=?', job.id)) scanJournal.setJob(job.id);
+      if (!stopping && JSON.parse(job.options).externalSync) {
+        releaseFailedExternalScan();
+        const root = getNode(job.root);
+        if (root && !root.missing) {
+          watchPending.add(root.id, root.path, job.target || root.path);
+          if (JSON.parse(job.options).deepSync) deepWatchRoots.add(root.id);
+          reportWatchError(root, error);
+        }
+        continue;
+      }
       if (scanJournal.load()) scanJournal.block({ reason: error.message });
       send('error', { message: '导入任务已保留，恢复前需要处理：' + error.message });
       break;

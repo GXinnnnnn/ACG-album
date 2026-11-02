@@ -285,10 +285,10 @@ test('missing display tokens retain medium footer sizes and do not scale the one
   assert.equal(f.style(f.folder.count).value('transform'), 'translateY(1px)');
 });
 
-test('toolbar keeps equal adjacent action gaps and a centered select box after later enhanced-control sheets', () => {
-  for (const width of [1920, 1230, 1200, 980]) {
+test('toolbar shares centered text line boxes and icons without per-label offsets after later sheets', () => {
+  for (const width of [3840, 2560, 1920, 1230, 1200, 980]) {
     const f = fixture({ width }),
-      toolbar = element('div', f.viewport, { id: 'toolbar' });
+      toolbar = element('div', f.viewport, { id: 'toolbar', class: 'toolbar' });
     const right = element('div', toolbar, { class: 'toolbar-right glass' });
     const actions = ['details-toggle', 'density-button', 'refresh-button'].map((id) =>
       element('button', right, {
@@ -308,19 +308,75 @@ test('toolbar keeps equal adjacent action gaps and a centered select box after l
     const button = element('button', wrapper, { class: 'album-select-button' });
     const text = element('span', button, { class: 'album-select-value' });
     const chevron = element('svg', button);
+    const sortIcon = element('svg', element('span', label, { 'data-icon': 'sort' }));
+    const direction = element('button', right, { id: 'sort-direction', class: 'small-icon' });
+    const directionIcon = element('svg', direction);
+    const divider = element('span', right, { class: 'toolbar-divider' });
+    const sizeLabel = element('span', right, { class: 'card-size-label' });
+    const sizeControls = element('div', right, { class: 'card-size-controls' });
+    const sizeButtons = [128, 166, 195].map((density) =>
+      element('button', sizeControls, { 'data-density': String(density) })
+    );
+    const actionIcons = actions.slice(1).map((action) => element('svg', action));
+    assert.equal(f.style(right).value('align-items'), 'center');
     assert.equal(f.style(button).value('height'), '30px');
     assert.equal(f.style(button).value('min-height'), '30px');
-    assert.equal(f.style(button).value('padding-top'), '0');
-    assert.equal(f.style(button).value('padding-bottom'), '0');
-    assert.equal(f.style(button).value('align-items'), 'center');
-    assert.equal(f.style(button).value('line-height'), '1');
-    assert.equal(f.style(text).value('transform'), 'translateY(-1px)');
-    assert.equal(f.style(button).raw('transform'), undefined);
-    assert.equal(f.style(chevron).raw('transform'), undefined);
+    assert.equal(f.style(button).value('justify-content'), 'space-between');
+    for (const control of [button, ...sizeButtons, actions[0]]) {
+      assert.equal(f.style(control).value('display'), 'inline-flex');
+      assert.equal(f.style(control).value('padding-top'), '0');
+      assert.equal(f.style(control).value('padding-bottom'), '0');
+      assert.equal(f.style(control).value('align-items'), 'center');
+      assert.equal(f.style(control).value('line-height'), '20px');
+    }
+    assert.equal(f.style(text).value('display'), 'inline-flex');
+    assert.equal(f.style(text).value('align-items'), 'center');
+    assert.equal(f.style(text).value('min-height'), '20px');
+    for (const content of [text, sizeLabel, ...sizeButtons, actions[0]])
+      assert.equal(f.style(content).value('line-height'), '20px');
+    for (const icon of [sortIcon, chevron, directionIcon, ...actionIcons])
+      assert.equal(f.style(icon).value('display'), 'block');
+    // Keep the compact-label breakpoint and the existing outer control sizes.
+    assert.equal(f.style(sizeLabel).raw('display'), width <= 1200 ? 'none' : undefined);
+    assert.equal(f.style(sizeButtons[0]).value('height'), '26px');
+    assert.equal(f.style(actions[0]).value('height'), '27px');
+    assert.equal(f.style(actions[1]).value('height'), '30px');
     const native = element('select', label, { id: 'sort' });
     assert.equal(f.style(native).value('height'), '30px');
     assert.equal(f.style(native).value('padding-top'), '0');
-    assert.equal(f.style(native).value('transform'), 'translateY(-1px)');
+    assert.equal(f.style(native).value('padding-bottom'), '0');
+    assert.equal(f.style(native).value('line-height'), '20px');
+    for (const content of [
+      button,
+      text,
+      native,
+      label,
+      wrapper,
+      sizeLabel,
+      sizeControls,
+      ...sizeButtons,
+      ...actions,
+      sortIcon,
+      chevron,
+      direction,
+      directionIcon,
+      divider,
+      ...actionIcons
+    ]) {
+      for (const property of ['transform', 'translate', 'top', 'bottom'])
+        assert.ok(
+          [undefined, 'none', 'auto', '0'].includes(f.style(content).raw(property)),
+          `${property} must not shift one toolbar item: ${JSON.stringify(content.attributes)}`
+        );
+      assert.equal(
+        f.style(content).raw('margin-top') || '0',
+        f.style(content).raw('margin-bottom') || '0'
+      );
+      assert.equal(
+        f.style(content).raw('padding-top') || '0',
+        f.style(content).raw('padding-bottom') || '0'
+      );
+    }
   }
 });
 

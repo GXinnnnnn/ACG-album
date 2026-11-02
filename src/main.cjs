@@ -161,8 +161,20 @@ function createWindow() {
       win.webContents.send('library:event', { type: 'window', data: { inactive } });
   };
   for (const event of ['blur', 'hide', 'minimize']) win.on(event, () => notifyActivity(true));
+  let lastFilesystemSync = 0;
   for (const event of ['focus', 'show', 'restore'])
-    win.on(event, () => notifyActivity(!win.isVisible() || win.isMinimized() || !win.isFocused()));
+    win.on(event, () => {
+      const inactive = !win.isVisible() || win.isMinimized() || !win.isFocused();
+      notifyActivity(inactive);
+      if (!inactive && Date.now() - lastFilesystemSync >= 2000) {
+        lastFilesystemSync = Date.now();
+        // Returning to the album must also recover events missed while hidden,
+        // suspended or disconnected. This only schedules low-priority reads.
+        call('filesystemSync', { reason: 'focus' }).catch((error) =>
+          log('Filesystem synchronization:', error.message)
+        );
+      }
+    });
   win.on('close', () => {
     try {
       const b = win.getNormalBounds();
@@ -185,6 +197,7 @@ function handlers() {
     'init',
     'statistics',
     'startupResume',
+    'filesystemSync',
     'rename',
     'localIndexStatus',
     'searchLocalIndex',

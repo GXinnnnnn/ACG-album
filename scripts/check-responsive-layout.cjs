@@ -346,6 +346,8 @@ async function resize(width) {
   return viewport.presets;
 }
 async function sample(label) {
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await frames();
   const result = await page.evaluate((label) => {
     const box = (element) => {
       if (!element) return null;
@@ -391,17 +393,77 @@ async function sample(label) {
       selector,
       ...box($(selector))
     }));
-    const toolbar = box($('#toolbar .toolbar-right'));
-    const visual = [
-      '#sort-direction svg',
-      '#density-button svg',
-      '#refresh-button svg',
-      '.sort-label > svg',
-      '.sort-label > span > svg',
-      '.sort-label .album-select-value'
-    ].flatMap((selector) => {
-      const element = document.querySelector('#toolbar ' + selector);
-      return element ? [{ selector, ...box(element) }] : [];
+    const toolbarElement = $('#toolbar .toolbar-right');
+    const toolbar = box(toolbarElement);
+    const alignmentTargets = [
+      ['.sort-label', 'control'],
+      ['.sort-label .album-select', 'control'],
+      ['.sort-label .album-select-button', 'control'],
+      ['#sort-direction', 'control'],
+      ['.card-size-label', 'control'],
+      ['#card-size-controls', 'control'],
+      ['#card-size-controls [data-card-preset="compact"]', 'control'],
+      ['#card-size-controls [data-card-preset="standard"]', 'control'],
+      ['#card-size-controls [data-card-preset="large"]', 'control'],
+      ['#details-toggle', 'control'],
+      ['#density-button', 'control'],
+      ['#refresh-button', 'control'],
+      ['.toolbar-divider', 'control'],
+      ['.sort-label > span > svg', 'icon'],
+      ['.sort-label .album-select-button > svg', 'icon'],
+      ['#sort-direction svg', 'icon'],
+      ['#density-button svg', 'icon'],
+      ['#refresh-button svg', 'icon'],
+      ['.sort-label .album-select-value', 'text'],
+      ['.card-size-label', 'text'],
+      ['#card-size-controls [data-card-preset="compact"]', 'text'],
+      ['#card-size-controls [data-card-preset="standard"]', 'text'],
+      ['#card-size-controls [data-card-preset="large"]', 'text'],
+      ['#details-toggle', 'text']
+    ];
+    const alignment = alignmentTargets.map(([selector, type]) => {
+      const element = toolbarElement.querySelector(selector);
+      if (!element) return { selector, type, present: false };
+      const style = getComputedStyle(element);
+      const visible = element.getClientRects().length > 0 && style.visibility !== 'hidden';
+      const row = {
+        selector,
+        type,
+        present: true,
+        visible,
+        box: box(element),
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        lineHeight: style.lineHeight,
+        fontLoaded: document.fonts.check(style.fontSize + ' ' + style.fontFamily),
+        transform: style.transform,
+        translate: style.translate,
+        paddingTop: style.paddingTop,
+        paddingBottom: style.paddingBottom,
+        marginTop: style.marginTop,
+        marginBottom: style.marginBottom
+      };
+      if (type === 'text' && visible) {
+        // A DOM Range measures the font-run box, rather than merely its parent
+        // control. It is not a measurement of painted glyph ink.
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        const runs = [];
+        let node;
+        while ((node = walker.nextNode())) {
+          const value = node.textContent;
+          if (!value.trim() || node.parentElement.closest('svg, select')) continue;
+          const range = document.createRange();
+          range.setStart(node, value.search(/\S/));
+          range.setEnd(node, value.trimEnd().length);
+          runs.push({
+            text: range.toString(),
+            box: box(range),
+            lines: range.getClientRects().length
+          });
+        }
+        row.runs = runs;
+      }
+      return row;
     });
     const root = getComputedStyle(document.documentElement);
     return {
@@ -442,7 +504,9 @@ async function sample(label) {
       },
       toolbar,
       controls,
-      visual,
+      alignment,
+      sort: $('#sort').value,
+      fontFamily: S.settings.fontFamily,
       actionGaps: [controls[1].left - controls[0].right, controls[2].left - controls[1].right],
       buttons: [...document.querySelectorAll('#card-size-controls [data-density]')].map(
         (button) => ({
@@ -505,11 +569,43 @@ async function sample(label) {
     Math.abs(result.actionGaps[0] - result.actionGaps[1]) <= 0.75,
     label + ': equal action gaps'
   );
-  for (const control of [...result.controls, ...result.visual])
+  const centered = (bounds, item) => {
+    assert.ok(bounds && bounds.width > 0 && bounds.height > 0, label + ': visible ' + item);
     assert.ok(
-      Math.abs(control.cy - result.toolbar.cy) <= 2,
-      label + ': centered visual/control box ' + control.selector
+      Math.abs(bounds.cy - result.toolbar.cy) <= 1,
+      label + ': shared toolbar center line ' + item + ' ' + JSON.stringify(bounds)
     );
+  };
+  for (const item of result.alignment) {
+    assert.equal(item.present, true, label + ': required toolbar element ' + item.selector);
+    // The card-size caption is deliberately hidden at compact breakpoints.
+    if (!item.visible && item.selector === '.card-size-label' && result.cssWidth <= 1200) continue;
+    assert.equal(item.visible, true, label + ': visible toolbar item ' + item.selector);
+    centered(item.box, item.type + ' ' + item.selector);
+    if (item.type !== 'icon') {
+      assert.equal(item.transform, 'none', label + ': no per-item transform ' + item.selector);
+      assert.equal(item.translate, 'none', label + ': no per-item translate ' + item.selector);
+      assert.equal(
+        item.paddingTop,
+        item.paddingBottom,
+        label + ': symmetric padding ' + item.selector
+      );
+      assert.equal(
+        item.marginTop,
+        item.marginBottom,
+        label + ': symmetric margin ' + item.selector
+      );
+    }
+    if (item.type === 'text') {
+      assert.equal(item.fontLoaded, true, label + ': font faces finished loading ' + item.selector);
+      assert.equal(item.lineHeight, '20px', label + ': shared text line box ' + item.selector);
+      assert.ok(item.runs.length > 0, label + ': actual text range ' + item.selector);
+      for (const text of item.runs) {
+        assert.equal(text.lines, 1, label + ': no wrapped toolbar text ' + item.selector);
+        centered(text.box, 'text range ' + item.selector + ' ' + text.text);
+      }
+    }
+  }
   assert.equal(
     result.buttons.filter((button) => button.pressed === 'true').length,
     result.buttons.some((button) => button.density === result.density) ? 1 : 0
@@ -529,6 +625,25 @@ async function choose(index) {
     grid.render();
   });
   await settle();
+}
+async function sampleSortLabels(fontLabel) {
+  const values = await page
+    .locator('#sort')
+    .evaluate((select) =>
+      [...select.options].filter((option) => !option.disabled).map((option) => option.value)
+    );
+  for (const [index, value] of values.entries()) {
+    const button = page.locator('#toolbar .sort-label .album-select-button');
+    await button.focus();
+    await page.keyboard.press('Home');
+    for (let step = 0; step < index; step++) await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#sort')).toHaveValue(value);
+    await expect(button).toHaveAttribute('aria-expanded', 'false');
+    await settle();
+    const evidence = await sample('1920/expanded/small/' + fontLabel + '/sort-' + value);
+    assert.equal(evidence.sort, value);
+  }
 }
 async function screenshot(width) {
   if (report.screenshots.length >= 3) return;
@@ -579,12 +694,13 @@ async function screenshot(width) {
   assert.equal((await rpc('init', { lightweight: true })).settings.density, 222);
   await resize(1920);
   await choose(0);
+  await sampleSortLabels('configured-font');
   await page.evaluate(async () => {
     await saveSetting('fontFamily', 'Microsoft YaHei UI');
     await document.fonts.ready;
   });
   await settle();
-  await sample('1920/expanded/small/Microsoft-YaHei-UI');
+  await sampleSortLabels('Microsoft-YaHei-UI');
   const state = await rpc('init', { lightweight: true });
   assert.equal(state.settings.autoMatch, false);
   assert.equal(!!state.online.active, false);

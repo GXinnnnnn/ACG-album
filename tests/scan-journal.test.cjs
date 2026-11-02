@@ -54,6 +54,8 @@ test('scan job options, directory phases and completed work survive reopening wi
       matchDepth: 3,
       offline: false,
       matchNewOnly: true,
+      externalSync: true,
+      deepSync: true,
       token: 'never-persist-this',
       arbitrary: 'discard'
     }
@@ -82,7 +84,9 @@ test('scan job options, directory phases and completed work survive reopening wi
     subjectTypes: [2, 4],
     matchDepth: 3,
     offline: false,
-    matchNewOnly: true
+    matchNewOnly: true,
+    externalSync: true,
+    deepSync: true
   });
   assert.deepEqual(restored.counters, { folders: 2, images: 130, visited: 1 });
   assert.equal(j.directory('root').after_child, 'child');
@@ -97,6 +101,28 @@ test('scan job options, directory phases and completed work survive reopening wi
   });
   assert.equal(j.directory('child').phase, 'done', 'rediscovery does not requeue completed work');
   assert.equal(JSON.stringify(j.jobs()).includes('never-persist-this'), false);
+});
+
+test('a widened resume target survives a second pause and counter checkpoints without losing transaction rollback', async (t) => {
+  const f = await fixture(t);
+  let j = f.open();
+  const root = path.resolve('source-widened');
+  const child = path.join(root, 'Album');
+  begin(j, 'widened', { path: root, target: child });
+  j.resume();
+  f.db().exec('BEGIN');
+  j.checkpoint({ target: root });
+  f.db().exec('ROLLBACK');
+  assert.equal(j.load().target, child);
+  j.checkpoint({ target: root });
+  j.checkpoint({ counters: { visited: 1 } });
+  assert.throws(() => j.checkpoint({ target: '\0' }), /Invalid scan target/);
+  j.pause({ reason: 'shutdown again' });
+  f.close();
+  j = f.open();
+  j.setJob('widened');
+  assert.equal(j.resume().target, root);
+  assert.equal(j.load().counters.visited, 1);
 });
 
 test('offline directory changes reopen only that directory and ancestor traversal, with a new prune stamp', () => {

@@ -375,6 +375,7 @@ $('#viewer').addEventListener('close', () => {
   image.onload = image.onerror = null;
   image.removeAttribute('src');
   V.serial++;
+  if (typeof flushStructuralChanges === 'function') void attempt(flushStructuralChanges);
   scheduleMediaRefresh();
 });
 $('#modal').addEventListener('close', scheduleMediaRefresh);

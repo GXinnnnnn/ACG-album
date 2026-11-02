@@ -21,7 +21,7 @@ function snapshotOf(value) {
 }
 function optionsOf(options) {
   const result = importOptions(options);
-  for (const key of ['offline', 'matchNewOnly'])
+  for (const key of ['offline', 'matchNewOnly', 'externalSync', 'deepSync'])
     if (Object.hasOwn(options, key)) {
       if (typeof options[key] !== 'boolean') throw new TypeError(`Invalid scan ${key}`);
       result[key] = options[key];
@@ -173,16 +173,18 @@ function createScanJournal(db) {
       db.prepare("UPDATE scan_jobs SET state='blocked',reason=? WHERE id=?").run(reason, job.id);
       return decodeJob(getJob.get(job.id));
     },
-    checkpoint({ phase, counters } = {}) {
+    checkpoint({ phase, counters, target } = {}) {
       const job = current();
       if (phase !== undefined) text(phase, 'phase', 80);
+      if (target !== undefined && target !== null) text(target, 'target');
       const next =
         counters === undefined
           ? job.counters
           : JSON.stringify({ ...JSON.parse(job.counters), ...countersOf(counters) });
-      db.prepare('UPDATE scan_jobs SET phase=?,counters=? WHERE id=?').run(
+      db.prepare('UPDATE scan_jobs SET phase=?,counters=?,target=? WHERE id=?').run(
         phase ?? job.phase,
         next,
+        target === undefined ? job.target : target,
         job.id
       );
       return decodeJob(getJob.get(job.id));

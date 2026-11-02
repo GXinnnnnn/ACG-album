@@ -197,9 +197,17 @@ async function navigate(
   }
   Object.assign(S, { view, parent, search, filter });
   $('#search').value = search;
+  const version = S.loadVersion + 1,
+    key = viewKey();
   await loadPage();
+  if (version !== S.loadVersion || key !== viewKey()) return;
+  requestBrowseFilesystemSync(version, key);
   $('#viewport').scrollTop = S.scrolls.get(viewKey()) || 0;
   $('#viewport').focus({ preventScroll: true });
+}
+function requestBrowseFilesystemSync(version, key) {
+  if (version !== S.loadVersion || key !== viewKey() || !S.parent || S.current?.missing) return;
+  void api('filesystemSync', { reason: 'browse', id: S.parent }).catch(() => {});
 }
 async function back() {
   const previous = S.history.pop();
@@ -408,15 +416,28 @@ async function loadSummary() {
 }
 async function loadPage(keepScroll = false) {
   const version = ++S.loadVersion,
-    scroll = $('#viewport').scrollTop;
+    scroll = $('#viewport').scrollTop,
+    previousCurrent = S.current;
+  $('#back-button').disabled = !S.history.length && !S.parent;
+  const loadedCurrent = S.parent ? await api('get', { id: S.parent }) : null;
+  if (version !== S.loadVersion) return;
+  S.current = loadedCurrent;
+  if (S.parent && (!S.current || S.current.missing) && typeof recoverMissingBrowse === 'function') {
+    const key = viewKey(),
+      recovery = await recoverMissingBrowse(S.current, version, key, previousCurrent);
+    if (!recovery || version !== S.loadVersion || key !== viewKey()) return;
+    S.current = recovery.node;
+    if (recovery.unavailable && previousCurrent?.id === S.parent && grid.active) {
+      $('#footer-status').textContent = '来源目录暂时不可用，已保留关联与缓存资料';
+      return;
+    }
+    if (!recovery.unavailable) S.parent = recovery.node?.id || null;
+  }
+  if (S.parent && !S.current) S.parent = null;
   grid.reset();
   $('#category-overview').replaceChildren();
   $('#empty-state').replaceChildren();
   $('#intro-area').replaceChildren();
-  $('#back-button').disabled = !S.history.length && !S.parent;
-  S.current = S.parent ? await api('get', { id: S.parent }) : null;
-  if (version !== S.loadVersion) return;
-  if (S.parent && !S.current) S.parent = null;
   $$('.main-nav .nav-item').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === S.view && !S.parent)
   );
@@ -1260,6 +1281,7 @@ function captureRenameNavigation(n) {
   };
   S.roots.forEach(remember);
   remember(S.current);
+  remember(V.node);
   for (const entry of S.history)
     if (entry.parent && entry.parentPath) remember({ id: entry.parent, path: entry.parentPath });
   for (const node of grid.items.values()) remember(node);
@@ -1269,10 +1291,17 @@ function captureRenameNavigation(n) {
   }
   return { key: viewKey(), version: S.loadVersion, scroll: $('#viewport').scrollTop, nodes };
 }
-async function applyRenameNavigation(result, saved) {
+async function applyRenameNavigation(result, saved, options = {}) {
   if (!result?.renamed) return;
+  const renames = options.renames || [result];
+  const remapPath = (path) =>
+    renames.reduce((value, rename) => renamedPath(value, rename.oldPath, rename.path), path);
   if (S.current?.path) saved.nodes.set(S.current.id, { ...S.current });
-  const mappings = new Map([[result.oldId, result.node]]);
+  const mappings = new Map();
+  for (const rename of renames) {
+    if (rename.node && remapPath(rename.node.path) === rename.node.path)
+      mappings.set(rename.oldId, rename.node);
+  }
   const needed = new Set([S.parent, ...S.history.map((entry) => entry.parent), V.node?.id]);
   for (const key of S.scrolls.keys()) {
     try {
@@ -1281,18 +1310,34 @@ async function applyRenameNavigation(result, saved) {
       /* Ignore non-view keys. */
     }
   }
-  if (typeof folderTree !== 'undefined') for (const id of folderTree.open) needed.add(id);
+  if (typeof folderTree !== 'undefined') {
+    for (const id of folderTree.open) needed.add(id);
+    for (const id of folderTree.openNodes.keys()) needed.add(id);
+  }
   for (const [id, node] of saved.nodes) {
-    const path = renamedPath(node.path, result.oldPath, result.path);
+    const path = remapPath(node.path);
     if (needed.has(id) && path !== node.path && !mappings.has(id)) {
-      const current = await api('get', { path });
-      if (current) mappings.set(id, current);
+      const known = [...renames].reverse().find((rename) => rename.node?.path === path)?.node;
+      const current = known || (await api('get', { path }));
+      if (current && !current.missing) mappings.set(id, current);
     }
   }
-  const remapId = (id) => mappings.get(id)?.id || (id === result.oldId ? result.id : id);
+  if (
+    options.external &&
+    (saved.version !== S.loadVersion ||
+      saved.key !== viewKey() ||
+      $('#viewer').open ||
+      renamingNodes.size ||
+      (options.valid && !options.valid()))
+  )
+    return false;
+  const remapId = (id) => {
+    if (mappings.has(id)) return mappings.get(id).id;
+    return renames.reduce((value, rename) => (value === rename.oldId ? rename.id : value), id);
+  };
   for (const entry of S.history) {
     entry.parent = remapId(entry.parent);
-    entry.parentPath = renamedPath(entry.parentPath, result.oldPath, result.path);
+    entry.parentPath = remapPath(entry.parentPath);
   }
   const scrolls = new Map();
   for (const [key, scroll] of S.scrolls) {
@@ -1318,6 +1363,10 @@ async function applyRenameNavigation(result, saved) {
   S.parent = remapId(S.parent);
   if (mappings.has(S.current?.id)) S.current = mappings.get(S.current.id);
   if (V.node && mappings.has(V.node.id)) V.node = mappings.get(V.node.id);
+  if (options.external) {
+    window.invalidateFolderTree?.();
+    return true;
+  }
   const restoredKey = viewKey(),
     restoredVersion = S.loadVersion;
   await loadSummary();
@@ -1393,6 +1442,7 @@ function renameModal(n) {
         renameDeferredChanged = false;
         if (!result?.renamed) scheduleGrowingRefresh();
       }
+      if (typeof flushStructuralChanges === 'function') void attempt(flushStructuralChanges);
       if (connected()) {
         save.disabled = false;
         input.disabled = false;
@@ -1704,7 +1754,13 @@ async function enterPendingImport(p) {
     token.entering = false;
   }
 }
-async function refreshGrowingView(renameResult = null) {
+async function refreshGrowingView(renameResult = null, structuralPass = false) {
+  if ($('#viewer').open) {
+    if (typeof structuralDirty !== 'undefined') structuralDirty = true;
+    return;
+  }
+  if (!structuralPass && typeof structuralDirty !== 'undefined' && structuralDirty)
+    return flushStructuralChanges();
   const version = S.loadVersion,
     key = viewKey();
   await loadSummary();
@@ -1727,15 +1783,25 @@ async function refreshGrowingView(renameResult = null) {
     await renderOverview(version);
     if (version === S.loadVersion) $('#viewport').scrollTop = scroll;
   } else if (grid.active) {
+    let current = S.parent ? await api('get', { id: S.parent }) : null;
+    if (version !== S.loadVersion || key !== viewKey() || $('#viewer').open) return;
+    if (S.parent && (!current || current.missing)) {
+      const recovery = await recoverMissingBrowse(current, version, key);
+      if (!recovery || version !== S.loadVersion || key !== viewKey() || $('#viewer').open) return;
+      if (recovery.unavailable) {
+        $('#footer-status').textContent = '来源目录暂时不可用，已保留关联与缓存资料';
+        return;
+      }
+      S.parent = recovery.node?.id || null;
+      S.current = recovery.node;
+      return loadPage(true);
+    }
     const total = await grid.refreshGrowing();
-    if (version !== S.loadVersion || key !== viewKey()) return;
+    if (version !== S.loadVersion || key !== viewKey() || $('#viewer').open) return;
     setResultCount(`${fmt(total)} 项`);
     if (total) $('#empty-state').replaceChildren();
     else renderEmpty(false);
-    if (S.parent) {
-      const current = await api('get', { id: S.parent });
-      if (version !== S.loadVersion || key !== viewKey()) return;
-      if (!current) return loadPage(true);
+    if (S.parent && current) {
       const identityChanged = S.current?.name !== current.name || S.current?.path !== current.path;
       if (!S.search && JSON.stringify(S.current?.metadata) !== JSON.stringify(current.metadata))
         renderIntro(current);
@@ -1782,6 +1848,132 @@ function scheduleGrowingRefresh() {
     },
     Math.max(0, 1200 - (Date.now() - growingLast))
   );
+}
+let structuralDirty = false,
+  structuralRevision = 0,
+  structuralTask = null;
+const externalRenameQueue = [];
+function rememberStructuralChange(data) {
+  structuralDirty = true;
+  structuralRevision++;
+  for (const rename of data?.renames || []) {
+    if (rename?.renamed && rename.external && rename.oldId && rename.oldPath && rename.path)
+      externalRenameQueue.push(rename);
+  }
+}
+function flushStructuralChanges() {
+  if (structuralTask) return structuralTask;
+  if (!structuralDirty || $('#viewer').open || renamingNodes.size) return Promise.resolve();
+  structuralTask = (async () => {
+    while (structuralDirty && !$('#viewer').open && !renamingNodes.size) {
+      const revision = structuralRevision,
+        renames = externalRenameQueue.slice(),
+        key = viewKey(),
+        scroll = $('#viewport').scrollTop;
+      if (renames.length) {
+        const saved = captureRenameNavigation(renames[0].node || { id: renames[0].oldId });
+        const applied = await applyRenameNavigation(renames[0], saved, {
+          external: true,
+          renames,
+          valid: () => revision === structuralRevision
+        });
+        if (!applied) continue;
+        externalRenameQueue.splice(0, renames.length);
+      }
+      if ($('#viewer').open || renamingNodes.size) return;
+      if (key !== viewKey()) {
+        const restoredKey = viewKey(),
+          version = S.loadVersion;
+        await loadSummary();
+        if (restoredKey !== viewKey() || version !== S.loadVersion || $('#viewer').open) continue;
+        await loadPage(true);
+        if (restoredKey === viewKey() && S.loadVersion === version + 1)
+          $('#viewport').scrollTop = scroll;
+      } else await refreshGrowingView(null, true);
+      if (!$('#viewer').open && revision === structuralRevision && !externalRenameQueue.length)
+        structuralDirty = false;
+    }
+  })().finally(() => {
+    structuralTask = null;
+  });
+  return structuralTask;
+}
+async function recoverMissingBrowse(current, version, key, previous = S.current) {
+  const valid = () => version === S.loadVersion && key === viewKey() && !$('#viewer').open;
+  const cached = current ||
+    (previous?.id === S.parent ? previous : null) || {
+      id: S.parent,
+      path: S.history.findLast((entry) => entry.parent === S.parent)?.parentPath
+    };
+  const path = cached.path;
+  const fold = (value) => value?.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const root =
+    S.roots.find((node) => node.id === cached?.root || node.id === cached?.id) ||
+    S.roots.find(
+      (node) =>
+        path && (fold(path) === fold(node.path) || fold(path).startsWith(fold(node.path) + '/'))
+    );
+  const rootNode = root && (root.id === current?.id ? current : await api('get', { id: root.id }));
+  if (!valid()) return null;
+  if (rootNode?.missing) return { node: cached || rootNode, unavailable: true };
+  const candidates = [];
+  if (path) {
+    let parent = path;
+    while (parent && (!root || fold(parent) !== fold(root.path))) {
+      const separator = Math.max(parent.lastIndexOf('\\'), parent.lastIndexOf('/'));
+      if (separator < 0) break;
+      parent = parent.slice(0, separator);
+      if (
+        root &&
+        !(fold(parent) === fold(root.path) || fold(parent).startsWith(fold(root.path) + '/'))
+      )
+        break;
+      if (parent) candidates.push(parent);
+    }
+  }
+  for (const path of candidates) {
+    const node = rootNode?.path === path ? rootNode : await api('get', { path });
+    if (!valid()) return null;
+    if (node && !node.missing) {
+      pruneMissingNavigation(cached, node);
+      return { node, unavailable: false };
+    }
+    pruneMissingNavigation({ id: node?.id, path }, null);
+  }
+  if (rootNode && !rootNode.missing) {
+    pruneMissingNavigation(cached, rootNode);
+    return { node: rootNode, unavailable: false };
+  }
+  pruneMissingNavigation(cached, null);
+  return { node: null, unavailable: false };
+}
+function pruneMissingNavigation(missing, ancestor) {
+  if (!missing?.id && !missing?.path) return;
+  const affected = (id, path) =>
+    (missing.id && id === missing.id) ||
+    (path && missing.path && renamedPath(path, missing.path, '') !== path);
+  const removed = new Set(missing.id ? [missing.id] : []);
+  S.history = S.history.filter((entry) => {
+    if (!affected(entry.parent, entry.parentPath)) return true;
+    removed.add(entry.parent);
+    return false;
+  });
+  if (typeof folderTree !== 'undefined') {
+    for (const [id, node] of folderTree.openNodes) {
+      if (affected(id, node.path)) {
+        removed.add(id);
+        folderTree.openNodes.delete(id);
+      }
+    }
+    for (const id of removed) folderTree.open.delete(id);
+    window.invalidateFolderTree?.();
+  }
+  for (const key of S.scrolls.keys()) {
+    try {
+      if (removed.has(JSON.parse(key)[1])) S.scrolls.delete(key);
+    } catch {}
+  }
+  if (ancestor) $('#footer-status').textContent = '原目录已不可用，已返回最近的可用上级目录';
 }
 const importChoices = {
   onlineMatch: false,
@@ -2857,6 +3049,13 @@ function showOnlineStatus(data) {
   else setProgressText(status, '就绪');
 }
 window.album.onEvent((event) => {
+  if (
+    event.type === 'changed' &&
+    !event.data.cover &&
+    !event.data.matching &&
+    typeof rememberStructuralChange === 'function'
+  )
+    rememberStructuralChange(event.data);
   if (event.type === 'tasks') {
     const hadScanWork = hasStartupScanWork();
     applyTaskSnapshot(event.data);
@@ -3104,7 +3303,10 @@ document.addEventListener(
       const init = await loadSummary();
       if (init.progress.active || init.progress.busy) showProgress(init.progress);
       if (init.online) showOnlineStatus(init.online);
+      const version = S.loadVersion + 1,
+        key = viewKey();
       await loadPage();
+      requestBrowseFilesystemSync(version, key);
       if (!scanActive && !hasOnlineWork(latestOnlineProgress))
         $('#footer-status').textContent = '就绪';
       await showMetadataOnboarding();

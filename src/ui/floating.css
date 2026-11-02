@@ -715,22 +715,43 @@ h1 {
   width: 16px;
   height: 16px;
 }
-/* Center the enhanced select's line box with its icon, then correct only the
-   label's optical baseline. The chevron and keyboard focus box stay centered. */
+/* All toolbar content shares one centered line box. Control heights can differ
+   without moving individual labels, icons, or the keyboard focus outline. */
+#toolbar .toolbar-right {
+  --toolbar-content-line-height: 20px;
+  line-height: var(--toolbar-content-line-height);
+}
+#toolbar .toolbar-right .album-select-button,
+#toolbar .toolbar-right .card-size-controls button,
+#toolbar .toolbar-right .detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-block: 0;
+  line-height: var(--toolbar-content-line-height);
+}
 #toolbar .sort-label .album-select-button {
   height: 30px;
   min-height: 30px;
-  padding-block: 0;
-  line-height: 1;
+  justify-content: space-between;
 }
 #toolbar .sort-label .album-select-value {
-  transform: translateY(-1px);
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--toolbar-content-line-height);
+  line-height: var(--toolbar-content-line-height);
+}
+#toolbar .card-size-label {
+  line-height: var(--toolbar-content-line-height);
+}
+#toolbar .toolbar-right svg {
+  display: block;
+  flex-shrink: 0;
 }
 #toolbar .sort-label select:not(.album-select-source) {
   height: 30px;
   padding-block: 0;
-  line-height: 1;
-  transform: translateY(-1px);
+  line-height: var(--toolbar-content-line-height);
 }
 /* Use the capsule's shared gap for both action pairs at every breakpoint. */
 #toolbar .toolbar-right > :is(#details-toggle, #density-button, #refresh-button) {
