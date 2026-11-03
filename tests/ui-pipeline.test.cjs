@@ -190,9 +190,35 @@ test('only an explicitly unconfigured density adopts responsive medium in memory
   await fresh.context.loadSummary();
   assert.equal(fresh.S.settings.density, 155);
   assert.equal(fresh.S.settings.densityConfigured, false);
-  fresh.S.settings.density = 191;
+  const writes = [];
+  fresh.context.window.albumAppearanceSpec = require('../src/appearance-settings.cjs');
+  fresh.context.window.dispatchEvent = () => {};
+  fresh.context.CustomEvent = class {};
+  fresh.context.document.documentElement.style = { setProperty() {} };
+  fresh.context.document.documentElement.dataset = {};
+  fresh.context.document.querySelectorAll = () => [];
+  fresh.context.clearTimeout = () => {};
+  fresh.context.cancelAnimationFrame = () => {};
+  new vm.Script(fs.readFileSync(path.join(__dirname, '../src/ui/appearance.js'), 'utf8'), {
+    filename: 'src/ui/appearance.js'
+  }).runInContext(fresh.context);
+  const controls = fresh.context.window.albumAppearance.createController({
+    settings: () => fresh.S.settings,
+    save: async (key, value) => writes.push([key, value])
+  });
+  fresh.context.window.albumAppearanceControls = controls;
+  assert.deepEqual(writes, [], 'adopting the responsive default must not persist it');
+  controls.set('density', 191);
+  assert.equal(
+    fresh.S.settings.densityConfigured,
+    true,
+    'a real user choice records intent immediately'
+  );
+  await controls.flush();
   await fresh.context.loadSummary();
   assert.equal(fresh.S.settings.density, 191, 'later summaries preserve the numeric user choice');
+  assert.equal(fresh.S.settings.densityConfigured, true);
+  assert.deepEqual(writes, [['density', 191]], 'the choice uses the real serial save controller');
   assert.ok(
     fresh.calls.every((call) => call.command === 'init'),
     'default selection never persists a setting'

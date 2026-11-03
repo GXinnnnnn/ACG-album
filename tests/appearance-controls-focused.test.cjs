@@ -215,6 +215,65 @@ test('failed IPC resolves with a visible error and retains local value for retry
   ]);
 });
 
+test('explicitly selecting fresh medium uses the existing save queue and retries failed persistence', async () => {
+  let fails = true;
+  const saves = [],
+    h = harness(async (key, value) => {
+      saves.push([key, value]);
+      if (fails) throw new Error('disk full');
+    });
+  Object.assign(h.settings, { density: 155, densityConfigured: false });
+  h.controller.set('density', '155');
+  assert.equal(h.settings.densityConfigured, false, 'invalid values do not claim a preference');
+  h.controller.set('density', 155);
+  assert.equal(h.settings.densityConfigured, true);
+  await h.controller.flush();
+  assert.match(h.errors[0][0], /disk full/);
+  Object.assign(
+    h.settings,
+    h.controller.mergeSummary({ density: 166, densityConfigured: false }, h.controller.snapshot())
+  );
+  assert.equal(h.settings.density, 155);
+  assert.equal(h.settings.densityConfigured, true);
+  fails = false;
+  h.controller.set('density', 155);
+  await h.controller.flush();
+  await h.controller.flush();
+  assert.deepEqual(saves, [
+    ['density', 155],
+    ['density', 155]
+  ]);
+  assert.deepEqual(h.finishes, [155], 'retry does not duplicate a completed density gesture');
+});
+
+test('a density summary started while saving cannot overwrite the choice after that save completes', async () => {
+  let release;
+  const h = harness(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      })
+  );
+  Object.assign(h.settings, { density: 166, densityConfigured: true });
+  h.controller.set('density', 222);
+  const saving = h.controller.flush(),
+    started = h.controller.snapshot();
+  await turn();
+  release();
+  await saving;
+  const incoming = h.controller.mergeSummary(
+    { density: 166, densityConfigured: true, cardRadius: 28 },
+    started
+  );
+  assert.equal(incoming.density, undefined);
+  assert.equal(incoming.densityConfigured, undefined);
+  assert.equal(
+    incoming.cardRadius,
+    28,
+    'other appearance settings still use ordinary summary merging'
+  );
+});
+
 test('range labels, readouts and reset contracts are present for both panels', () => {
   const h = harness(),
     html = h.window.albumAppearance.markup();
@@ -237,16 +296,16 @@ const fixture = vm.runInNewContext(
   masonryTestSource.slice(0, masonryTestSource.indexOf('function disjoint(')) + '\nfixture;',
   { require, __dirname, console, AbortController }
 );
-test('continuous virtual and overview widths stay fixed with balanced virtual edges and narrow clamping', async () => {
+test('continuous virtual and overview widths stay fixed with left-aligned virtual edges and narrow clamping', async () => {
   for (const available of [90, 120, 700, 3448])
     for (const density of [120, 158, 186, 222, 267, 360]) {
       const f = await fixture(24, 0, available, density);
       assert.equal(f.grid.width, Math.min(available, density));
       const occupied = f.grid.cols * f.grid.width + (f.grid.cols - 1) * f.grid.gap,
-        inset = (available - occupied) / 2;
-      assert.equal(f.grid.getPosition(0).left, inset);
+        remainder = available - occupied;
+      assert.equal(f.grid.getPosition(0).left, 0);
       const lastColumn = f.grid.getPosition(f.grid.cols - 1);
-      assert.ok(Math.abs(available - lastColumn.left - lastColumn.width - inset) < 0.001);
+      assert.ok(Math.abs(available - lastColumn.left - lastColumn.width - remainder) < 0.001);
       assert.equal(f.grid.getPosition(0).top, 0);
       const overview = f.context.overviewPreviewGeometry(available, density);
       assert.equal(overview.width, Math.min(available, density));

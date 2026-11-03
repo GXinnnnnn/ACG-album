@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { cardPresets } = require('../src/appearance-settings.cjs');
 const { parsers } = require('prettier/plugins/postcss');
 
 // Test the actual stylesheet order, specificity, media rules and inherited
@@ -213,6 +214,7 @@ function fixture({
     const footer = element('div', shell, { class: 'card-bottom-overlay' });
     const count = element('span', footer, { class: 'card-count' });
     return {
+      shell,
       footer,
       count,
       icon: element('svg', footer),
@@ -243,10 +245,8 @@ const near = (actual, expected) =>
   assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
 test('footer text, icons and ratings scale continuously from each responsive medium, including compact and previews', () => {
-  for (const [width, base] of [
-    [1920, 155],
-    [3840, 166]
-  ]) {
+  for (const width of [1920, 2560, 3840]) {
+    const base = cardPresets(width)[1];
     for (const density of [120, base, 195, 267, 360]) {
       for (const theme of ['light', 'dark']) {
         const f = fixture({
@@ -258,31 +258,118 @@ test('footer text, icons and ratings scale continuously from each responsive med
         });
         const scale = density / base;
         for (const card of [f.folder, f.previewCard]) {
-          near(pixels(f.style(card.footer).value('font-size')), 17 * scale);
+          near(pixels(f.style(card.footer).value('font-size')), 14 * scale);
           near(pixels(f.style(card.icon).value('width')), 20 * scale);
           near(pixels(f.style(card.icon).value('height')), 20 * scale);
           near(pixels(f.style(card.rating).value('font-size')), 11 * scale);
           near(pixels(f.style(card.rating).value('padding-top')), 3 * scale);
-          near(pixels(f.style(card.rating).value('padding-right')), 6 * scale);
-          near(pixels(f.style(card.footer).value('gap')), 6 * scale);
-          assert.equal(f.style(card.count).value('transform'), 'translateY(1px)');
-          assert.equal(f.style(card.value).value('text-overflow'), 'ellipsis');
-          assert.equal(f.style(card.unit).value('flex-shrink'), '0');
+          near(pixels(f.style(card.rating).value('padding-right')), 3 * scale);
+          near(pixels(f.style(card.footer).value('gap')), 2 * scale);
+          near(pixels(f.style(card.footer).value('left')), 5 * scale);
+          near(pixels(f.style(card.footer).value('right')), 5 * scale);
+          assert.equal(f.style(card.footer).raw('display'), 'flex');
+          assert.equal(f.style(card.footer).raw('align-items'), 'center');
+          assert.equal(f.style(card.icon).raw('display'), 'block');
+          for (const centered of [card.count, card.rating]) {
+            assert.equal(f.style(centered).raw('display'), 'inline-flex');
+            assert.equal(f.style(centered).raw('align-items'), 'center');
+          }
+          for (const fixed of [card.icon, card.count, card.value, card.unit, card.rating])
+            assert.equal(f.style(fixed).raw('flex-shrink'), '0');
+          for (const text of [card.count, card.value]) {
+            assert.equal(f.style(text).raw('overflow'), 'visible');
+            assert.equal(f.style(text).raw('text-overflow'), 'clip');
+            assert.equal(f.style(text).raw('white-space'), 'nowrap');
+          }
+          assert.equal(f.style(card.rating).raw('white-space'), 'nowrap');
+          assert.equal(f.style(card.unit).raw('white-space'), 'pre');
+          for (const content of [card.icon, card.count, card.value, card.unit, card.rating]) {
+            for (const property of ['transform', 'translate', 'top', 'bottom'])
+              assert.ok(
+                [undefined, 'none', 'auto', '0'].includes(f.style(content).raw(property)),
+                `${property} must not shift one footer item`
+              );
+            assert.equal(
+              f.style(content).raw('margin-top') || '0',
+              f.style(content).raw('margin-bottom') || '0'
+            );
+            assert.equal(
+              f.style(content).raw('padding-top') || '0',
+              f.style(content).raw('padding-bottom') || '0'
+            );
+          }
         }
         near(pixels(f.style(f.media.footer).value('font-size')), 10 * scale);
         near(pixels(f.style(f.media.icon).value('width')), 14 * scale);
         near(pixels(f.style(f.media.rating).value('font-size')), 10 * scale);
+        near(pixels(f.style(f.media.rating).value('padding-top')), 3 * scale);
+        near(pixels(f.style(f.media.rating).value('padding-right')), 6 * scale);
       }
     }
   }
 });
 
-test('missing display tokens retain medium footer sizes and do not scale the one-pixel optical correction', () => {
+test('missing display tokens retain medium footer sizes on the shared center line', () => {
   const f = fixture({ tokens: false });
-  near(pixels(f.style(f.folder.footer).value('font-size')), 17);
+  near(pixels(f.style(f.folder.footer).value('font-size')), 14);
   near(pixels(f.style(f.folder.icon).value('width')), 20);
   near(pixels(f.style(f.folder.rating).value('font-size')), 11);
-  assert.equal(f.style(f.folder.count).value('transform'), 'translateY(1px)');
+  near(pixels(f.style(f.folder.footer).value('left')), 5);
+  near(pixels(f.style(f.folder.footer).value('right')), 5);
+  assert.equal(f.style(f.folder.count).value('transform'), 'none');
+});
+
+test('grouped five-digit counts and the full 10.0 rating fit responsive presets and narrow 120/124/135px cards', () => {
+  // All five existing TTFs use 256 units/em, digit advance 153, punctuation 76,
+  // space 71, and 张/★ 256. Round each advance up to retain a conservative
+  // budget (minimum margin 2.96px at base 150 / manual width 120). The browser
+  // checker separately measures the actual text ranges and containment.
+  const advance = (char) => {
+    if (/\d/.test(char)) return 0.6;
+    if (char === ',' || char === '.') return 0.3;
+    if (char === ' ') return 0.28;
+    assert.ok(char === '张' || char === '★', `Unexpected footer glyph: ${char}`);
+    return 1;
+  };
+  const ems = (text) => [...text].reduce((sum, char) => sum + advance(char), 0);
+  const count = new Intl.NumberFormat('zh-CN').format(99999) + ' 张';
+  const rating = '★ ' + Number(10).toFixed(1);
+  assert.equal(count, '99,999 张');
+  assert.equal(rating, '★ 10.0');
+  near(ems(count), 4.58);
+  near(ems(rating), 3.38);
+  for (const width of [980, 1920, 2560, 2880, 3840]) {
+    const presets = cardPresets(width),
+      base = presets[1];
+    for (const density of new Set([120, 124, 135, ...presets, 360])) {
+      for (const theme of ['light', 'dark']) {
+        const size =
+          density <= presets[0] ? 'compact' : density >= presets[2] ? 'large' : 'standard';
+        const f = fixture({ width, base, density, size, theme });
+        for (const card of [f.folder, f.previewCard]) {
+          const style = (el) => f.style(el);
+          const border = (el) => pixels(style(el).raw('border').split(/\s+/)[0]);
+          const available =
+            density -
+            2 * border(card.shell) -
+            pixels(style(card.footer).value('left')) -
+            pixels(style(card.footer).value('right'));
+          const required =
+            pixels(style(card.icon).value('width')) +
+            2 * pixels(style(card.footer).value('gap')) +
+            ems(count) * pixels(style(card.count).value('font-size')) +
+            ems(rating) * pixels(style(card.rating).value('font-size')) +
+            pixels(style(card.rating).value('padding-left')) +
+            pixels(style(card.rating).value('padding-right')) +
+            2 * border(card.rating);
+          assert.ok(
+            available - required >= 2.9,
+            `Footer needs rounding room at viewport=${width}, card=${density}, theme=${theme}: ${required} of ${available}px`
+          );
+        }
+      }
+    }
+  }
 });
 
 test('toolbar shares centered text line boxes and icons without per-label offsets after later sheets', () => {

@@ -26,27 +26,14 @@
     actions.push({ rule: true });
     for (const [value, label] of [
       ['name', '按文件名称排序'],
+      ['contentDate', '按日期排序'],
       ['date', '按创建日期排序'],
       ['modified', '按修改日期排序'],
       ['size', '按大小排序']
     ])
-      action(
-        label,
-        'sort',
-        async () => {
-          S.sort = value;
-          await loadPage();
-        },
-        { checked: S.sort === value, disabled: S.view === 'timeline' }
-      );
-    action(
-      S.direction === 'asc' ? '改为降序排列' : '改为升序排列',
-      'arrow-down',
-      async () => {
-        S.direction = S.direction === 'asc' ? 'desc' : 'asc';
-        await loadPage();
-      },
-      { disabled: S.view === 'timeline' }
+      action(label, 'sort', () => changeBrowseSort(value), { checked: S.sort === value });
+    action(S.direction === 'asc' ? '改为降序排列' : '改为升序排列', 'arrow-down', () =>
+      changeBrowseSort(S.sort, S.direction === 'asc' ? 'desc' : 'asc')
     );
     actions.push({ rule: true });
     action('卡片尺寸与批量确认…', 'sliders', densityModal);

@@ -31,6 +31,7 @@ const { lookupLearnedTitleBindings } = require('./learned-title-bindings.cjs');
 const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
 const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
 const appearanceSettings = require('./appearance-settings.cjs');
+const { createBrowseDate, normalizeBrowseSortPreferences } = require('./browse-date.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
 const {
@@ -173,6 +174,7 @@ const defaults = {
   motionLevel: 'high',
   fontFamily: '',
   homeCopy: HOME_COPY_DEFAULTS,
+  browseSortPreferences: {},
   githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
@@ -192,6 +194,10 @@ const imagePreview = createImagePreview({
 let cacheChanging = false,
   cacheTask = null,
   activeRequests = 0;
+// Whole-RPC leases cover source lookup before thumbJobs registration and open
+// asset handles. Keep them in activeRequests for cache-management exclusion.
+const resourceMethods = new Set(['thumb', 'source', 'asset']);
+const resourceRequests = new Set();
 const cacheReadMethods = new Set([
   'init',
   'statistics',
@@ -278,6 +284,7 @@ async function migrateSortKeys() {
   }
 }
 function migrateBrowseSchema() {
+  browseDate.migrate();
   if (setting('searchVersion') !== 1) {
     db.exec(
       'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
@@ -363,6 +370,7 @@ function migrateReviewPolicies() {
   );
 }
 const media = require('./media.cjs').createMedia({ db, home, getNode, send });
+const browseDate = createBrowseDate(db);
 const summary = require('./library-summary.cjs').createLibrarySummary({
   databasePath: path.join(home, 'library.sqlite')
 });
@@ -454,7 +462,13 @@ async function recoverRenames() {
   return results;
 }
 async function renameNode({ id, name }) {
-  if (running || scanReserved || renameReserved || cacheChanging || activeRequests > 1)
+  if (
+    running ||
+    scanReserved ||
+    renameReserved ||
+    cacheChanging ||
+    activeRequests - resourceRequests.size > 1
+  )
     throw new Error('请先等待当前导入或资料修改完成，再重命名。');
   const source = getNode(id);
   if (!source || source.missing || rootRemoval.isHidden(source.root))
@@ -470,12 +484,17 @@ async function renameNode({ id, name }) {
       invalidateRoot(source.root, { preserve: true });
       clearOnline({ preserve: true });
       clearTimeout(watchTimer);
+      watchTimer = null;
+      watchTimerDue = 0;
       clearTimeout(mediaStartupTimer);
       clearTimeout(titleSeedTimer);
       watchers.get(source.root)?.close();
       watchers.delete(source.root);
       watchPending.delete(source.root);
+      // Reservation closes resource admission synchronously. Later requests wait
+      // on renameTask outside the lease set, so this snapshot cannot self-wait.
       await Promise.allSettled([
+        ...resourceRequests,
         onlineTask,
         localPauseSweep,
         ...subjectJobs,
@@ -688,18 +707,31 @@ function list(options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 180, 1), 500);
   const offset = Math.max(Number(options.offset) || 0, 0);
   const { where, args } = browseWhere(options);
-  const col = timeline
+  const timelineDateOrder = timeline && options.sort === undefined;
+  // Cached reads remain available before one-time backfill. Use the existing
+  // name index until migration commits, and expose that temporary order to callers.
+  const sortFallback =
+    !timelineDateOrder && sort === 'contentDate' && !browseDate.ready()
+      ? { requested: 'contentDate', sort: 'name', reason: 'content-date-migration' }
+      : null;
+  const col = timelineDateOrder
     ? 'm.taken'
     : {
         name: 'n.sortkey',
         date: 'n.birth',
         modified: 'n.mtime',
-        size: "CASE WHEN n.kind='folder' THEN n.total_bytes ELSE n.bytes END"
-      }[sort] || 'n.sortkey';
+        size: "CASE WHEN n.kind='folder' THEN n.total_bytes ELSE n.bytes END",
+        contentDate: 'n.content_date'
+      }[sortFallback ? 'name' : sort] || 'n.sortkey';
   const dir = direction === 'desc' ? 'DESC' : 'ASC',
     clause = where.join(' AND ');
-  const from = timeline ? 'media m CROSS JOIN nodes n ON n.id=m.id' : 'nodes n',
-    countFrom = where.some((w) => w.startsWith('m.'))
+  const from = timelineDateOrder
+    ? 'media m CROSS JOIN nodes n ON n.id=m.id'
+    : timeline
+      ? 'nodes n CROSS JOIN media m ON m.id=n.id'
+      : 'nodes n';
+  const countFrom =
+    timeline || where.some((w) => w.startsWith('m.'))
       ? 'media m JOIN nodes n ON n.id=m.id'
       : 'nodes n';
   const count = one(`SELECT COUNT(*) total FROM ${countFrom} WHERE ${clause}`, ...args).total;
@@ -710,21 +742,23 @@ function list(options = {}) {
           .total;
   const select =
     'n.*,m.width,m.height,m.frames,m.taken,m.date_source,m.place,m.latitude,m.longitude,m.hdr';
-  const tie = timeline ? `m.id ${dir}` : `n.sortkey ${dir},n.id ${dir}`;
+  const tie = timelineDateOrder ? `m.id ${dir}` : `n.sortkey ${dir},n.id ${dir}`;
   // Limit narrow IDs before joining metadata; CROSS JOIN keeps date-index traversal first.
   const page = (kind, take, skip) => {
     // kind precedes the sort column in the existing indexes. A two-kind IN
     // range forces a complete temporary sort; merging the two ordered scans
     // lets SQLite stop at the requested page without adding eight more indexes.
-    const mergeMedia = !timeline && kind === "n.kind IN ('image','video')";
+    const mergeMedia = !timelineDateOrder && kind === "n.kind IN ('image','video')";
+    // Timeline joins expose two id columns; compound ORDER BY must name an
+    // explicit result alias rather than resolve either joined table's id.
     const ids = mergeMedia
-      ? `SELECT n.id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='image'
+      ? `SELECT n.id AS page_id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='image'
          UNION ALL
-         SELECT n.id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='video'
-         ORDER BY page_order ${dir},page_name ${dir},id ${dir} LIMIT ? OFFSET ?`
-      : `SELECT n.id FROM ${from} WHERE ${clause} AND ${kind} ORDER BY ${col} ${dir},${tie} LIMIT ? OFFSET ?`;
+         SELECT n.id AS page_id,n.sortkey AS page_name,${col} AS page_order FROM ${from} WHERE ${clause} AND n.kind='video'
+         ORDER BY page_order ${dir},page_name ${dir},page_id ${dir} LIMIT ? OFFSET ?`
+      : `SELECT n.id AS page_id FROM ${from} WHERE ${clause} AND ${kind} ORDER BY ${col} ${dir},${tie} LIMIT ? OFFSET ?`;
     return q(
-      `SELECT ${select} FROM (${ids}) page JOIN nodes n ON n.id=page.id
+      `SELECT ${select} FROM (${ids}) page JOIN nodes n ON n.id=page.page_id
        LEFT JOIN media m ON m.id=n.id ORDER BY ${col} ${dir},${tie}`,
       ...args,
       ...(mergeMedia ? args : []),
@@ -768,7 +802,7 @@ function list(options = {}) {
             })()
           : null
   }));
-  return { items, total: count, folders };
+  return { items, total: count, folders, ...(sortFallback ? { sortFallback } : {}) };
 }
 function confirmReview({ query, previewIds = [] } = {}) {
   if (
@@ -4263,10 +4297,13 @@ const methods = {
       value = value.trim();
     }
     if (key === 'homeCopy') value = normalizeHomeCopy(value);
+    if (key === 'browseSortPreferences') value = normalizeBrowseSortPreferences(value);
     if (key === 'githubRepository') {
       value = effectiveRepository(value);
       if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');
     }
+    if (key === 'browseSortPreferences' && JSON.stringify(setting(key)) === JSON.stringify(value))
+      return value;
     const result = setSetting(key, value);
     if (key === 'watchChanges') reconcileWatches();
     return result;
@@ -4591,11 +4628,13 @@ async function ensureMaintenance() {
   if (stopping) throw new Error('媒体服务已停止。');
 }
 parentPort.on('message', async ({ request, method, args }) => {
-  let tracked = false;
+  let tracked = false,
+    resourceLease,
+    releaseResource;
   try {
     if (!Object.hasOwn(methods, method)) throw new Error('未知操作');
     if (!foregroundReadMethods.has(method) && method !== 'shutdown') await ensureMaintenance();
-    if (renameReserved && ['thumb', 'source', 'asset'].includes(method)) {
+    if (renameReserved && resourceMethods.has(method)) {
       if (!renameTask) throw new Error('文件改名需要恢复，请检查后台状态。');
       await renameTask;
       if (renameReserved) throw new Error('文件改名需要恢复，请检查后台状态。');
@@ -4614,12 +4653,22 @@ parentPort.on('message', async ({ request, method, args }) => {
         'shutdown'
       ].includes(method);
     if (tracked) activeRequests++;
+    if (tracked && resourceMethods.has(method)) {
+      resourceLease = new Promise((resolve) => {
+        releaseResource = resolve;
+      });
+      resourceRequests.add(resourceLease);
+    }
     const result = await methods[method](args || {});
     parentPort.postMessage({ request, result });
   } catch (e) {
     parentPort.postMessage({ request, error: e.message, code: e.code, stack: e.stack });
   } finally {
     if (tracked) activeRequests--;
+    if (resourceLease) {
+      resourceRequests.delete(resourceLease);
+      releaseResource();
+    }
   }
 });
 scanReserved = !!nextScanJob();

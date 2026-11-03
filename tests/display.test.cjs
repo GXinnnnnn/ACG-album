@@ -31,7 +31,7 @@ function control(dataset = {}) {
 }
 function fixture(width = 3840, dpr = 1) {
   const details = control(),
-    buttons = [128, 166, 195].map((density) => control({ density: String(density) }));
+    buttons = [135, 165, 192].map((density) => control({ density: String(density) }));
   for (const button of [details, ...buttons]) button.classList.owner = button;
   const viewport = {
       scrollTop: 700,
@@ -108,22 +108,22 @@ function fixture(width = 3840, dpr = 1) {
   };
 }
 
-test('card presets select 128/166/195 and retain arbitrary saved widths', async () => {
+test('card presets select 135/165/192 and retain explicit legacy and custom widths', async () => {
   const f = fixture();
   const presets = vm.runInContext('cardDisplayPresets.map((preset) => preset.width)', f.context);
-  assert.deepEqual([...presets], [128, 166, 195]);
-  for (const width of [128, 166, 195, 222, 267]) {
+  assert.deepEqual([...presets], [135, 165, 192]);
+  for (const width of [135, 165, 192, 128, 166, 195, 222, 267.5]) {
     await f.context.changeDisplaySetting('density', width);
     assert.equal(f.settings.density, width);
     assert.equal(
       f.dataset.cardSize,
-      width === 128 ? 'compact' : width === 195 ? 'large' : 'standard'
+      width === 135 ? 'compact' : width === 192 ? 'large' : 'standard'
     );
     assert.deepEqual(
       f.buttons
         .filter((button) => button.attributes['aria-pressed'] === 'true')
         .map((button) => Number(button.dataset.density)),
-      [128, 166, 195].includes(width) ? [width] : []
+      [135, 165, 192].includes(width) ? [width] : []
     );
   }
 });
@@ -131,8 +131,8 @@ test('card presets select 128/166/195 and retain arbitrary saved widths', async 
 test('responsive preset selection uses CSS viewport widths without multiplying DPR', async () => {
   for (const [width, expected] of [
     [1920, [120, 155, 191]],
-    [2560, [123, 159, 192]],
-    [3840, [128, 166, 195]]
+    [2560, [124, 150, 188]],
+    [3840, [135, 165, 192]]
   ]) {
     for (const dpr of [1, 1.25, 1.5, 2]) {
       const f = fixture(width, dpr);
@@ -184,10 +184,143 @@ test('resize updates existing preset objects and controls while preserving a sav
   f.context.applyDisplaySettings();
   assert.deepEqual(
     f.buttons.map((button) => Number(button.dataset.density)),
-    [123, 159, 192]
+    [124, 150, 188]
   );
   assert.equal(f.settings.density, 155, 'An earlier preset choice remains the saved numeric value');
   assert.ok(f.buttons.every((button) => button.attributes['aria-pressed'] === 'false'));
+});
+
+function appearanceController(f, save) {
+  let next = 0;
+  const frames = new Map();
+  Object.assign(f.context, {
+    CustomEvent: class {},
+    requestAnimationFrame(callback) {
+      frames.set(++next, callback);
+      return next;
+    },
+    cancelAnimationFrame: (id) => frames.delete(id),
+    setTimeout: () => ++next,
+    clearTimeout() {},
+    viewKey: () => 'library',
+    overviewPreviewController: null
+  });
+  f.context.document.querySelectorAll = () => [];
+  f.context.window.dispatchEvent = () => {};
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, '../src/ui/appearance.js'), 'utf8'),
+    f.context
+  );
+  const controller = f.context.window.albumAppearance.createController({
+    settings: () => f.context.S.settings,
+    save,
+    previewDensity: f.context.previewDisplayDensity,
+    finishDensity: f.context.finishDisplayDensity
+  });
+  f.context.window.albumAppearanceControls = controller;
+  return controller;
+}
+function summaryReader(f, response) {
+  const app = fs.readFileSync(path.join(__dirname, '../src/ui/app.js'), 'utf8'),
+    start = app.indexOf('async function loadSummary()'),
+    end = app.indexOf('async function loadPage(', start);
+  assert.ok(start >= 0 && end > start);
+  Object.assign(f.context, {
+    summarySettingsApplied: true,
+    summaryDetailsVersion: 0,
+    summaryDetailsDirty: false,
+    renderSummaryStats() {},
+    updateSidebar() {},
+    api: () => response.promise
+  });
+  vm.runInContext(app.slice(start, end), f.context);
+  return f.context.loadSummary;
+}
+
+test('an unconfigured profile follows medium across initial widths and native window restoration without saving', () => {
+  for (const dpr of [1, 1.25, 1.5, 2]) {
+    for (const width of [980, 1920, 2240, 2560, 3200, 3840, 5120]) {
+      const f = fixture(width, dpr);
+      f.settings.density = 166;
+      f.settings.densityConfigured = false;
+      f.context.applyDisplaySettings();
+      f.context.initializeDisplayControls();
+      for (const restoredWidth of [width, 1600, 3840, 2560, 1920]) {
+        f.root.clientWidth = restoredWidth;
+        f.listeners.get('resize')();
+        const medium = spec.cardPresets(restoredWidth)[1];
+        assert.equal(f.settings.density, medium);
+        assert.equal(f.styles.get('--card-width'), medium + 'px');
+        assert.equal(f.styles.get('--card-scale'), '1');
+        assert.equal(f.buttons[1].attributes['aria-pressed'], 'true');
+        assert.equal(f.settings.densityConfigured, false);
+      }
+      assert.deepEqual(f.events, [], 'responsive defaults never become saved user preferences');
+    }
+  }
+});
+
+test('same-medium and slider choices survive resize and a summary arriving after a pending save finishes', async () => {
+  for (const [initial, configured, choice] of [
+    [155, false, 155],
+    [155, false, 222],
+    [166, true, 222]
+  ]) {
+    const f = fixture(1920),
+      write = deferred(),
+      response = deferred(),
+      saves = [];
+    Object.assign(f.settings, { density: initial, densityConfigured: configured });
+    const controller = appearanceController(f, async (key, value) => {
+      saves.push([key, value]);
+      await write.promise;
+    });
+    f.context.applyDisplaySettings();
+    f.context.initializeDisplayControls();
+    let saving;
+    if (choice === initial) saving = f.context.changeDisplaySetting('density', choice);
+    else {
+      controller.set('density', choice);
+      saving = controller.flush();
+    }
+    await Promise.resolve();
+    assert.equal(
+      f.context.S.settings.densityConfigured,
+      true,
+      'intent is recorded before IPC completes'
+    );
+    const reading = summaryReader(f, response)();
+    f.root.clientWidth = 3840;
+    f.listeners.get('resize')();
+    assert.equal(
+      f.context.S.settings.density,
+      choice,
+      'a pending save must not become a new medium'
+    );
+    write.resolve();
+    await saving;
+    response.resolve({
+      settings: { density: initial, densityConfigured: configured, ratio: 'square' },
+      roots: []
+    });
+    await reading;
+    assert.equal(
+      f.context.S.settings.density,
+      choice,
+      'late init keeps the last explicit numeric width'
+    );
+    assert.equal(f.context.S.settings.densityConfigured, true);
+    assert.equal(f.context.S.settings.ratio, 'square', 'unrelated summary fields still merge');
+    f.root.clientWidth = 2560;
+    f.listeners.get('resize')();
+    assert.equal(f.context.S.settings.density, choice);
+    await f.context.changeDisplaySetting('density', choice);
+    assert.deepEqual(
+      saves,
+      [['density', choice]],
+      'same-value change/blur stays coalesced after explicit selection'
+    );
+  }
 });
 
 test('details persist before capture so scrolling during a write stays authoritative', async () => {

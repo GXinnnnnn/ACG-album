@@ -712,14 +712,12 @@ function createVirtualGrid() {
     dirty = true;
     const preset = Math.max(1, Number(S.settings.density) || 166);
     grid.gap = grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
-    // Preserve the requested card width and split the incomplete column's
-    // remainder equally across both edges, including narrow one-column walls.
+    // The scrollport already reserves the visible sidebar and its window-edge
+    // spacing. Keep every column at that left edge; an incomplete column leaves
+    // its remainder on the right without changing the requested card width.
     grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (preset + grid.gap)));
     grid.width = Math.min(m.width, preset);
-    grid.offsetX = Math.max(
-      0,
-      (m.width - (grid.cols * grid.width + (grid.cols - 1) * grid.gap)) / 2
-    );
+    grid.offsetX = 0;
     mediaCols = grid.cols;
     const ratio =
       S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12;

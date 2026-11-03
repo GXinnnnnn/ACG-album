@@ -82,6 +82,102 @@
   width: 20px;
   height: 20px;
 }
+/* The tree consumes the remaining flex track; its scroll bottom sits beside the index status. */
+#sidebar-shell #sidebar-details {
+  min-height: 0;
+}
+#sidebar-shell #category-nav {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 0;
+  scroll-behavior: auto;
+  overflow-anchor: none;
+}
+#sidebar-shell .index-status {
+  padding-top: 5px;
+  padding-bottom: 7px;
+}
+#category-nav .tree-virtual-content {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+}
+#category-nav .tree-virtual-content > .tree-node,
+#category-nav .tree-virtual-content > .tree-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 39px;
+  min-height: 0;
+  contain: layout style;
+}
+#category-nav .tree-row {
+  box-sizing: border-box;
+  height: 37px;
+  min-height: 37px;
+  margin: 1px 0;
+}
+#category-nav .tree-row .category-link {
+  height: 36px;
+  min-height: 36px;
+  overflow: hidden;
+}
+#category-nav .category-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#category-nav .tree-slot {
+  display: flex;
+  align-items: center;
+}
+#category-nav .tree-pending {
+  margin: 0;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+#category-nav .tree-row .category-link:focus-visible,
+#category-nav .tree-toggle:focus-visible,
+#category-nav .tree-pending:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Preserve three tree rows at the supported minimum window height without moving rail controls. */
+@media (max-height: 820px) {
+  #sidebar-shell .sidebar {
+    padding-top: 8px;
+  }
+  #sidebar-shell .nav-item,
+  #sidebar-shell .import-button {
+    height: 34px;
+    min-height: 34px;
+  }
+  #sidebar-shell .main-nav {
+    gap: 2px;
+  }
+  #sidebar-shell .import-button {
+    margin-bottom: 6px;
+  }
+  #sidebar-shell .folder-button {
+    margin-top: 6px;
+  }
+  #sidebar-shell .category-caption {
+    margin: 4px 5px 3px 12px;
+  }
+  #sidebar-shell .sidebar-bottom {
+    grid-template-rows: repeat(2, 34px);
+    padding-top: 4px;
+    margin-top: 4px;
+  }
+  #sidebar-shell #sidebar-pin {
+    height: 34px;
+    min-height: 34px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   #sidebar-shell .sidebar-bottom::before {
     transition: none;

@@ -9,7 +9,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { idFor } = require('../src/model.cjs');
 const { sortKey, NATURAL_SORT_VERSION } = require('../src/natural-sort.cjs');
 
-async function client(dataDir, fixture) {
+async function client(dataDir, fixture, { resume = true } = {}) {
   const worker = new Worker(path.resolve(__dirname, '../src/library-worker.cjs'), {
     workerData: { dataDir, watch: false, token: '' }
   });
@@ -58,37 +58,39 @@ async function client(dataDir, fixture) {
     });
   // ready only exposes cached reads. Sorting assertions require the real
   // startup migrations to finish, including their final sortMigration event.
-  try {
-    await call('startupResume');
-    await new Promise((resolve, reject) => {
-      const finish = (error) => {
-        clearTimeout(timer);
-        worker.off('message', onMessage);
-        worker.off('error', onError);
-        worker.off('exit', onExit);
-        error ? reject(error) : resolve();
-      };
-      const onMessage = (message) => {
-        if (message.event !== 'tasks') return;
-        const maintenance = message.data?.maintenance;
-        if (maintenance?.state === 'ready') finish();
-        else if (maintenance?.state === 'error')
-          finish(new Error(maintenance.error || 'Worker maintenance failed'));
-      };
-      const onError = (error) => finish(error);
-      const onExit = (code) => finish(new Error('Worker exited before maintenance: ' + code));
-      const timer = setTimeout(() => finish(new Error('Worker maintenance timeout')), 60000);
-      worker.on('message', onMessage);
-      worker.once('error', onError);
-      worker.once('exit', onExit);
-      // Maintenance may have finished before startupResume replied. Check the
-      // already captured stream after subscribing so neither ordering is lost.
-      const latest = events.filter((message) => message.event === 'tasks').at(-1);
-      if (latest) onMessage(latest);
-    });
-  } catch (error) {
-    await worker.terminate();
-    throw error;
+  if (resume) {
+    try {
+      await call('startupResume');
+      await new Promise((resolve, reject) => {
+        const finish = (error) => {
+          clearTimeout(timer);
+          worker.off('message', onMessage);
+          worker.off('error', onError);
+          worker.off('exit', onExit);
+          error ? reject(error) : resolve();
+        };
+        const onMessage = (message) => {
+          if (message.event !== 'tasks') return;
+          const maintenance = message.data?.maintenance;
+          if (maintenance?.state === 'ready') finish();
+          else if (maintenance?.state === 'error')
+            finish(new Error(maintenance.error || 'Worker maintenance failed'));
+        };
+        const onError = (error) => finish(error);
+        const onExit = (code) => finish(new Error('Worker exited before maintenance: ' + code));
+        const timer = setTimeout(() => finish(new Error('Worker maintenance timeout')), 60000);
+        worker.on('message', onMessage);
+        worker.once('error', onError);
+        worker.once('exit', onExit);
+        // Maintenance may have finished before startupResume replied. Check the
+        // already captured stream after subscribing so neither ordering is lost.
+        const latest = events.filter((message) => message.event === 'tasks').at(-1);
+        if (latest) onMessage(latest);
+      });
+    } catch (error) {
+      await worker.terminate();
+      throw error;
+    }
   }
   let closePromise;
   return {
@@ -178,9 +180,39 @@ test('directory ordering uses actual natural names, separate filesystem dates an
         1
       );
     }
+    db.prepare(
+      "UPDATE media SET taken=?,date_source=?,status='ready',place='fixture-location' WHERE id=?"
+    ).run(50, 'exif-offset', idFor(path.join(f.source, 'image10.jpg')));
+    // Emulate the actual pre-feature database, not merely an old version marker.
+    for (const name of [
+      'node_insert',
+      'node_update',
+      'media_insert',
+      'media_update',
+      'media_delete'
+    ])
+      db.exec(`DROP TRIGGER browse_date_${name}`);
+    db.exec(`DROP INDEX nodes_parent_content_date; DROP INDEX nodes_global_content_date;
+      ALTER TABLE nodes DROP COLUMN content_date;
+      DELETE FROM settings WHERE key='browseContentDateVersion';`);
   } finally {
     db.close();
   }
+  c = f.client = await client(f.data, f, { resume: false });
+  const cached = await c.call('list', { parent, sort: 'contentDate' });
+  assert.deepEqual(cached.sortFallback, {
+    requested: 'contentDate',
+    sort: 'name',
+    reason: 'content-date-migration'
+  });
+  assert.ok(
+    cached.items.every((n) => n.content_date === null),
+    'cached ready does no backfill'
+  );
+  const cachedTimeline = await c.call('list', { parent, timeline: true, sort: 'contentDate' });
+  assert.deepEqual(cachedTimeline.sortFallback, cached.sortFallback);
+  assert.ok(cachedTimeline.items.every((n) => n.kind !== 'folder'));
+  await c.close();
   c = f.client = await client(f.data, f);
   t.after(() => c.close());
   const natural = [
@@ -216,7 +248,18 @@ test('directory ordering uses actual natural names, separate filesystem dates an
     (await listing('date')).items.map((n) => n.name),
     ['Work1', 'Work2', 'Work10', 'image3.mp4', 'image1.jpg', 'image2.jpg', 'image10.jpg']
   );
-  for (const sort of ['name', 'modified', 'date', 'size']) {
+  const content = await listing('contentDate');
+  assert.equal(
+    content.sortFallback,
+    undefined,
+    'committed migration serves the real content date index'
+  );
+  assert.deepEqual(
+    content.items.map((n) => n.name),
+    ['Work1', 'Work2', 'Work10', 'image10.jpg', 'image3.mp4', 'image1.jpg', 'image2.jpg']
+  );
+  assert.equal(content.items.find((n) => n.name === 'image10.jpg').content_date, 50);
+  for (const sort of ['name', 'modified', 'date', 'size', 'contentDate']) {
     for (const direction of ['asc', 'desc']) {
       const expected = await listing(sort, direction);
       const combined = [];
@@ -228,7 +271,157 @@ test('directory ordering uses actual natural names, separate filesystem dates an
         `${sort}/${direction} pagination`
       );
       assert.equal(new Set(combined).size, combined.length);
+      const timeline = await c.call('list', {
+        parent,
+        timeline: true,
+        sort,
+        direction,
+        limit: 500
+      });
+      const expectedMedia = expected.items.filter((n) => n.kind !== 'folder');
+      assert.equal(timeline.total, expectedMedia.length);
+      assert.deepEqual(
+        timeline.items.map((n) => n.id),
+        expectedMedia.map((n) => n.id),
+        `timeline honors explicit ${sort}/${direction}`
+      );
+      const timelinePages = [];
+      for (let offset = 0; offset < timeline.total; offset += 2)
+        timelinePages.push(
+          ...(
+            await c.call('list', {
+              parent,
+              timeline: true,
+              sort,
+              direction,
+              limit: 2,
+              offset
+            })
+          ).items.map((n) => n.id)
+        );
+      assert.deepEqual(
+        timelinePages,
+        expectedMedia.map((n) => n.id)
+      );
     }
+  }
+  const defaultTimeline = await c.call('list', { parent, timeline: true });
+  const byTaken = content.items
+    .filter((n) => n.kind !== 'folder')
+    .sort((a, b) => a.taken - b.taken || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  assert.deepEqual(
+    defaultTimeline.items.map((n) => n.id),
+    byTaken.map((n) => n.id),
+    'timeline without an explicit sort preserves the legacy media taken order'
+  );
+  const captureDate = new Date(50);
+  const captureMonth = `${captureDate.getFullYear()}-${String(captureDate.getMonth() + 1).padStart(2, '0')}`;
+  const constrained = await c.call('list', {
+    parent,
+    timeline: true,
+    sort: 'name',
+    month: captureMonth,
+    place: 'fixture-location'
+  });
+  assert.deepEqual(
+    constrained.items.map((n) => n.name),
+    ['image10.jpg'],
+    'explicit sorting preserves timeline month/place/media filters'
+  );
+  assert.equal(constrained.total, 1);
+  const changedPath = path.join(f.source, 'image1.jpg');
+  await fs.utimes(changedPath, 1500000000, 1500000000);
+  await c.call('scan', {
+    path: f.source,
+    offline: true,
+    directoryKind: 'work',
+    onlineMatch: false
+  });
+  const refreshed = await c.call('get', { id: idFor(changedPath) });
+  const refreshedStat = await fs.stat(changedPath);
+  assert.equal(refreshed.mtime, refreshedStat.mtimeMs, 'real rescan refreshes filesystem mtime');
+  assert.equal(
+    refreshed.birth,
+    refreshedStat.birthtimeMs,
+    'creation remains the actual creation time'
+  );
+  assert.equal(
+    refreshed.content_date,
+    Math.min(refreshedStat.birthtimeMs, refreshedStat.mtimeMs),
+    'the scan refresh also updates the cached content date'
+  );
+});
+
+test('Explorer date keeps copied-folder creation and folders first across ascending/descending page boundaries', async (t) => {
+  const f = await fixture(t);
+  for (const name of ['copied-folder', 'missing-birth', 'older-folder'])
+    await fs.mkdir(path.join(f.source, name));
+  for (const name of ['early.jpg', 'late.jpg']) await fs.writeFile(path.join(f.source, name), '');
+  let c = (f.client = await client(f.data, f));
+  await c.call('scan', {
+    path: f.source,
+    offline: true,
+    directoryKind: 'work',
+    onlineMatch: false
+  });
+  await c.close();
+  const db = new DatabaseSync(path.join(f.data, 'library.sqlite'));
+  try {
+    const update = db.prepare('UPDATE nodes SET birth=?,mtime=? WHERE id=?');
+    for (const [name, birth, modified] of [
+      ['copied-folder', 900, 100],
+      ['missing-birth', null, 700],
+      ['older-folder', 600, 800],
+      ['early.jpg', 10, 5],
+      ['late.jpg', 3000, 4000]
+    ])
+      update.run(birth, modified, idFor(path.join(f.source, name)));
+  } finally {
+    db.close();
+  }
+  c = f.client = await client(f.data, f);
+  t.after(() => c.close());
+  const parent = idFor(f.source);
+  for (const [direction, names] of [
+    ['asc', ['older-folder', 'missing-birth', 'copied-folder', 'early.jpg', 'late.jpg']],
+    ['desc', ['copied-folder', 'missing-birth', 'older-folder', 'late.jpg', 'early.jpg']]
+  ]) {
+    const listing = (limit, offset) =>
+      c.call('list', { parent, sort: 'contentDate', direction, limit, offset });
+    const full = await listing(500, 0);
+    assert.equal(full.folders, 3);
+    assert.equal(full.total, 5);
+    assert.deepEqual(
+      full.items.map((n) => n.name),
+      names,
+      `${direction}: folder primary creation date and fixed folder-before-media segments`
+    );
+    const copied = full.items.find((n) => n.name === 'copied-folder');
+    assert.equal(copied.birth, 900);
+    assert.equal(copied.mtime, 100);
+    assert.equal(copied.content_date, 900, 'copied folder does not choose its older mtime');
+    assert.equal(
+      full.items.find((n) => n.name === 'missing-birth').content_date,
+      700,
+      'folder without a valid creation date uses modification time'
+    );
+    const pages = [];
+    for (let offset = 0; offset < full.total; offset += 2)
+      pages.push(...(await listing(2, offset)).items);
+    assert.deepEqual(
+      pages.map((n) => n.id),
+      full.items.map((n) => n.id)
+    );
+    assert.deepEqual(
+      pages.map((n) => n.kind),
+      ['folder', 'folder', 'folder', 'image', 'image'],
+      `${direction}: media cannot jump ahead when the second page crosses the folder boundary`
+    );
+    assert.equal(new Set(pages.map((n) => n.id)).size, full.total);
+    assert.deepEqual(
+      (await listing(3, 1)).items.map((n) => n.name),
+      names.slice(1, 4)
+    );
   }
 });
 
@@ -274,6 +467,38 @@ test(
         .all(root);
       assert.ok(plan.some((row) => row.detail.includes('nodes_parent_modified')));
       assert.ok(plan.every((row) => !row.detail.includes('TEMP B-TREE')));
+      for (const [prefix, where, params] of [
+        ['parent', 'parent=? AND ', [root]],
+        ['global', '', []]
+      ]) {
+        for (const direction of ['ASC', 'DESC']) {
+          for (const timeline of [false, true]) {
+            const from = timeline ? 'nodes n CROSS JOIN media m ON m.id=n.id' : 'nodes n';
+            const contentPlan = db
+              .prepare(
+                `EXPLAIN QUERY PLAN
+              SELECT n.id AS page_id,n.sortkey AS page_name,n.content_date AS page_order FROM ${from}
+                WHERE ${where}n.missing=0 AND n.kind='image'
+              UNION ALL
+              SELECT n.id AS page_id,n.sortkey AS page_name,n.content_date AS page_order FROM ${from}
+                WHERE ${where}n.missing=0 AND n.kind='video'
+              ORDER BY page_order ${direction},page_name ${direction},page_id ${direction} LIMIT 50 OFFSET 99950`
+              )
+              .all(...params, ...params);
+            assert.ok(
+              contentPlan.filter((row) => row.detail.includes(`nodes_${prefix}_content_date`))
+                .length >= 2
+            );
+            assert.ok(
+              contentPlan.every((row) => !row.detail.includes('TEMP B-TREE')),
+              'content date merges ordered kind indexes instead of sorting 100k rows, including timeline joins'
+            );
+          }
+        }
+      }
+      // Force the real old-library backfill/index transaction over this same fixture.
+      db.exec(`DROP INDEX nodes_parent_content_date; DROP INDEX nodes_global_content_date;
+        DELETE FROM settings WHERE key='browseContentDateVersion';`);
     } finally {
       db.close();
     }
@@ -282,7 +507,7 @@ test(
     const migrationMs = Math.round(performance.now() - migrationStarted);
     t.after(() => c.close());
     const measurements = [];
-    for (const sort of ['name', 'modified', 'date', 'size']) {
+    for (const sort of ['name', 'modified', 'date', 'size', 'contentDate']) {
       for (const direction of ['asc', 'desc']) {
         const started = performance.now();
         const page = await c.call('list', {
@@ -305,6 +530,30 @@ test(
         );
         assert.ok(elapsed < 2000, `${sort}/${direction} RPC ${elapsed.toFixed(1)}ms`);
       }
+    }
+    for (const direction of ['asc', 'desc']) {
+      const started = performance.now();
+      const page = await c.call('list', {
+        filter: 'images',
+        sort: 'contentDate',
+        direction,
+        offset: 99950,
+        limit: 50
+      });
+      const elapsed = performance.now() - started;
+      measurements.push({
+        scope: 'global',
+        sort: 'contentDate',
+        direction,
+        ms: Math.round(elapsed)
+      });
+      assert.equal(page.total, 100000);
+      assert.deepEqual(
+        page.items.map((n) => Number(n.name.match(/\d+/)[0])),
+        Array.from({ length: 50 }, (_, i) => (direction === 'asc' ? 99951 + i : 50 - i))
+      );
+      assert.ok(page.items.every((n) => n.content_date === 2));
+      assert.ok(elapsed < 2000, `global contentDate/${direction} RPC ${elapsed.toFixed(1)}ms`);
     }
     const migrated = await c.call('get', { id: 'fixture-100000' });
     assert.equal(migrated.sortkey, sortKey(migrated.name));
@@ -394,6 +643,72 @@ test('Chinese pinyin and numeric filename pages migrate legacy Unicode keys once
   assert.deepEqual(
     (await c.call('list', { parent, sort: 'name' })).items.map((n) => n.name),
     expected
+  );
+});
+
+test('browse sort preferences persist through settings/init and skip identical writes', async (t) => {
+  const f = await fixture(t);
+  let c = (f.client = await client(f.data, f));
+  assert.deepEqual(
+    (await c.call('init', { lightweight: true })).settings.browseSortPreferences,
+    {}
+  );
+  await c.close();
+  const db = new DatabaseSync(path.join(f.data, 'library.sqlite'));
+  try {
+    db.exec(`CREATE TABLE fixture_pref_writes(value TEXT);
+      CREATE TRIGGER fixture_pref_insert AFTER INSERT ON settings
+        WHEN NEW.key='browseSortPreferences' BEGIN INSERT INTO fixture_pref_writes VALUES(NEW.value); END;
+      CREATE TRIGGER fixture_pref_update AFTER UPDATE ON settings
+        WHEN NEW.key='browseSortPreferences' BEGIN INSERT INTO fixture_pref_writes VALUES(NEW.value); END;`);
+  } finally {
+    db.close();
+  }
+  c = f.client = await client(f.data, f);
+  await c.call('settings', { key: 'browseSortPreferences', value: {} });
+  const key = JSON.stringify(['library', 'c:\\相册\\album2']);
+  const prefs = { [key]: { sort: 'contentDate', direction: 'desc' } };
+  await c.call('settings', { key: 'browseSortPreferences', value: prefs });
+  await c.call('settings', {
+    key: 'browseSortPreferences',
+    value: {
+      [key]: { direction: 'desc', sort: 'contentDate' }
+    }
+  });
+  await assert.rejects(
+    c.call('settings', {
+      key: 'browseSortPreferences',
+      value: {
+        [key]: { sort: 'taken', direction: 'asc' }
+      }
+    }),
+    /排序偏好/
+  );
+  assert.deepEqual(
+    (await c.call('init', { lightweight: true })).settings.browseSortPreferences,
+    prefs
+  );
+  await c.close();
+  const check = new DatabaseSync(path.join(f.data, 'library.sqlite'));
+  try {
+    assert.equal(
+      check.prepare('SELECT COUNT(*) AS n FROM fixture_pref_writes').get().n,
+      1,
+      'initial default and identical canonical preference do not write settings'
+    );
+    assert.deepEqual(
+      JSON.parse(
+        check.prepare('SELECT value FROM settings WHERE key=?').get('browseSortPreferences').value
+      ),
+      prefs
+    );
+  } finally {
+    check.close();
+  }
+  c = f.client = await client(f.data, f);
+  assert.deepEqual(
+    (await c.call('init', { lightweight: true })).settings.browseSortPreferences,
+    prefs
   );
 });
 

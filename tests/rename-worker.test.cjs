@@ -7,7 +7,7 @@ const path = require('node:path');
 const { Worker, MessageChannel } = require('node:worker_threads');
 const { DatabaseSync } = require('node:sqlite');
 const { createHash } = require('node:crypto');
-const { idFor } = require('../src/model.cjs');
+const { idFor, thumbnailKey } = require('../src/model.cjs');
 
 const windows = {
   skip: process.platform !== 'win32' ? 'Actual Windows no-overwrite rename backend' : false,
@@ -35,7 +35,8 @@ async function client(dataDir, config = {}) {
     const config = workerData.fixture;
     const control = workerData.control;
     const waiting = new Map(), released = new Set();
-    let gateUsed = false, occupied = false, commitFailed = false;
+    const usedGates = new Set();
+    let occupied = false, commitFailed = false;
     const emit = (event, data) => parentPort.postMessage({ event, data });
     const forbid = (kind) => {
       emit('forbidden-' + kind, { kind });
@@ -53,12 +54,34 @@ async function client(dataDir, config = {}) {
     });
     control.unref();
     async function gate(point, data) {
-      if (gateUsed || released.has(point) || config.holdAt !== point) return;
-      gateUsed = true;
+      if (usedGates.has(point) || released.has(point) ||
+          ![config.holdAt, config.holdResourceAt, config.holdWriteAt].includes(point)) return;
+      usedGates.add(point);
       const pending = new Promise((resolve) => waiting.set(point, resolve));
       emit('test-gate', { point, ...data });
       await pending;
     }
+    const nativeStat = fs.stat.bind(fs), nativeOpen = fs.open.bind(fs), nativeRealpath = fs.realpath.bind(fs);
+    fs.stat = async (file, ...args) => {
+      if (file === config.holdStatPath) await gate('resource-stat', { file });
+      return nativeStat(file, ...args);
+    };
+    fs.open = async (file, ...args) => {
+      const handle = await nativeOpen(file, ...args);
+      if (file === config.holdReadPath && args[0] === 'r') {
+        const nativeRead = handle.read.bind(handle);
+        handle.read = async (...readArgs) => {
+          await gate('resource-read', { file });
+          if (config.failResourceRead) throw new Error('injected resource read failure');
+          return nativeRead(...readArgs);
+        };
+      }
+      return handle;
+    };
+    fs.realpath = async (file, ...args) => {
+      if (file === config.holdRealpath) await gate('write-realpath', { file });
+      return nativeRealpath(file, ...args);
+    };
     const originalLoad = Module._load;
     Module._load = function(request, parent, isMain) {
       if (request === 'sharp') {
@@ -232,7 +255,15 @@ async function client(dataDir, config = {}) {
     },
     async close() {
       if (closed) return;
-      for (const point of ['before-move', 'after-move', 'before-complete']) c.release(point);
+      for (const point of [
+        'resource-stat',
+        'resource-read',
+        'write-realpath',
+        'before-move',
+        'after-move',
+        'before-complete'
+      ])
+        c.release(point);
       try {
         await c.call('shutdown');
       } catch {}
@@ -546,6 +577,163 @@ test(
     await annotation(c, finalAlbum, finalImage);
     assert.ok(c.events.slice(beforeRelease).some((event) => event.event === 'test-media-start'));
     c.safe();
+  }
+);
+
+test(
+  'worker admits ancestor rename after existing resource reads and drains their complete RPC lifetime',
+  windows,
+  async (t) => {
+    for (const resource of ['thumb', 'source', 'asset', 'asset-error']) {
+      await t.test(resource, async (t) => {
+        const f = await fixture(t),
+          seeded = await f.seed();
+        const cover = path.join(f.data, 'covers', '42.webp');
+        let thumbPath;
+        if (resource === 'thumb' || resource === 'source') {
+          await fs.mkdir(path.dirname(cover), { recursive: true });
+          await fs.writeFile(cover, png);
+          const stat = await fs.stat(cover);
+          const album = f.sql((db) => {
+            db.prepare("UPDATE nodes SET cover='subject:42' WHERE id=?").run(idFor(f.album));
+            return { ...db.prepare('SELECT * FROM nodes WHERE id=?').get(idFor(f.album)) };
+          });
+          const key = thumbnailKey(
+            { ...album, path: cover, mtime: stat.mtimeMs, bytes: stat.size },
+            512
+          );
+          thumbPath = path.join(f.data, 'thumbnails', key + '.webp');
+          await fs.mkdir(path.dirname(thumbPath), { recursive: true });
+          await fs.writeFile(thumbPath, png);
+          f.sql((db) =>
+            db
+              .prepare('INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)')
+              .run(key, thumbPath, cover, 1, png.length)
+          );
+        }
+        await seeded.close();
+        const asset = resource.startsWith('asset');
+        const point = asset ? 'resource-read' : 'resource-stat';
+        const c = await f.open({
+          holdResourceAt: point,
+          holdStatPath: asset ? undefined : cover,
+          holdReadPath: asset ? f.image : undefined,
+          failResourceRead: resource === 'asset-error',
+          holdAt: 'before-move'
+        });
+        const reading = observed(
+          c.call(asset ? 'asset' : resource, {
+            id: idFor(asset ? f.image : f.album),
+            size: 512
+          })
+        );
+        await c.wait('test-gate', (data) => data.point === point);
+        await assert.rejects(c.call('cleanCache', { mode: 'all-thumbnails' }), /正在|稍后/u);
+        if (thumbPath) assert.equal(hash(await fs.readFile(thumbPath)), hash(png));
+        const renaming = observed(c.call('rename', { id: idFor(f.album), name: 'Drained Album' }));
+        await c.call('get', { id: idFor(f.album) }); // Request-order barrier, not a timer.
+        assert.equal(
+          renaming.settled,
+          false,
+          'rename must admit and wait for the pre-existing resource RPC: ' +
+            (renaming.settled ? (await renaming.promise).error?.message : 'still waiting')
+        );
+        assert.equal(
+          c.events.some(({ event, data }) => event === 'test-gate' && data.point === 'before-move'),
+          false
+        );
+        assert.deepEqual(
+          await f.journals(),
+          [],
+          'no filesystem intent before resource handles finish'
+        );
+        const later = observed(c.call('asset', { id: idFor(f.image) }));
+        await c.call('get', { id: idFor(f.album) });
+        assert.equal(later.settled, false, 'a later resource waits outside the drain snapshot');
+        await assert.rejects(
+          c.call('settings', { key: 'metadataOnboardingSeen', value: true }),
+          /重命名|稍后/u
+        );
+        c.release(point);
+        const read = await reading.promise;
+        if (resource === 'asset-error')
+          assert.match(read.error?.message, /injected resource read failure/u);
+        else {
+          assert.ok(read.value);
+          if (resource === 'thumb') assert.equal(read.value.path, thumbPath);
+          if (resource === 'source') assert.equal(read.value.file, cover);
+          if (resource === 'asset') assert.equal(read.value.path, f.image);
+        }
+        await c.wait('test-gate', (data) => data.point === 'before-move');
+        assert.equal(
+          later.settled,
+          false,
+          'later resources cannot join and deadlock the old-resource drain'
+        );
+        c.release('before-move');
+        const result = await renaming.promise;
+        assert.ok(result.value, result.error?.message);
+        assert.equal(result.value.path, path.join(f.source, 'Drained Album'));
+        assert.ok(
+          (await later.promise).error,
+          'old IDs are rejected only after the successful rename'
+        );
+        assert.ok(
+          await c.call('asset', {
+            id: idFor(path.join(f.source, 'Drained Album', 'Nested', 'image.png'))
+          })
+        );
+        assert.equal(
+          hash(await fs.readFile(path.join(f.source, 'Drained Album', 'Nested', 'image.png'))),
+          hash(png)
+        );
+        await absent(f.album);
+        assert.deepEqual(await f.journals(), []);
+        // Completed and failed resource leases must both leave the original cache-management gate usable.
+        await c.call('cleanCache', { mode: 'unused' });
+        f.sql((db) => assert.equal(db.prepare('SELECT count(*) n FROM rename_commits').get().n, 1));
+      });
+    }
+  }
+);
+
+test(
+  'worker still rejects rename while a true writer is held alongside a resource read',
+  windows,
+  async (t) => {
+    const f = await fixture(t),
+      seeded = await f.seed();
+    await seeded.close();
+    const c = await f.open({
+      holdResourceAt: 'resource-read',
+      holdReadPath: f.image,
+      holdWriteAt: 'write-realpath',
+      holdRealpath: f.album
+    });
+    const reading = observed(c.call('asset', { id: idFor(f.image) }));
+    await c.wait('test-gate', (data) => data.point === 'resource-read');
+    const writing = observed(c.call('selectCoverPath', { id: idFor(f.album), file: f.image }));
+    await c.wait('test-gate', (data) => data.point === 'write-realpath');
+    for (const releaseResource of [false, true]) {
+      if (releaseResource) {
+        c.release('resource-read');
+        assert.ok((await reading.promise).value);
+      }
+      await assert.rejects(
+        c.call('rename', { id: idFor(f.album), name: 'Blocked Album' }),
+        /请先等待/u
+      );
+      assert.equal(writing.settled, false);
+      await absent(path.join(f.source, 'Blocked Album'));
+      assert.deepEqual(await f.journals(), []);
+    }
+    c.release('write-realpath');
+    assert.ok((await writing.promise).value);
+    const renamed = await c.call('rename', { id: idFor(f.album), name: 'Writer Finished Album' });
+    assert.equal(renamed.renamed, true);
+    const album = await c.call('get', { id: renamed.id });
+    assert.equal(album.cover, idFor(path.join(renamed.path, 'Nested', 'image.png')));
+    assert.equal(album.manual_cover, 1);
   }
 );
 

@@ -1,11 +1,13 @@
 'use strict';
 const { normalize } = require('./model.cjs');
 
-// Offline user-confirmed folder bindings reviewed 2026-11-02. Source rows must
+// Offline user-confirmed folder bindings reviewed 2026-11-02 and 2026-11-03. Source rows must
 // have manual_subject=1 and matching metadata ID, supported type and title.
 // Automatic/cover-only confirmations are not promoted into this truth set.
 // Names only: no personal paths, credentials, images or network access.
-const LEARNED_BINDINGS_VERSION = 1;
+// Preserve all earlier facts. Conflicting later manual choices remain ambiguous;
+// exact personal examples do not establish series, sequel or adaptation rules.
+const LEARNED_BINDINGS_VERSION = 2;
 const records = [
   {
     folder_name: '16bit的感动',
@@ -1263,6 +1265,118 @@ const records = [
     name: '龍ヶ嬢七々々の埋蔵金',
     name_cn: '龙娘七七七埋藏的宝藏',
     collection: { wish: 1057, collect: 5152, doing: 385, on_hold: 399, dropped: 361 }
+  },
+  {
+    folder_name: '塞尔达传说The Legend of Zelda',
+    subject_id: 62229,
+    type: 4,
+    name: 'ゼルダの伝説 ブレス オブ ザ ワイルド',
+    name_cn: '塞尔达传说 旷野之息',
+    collection: {
+      wish: 1595,
+      collect: 8355,
+      doing: 1407,
+      on_hold: 585,
+      dropped: 176
+    }
+  },
+  {
+    folder_name: '密特罗德metroid',
+    subject_id: 339162,
+    type: 4,
+    name: 'メトロイド ドレッド',
+    name_cn: '密特罗德 生存恐惧',
+    collection: {
+      wish: 369,
+      collect: 881,
+      doing: 75,
+      on_hold: 71,
+      dropped: 40
+    }
+  },
+  {
+    folder_name: '巫师3The Witcher 3',
+    subject_id: 262220,
+    type: 4,
+    name: 'The Witcher 3: Wild Hunt – Blood and Wine',
+    name_cn: '巫师3：狂猎－血与酒',
+    collection: {
+      wish: 38,
+      collect: 398,
+      doing: 19,
+      on_hold: 9,
+      dropped: 3
+    }
+  },
+  {
+    folder_name: '无力系的我，乐观派的她',
+    subject_id: 598429,
+    type: 4,
+    name: '无力系的我，乐观派的她',
+    name_cn: '无力系的我，乐观派的她',
+    collection: {
+      wish: 2,
+      collect: 1,
+      doing: 0,
+      on_hold: 0,
+      dropped: 0
+    }
+  },
+  {
+    folder_name: '海蓝星之梦',
+    subject_id: 565014,
+    type: 4,
+    name: '海蓝星之梦',
+    name_cn: '海蓝星之梦',
+    collection: {
+      wish: 21,
+      collect: 35,
+      doing: 5,
+      on_hold: 4,
+      dropped: 1
+    }
+  },
+  {
+    folder_name: '凡人修仙传',
+    subject_id: 518425,
+    type: 2,
+    name: '凡人修仙传 第四季',
+    name_cn: '凡人修仙传 第四季',
+    collection: {
+      wish: 449,
+      collect: 3249,
+      doing: 2149,
+      on_hold: 72,
+      dropped: 119
+    }
+  },
+  {
+    folder_name: '崩坏3',
+    subject_id: 412301,
+    type: 2,
+    name: '黄金庭院：冬日里的新年愿望',
+    name_cn: '黄金庭院：冬日里的新年愿望',
+    collection: {
+      wish: 105,
+      collect: 824,
+      doing: 42,
+      on_hold: 17,
+      dropped: 30
+    }
+  },
+  {
+    folder_name: '游戏人生No Game No Life',
+    subject_id: 79227,
+    type: 2,
+    name: 'ノーゲーム・ノーライフ',
+    name_cn: '游戏人生',
+    collection: {
+      wish: 3894,
+      collect: 46470,
+      doing: 1720,
+      on_hold: 1002,
+      dropped: 587
+    }
   }
 ];
 const byName = new Map();

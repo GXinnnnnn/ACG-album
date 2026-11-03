@@ -534,6 +534,7 @@ async function densityEvidence(value) {
         value,
         count: cards.length,
         offsetX: grid.offsetX,
+        gap: grid.gap,
         rect: rect.toJSON(),
         cards,
         viewport: {
@@ -581,12 +582,12 @@ async function densityEvidence(value) {
   const columns = [...new Set(sample.positions.map((pos) => Math.round(pos.left)))].sort(
     (a, b) => a - b
   );
-  closeTo(columns[0], sample.offsetX, 'First column follows the centered grid offset', 1);
-  closeTo(
-    columns[0],
-    sample.rect.width - columns.at(-1) - sample.cards[0].rect.width,
-    'Actual columns leave balanced horizontal margins',
-    2
+  assert.equal(sample.offsetX, 0, 'Density keeps the internal grid left aligned');
+  closeTo(columns[0], 0, 'First column starts at the grid left edge', 1);
+  const rightRemainder = sample.rect.width - columns.at(-1) - sample.cards[0].rect.width;
+  assert.ok(
+    rightRemainder >= -1 && rightRemainder < sample.cards[0].rect.width + sample.gap + 1,
+    'Unused horizontal space stays on the right and is less than one column pitch'
   );
   const rowTops = new Map();
   for (const card of sample.cards) {

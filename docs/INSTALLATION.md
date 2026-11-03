@@ -1,16 +1,16 @@
 # 安装与使用
 
-本文对应 ACG-album **1.2.0**，适用于 Windows x64。版本变化见 [1.2.0 说明](RELEASE_NOTES_1.2.0.md)，完整功能见 [README](../README.md)。下载后按该 Release 的大小与 SHA-256 校验清单核对附件；源码和成品的具体验证范围分别记录于随附验证报告。
+本文对应 ACG-album **1.2.1**，适用于 Windows x64。版本变化见 [1.2.1 说明](RELEASE_NOTES_1.2.1.md)，完整功能见 [README](../README.md)。下载后按该 Release 的大小与 SHA-256 校验清单核对附件；源码和成品的具体验证范围分别记录于随附验证报告。
 
 ## 选择安装包
 
-打开 [1.2.0 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.0)，三种安装包选择一种即可：
+打开 [1.2.1 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.1)，三种安装包选择一种即可：
 
 | 版本     | 下载                                                                                                                                     | 随附内容                                                   |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Standard | [ACG-album-Setup-1.2.0-Standard.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.0/ACG-album-Setup-1.2.0-Standard.exe) | 软件本体，不附带离线 Bangumi 索引，可联网匹配              |
-| Lite     | [ACG-album-Setup-1.2.0-Lite.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.0/ACG-album-Setup-1.2.0-Lite.exe)         | 软件本体与精简名称、别名、类型及关联索引，日常使用推荐     |
-| Full     | [ACG-album-Setup-1.2.0-Full.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.0/ACG-album-Setup-1.2.0-Full.exe)         | 软件本体与完整离线资料，额外保留长简介、infobox 和原始记录 |
+| Standard | [ACG-album-Setup-1.2.1-Standard.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Standard.exe) | 软件本体，不附带离线 Bangumi 索引，可联网匹配              |
+| Lite     | [ACG-album-Setup-1.2.1-Lite.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Lite.exe)         | 软件本体与精简名称、别名、类型及关联索引，日常使用推荐     |
+| Full     | [ACG-album-Setup-1.2.1-Full.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Full.exe)         | 软件本体与完整离线资料，额外保留长简介、infobox 和原始记录 |
 
 Lite 和 Full 的名称覆盖及匹配规则相同，Full 不会仅因资料更完整而提高识别准确度。所有版本都不附带封面图片；在线封面、当前详情和受限条目访问仍取决于网络及账号权限。数据库快照、来源与占用说明见 [本地检索数据说明](LOCAL_SEARCH_DATA.md)。最终安装包大小、随附索引和 SHA-256 以正式发布附件为准。
 
@@ -54,6 +54,14 @@ Standard、Lite、Full 使用同一应用身份与个人资料格式。退出相
 | 强制终止、断电、存储损坏     | 不作无损续作保证；保留资料和原目录，先检查实际状态               |
 
 导入选择、扫描、资料补齐和取消收尾期间，添加按钮显示忙状态。取消请求发出后，系统仍需完成正在处理的步骤；等待状态结束，再开始新导入。不要把明确取消当作暂停按钮。
+
+## 卡片大小、目录树与排序
+
+新资料库首次打开时使用当前窗口的「中」卡片；尚未调整时，最大化或改变窗口宽度会继续使用适配后的中档。手动点击档位、拖动尺寸滑杆或使用 Ctrl＋滚轮后，会保存实际数值，下次打开恢复最后选择；点击当前中档也会记住它。旧资料中已经明确保存的尺寸继续优先，不会因升级统一改成中档。
+
+左侧展开的目录树连续滚动，只列出文件夹；窗口变矮时仍保留底部状态区。后台索引和目录变化校验期间继续显示已加载的列表，新增、移除与改名结果在校验完成后更新。导入尚未发现的目录仍需等待实际扫描结果。
+
+浏览排序按当前页面和目录分别记忆。按日期排序时文件夹优先，文件夹使用创建时间，带可用拍摄信息的照片使用拍摄时间，其他文件使用有效文件系统时间；缺失创建时间时回退修改时间。创建日期和修改日期还可以独立选择，时间线继续按拍摄月份组织。
 
 ## 重命名与刷新
 

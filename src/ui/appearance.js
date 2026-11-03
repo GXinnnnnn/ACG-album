@@ -96,8 +96,16 @@
       if (!frame) frame = requestAnimationFrame(preview);
     }
     function set(key, value) {
-      if (!spec.valid(key, value) || settings()[key] === value) return;
+      if (
+        !spec.valid(key, value) ||
+        (settings()[key] === value &&
+          !(key === 'density' && settings().densityConfigured === false))
+      )
+        return;
       settings()[key] = value;
+      // Selecting the current medium is still an explicit numeric preference.
+      // Record that intent before an asynchronous save or window resize can run.
+      if (key === 'density') settings().densityConfigured = true;
       revisions[key] = (revisions[key] || 0) + 1;
       dirty.set(key, value);
       if (key === 'density') {
@@ -178,6 +186,12 @@
       const merged = { ...incoming };
       for (const key of Object.keys(spec.defaults))
         if (dirty.has(key) || (revisions[key] || 0) !== (started[key] || 0)) delete merged[key];
+      // A read started during a save can finish after dirty has been cleared.
+      // Keep the explicit width authoritative for the remainder of this session.
+      if (revisions.density) {
+        delete merged.density;
+        delete merged.densityConfigured;
+      }
       return merged;
     }
     return { set, flush, mount, sync, snapshot, mergeSummary };

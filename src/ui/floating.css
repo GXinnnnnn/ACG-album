@@ -837,45 +837,51 @@ h1 {
 .album-card:not(.media-card) .card-subtitle {
   margin-top: 6px;
 }
+/* Keep a grouped five-digit count and the full 10.0 rating on one centered
+   line, including the smallest card. Insets and spacing share its scale. */
 #viewport .album-card:not(.media-card) .card-bottom-overlay {
   bottom: 8px;
-  left: 8px;
-  right: 8px;
+  left: calc(5px * var(--card-scale, 1));
+  right: calc(5px * var(--card-scale, 1));
   padding: 0;
-  gap: calc(6px * var(--card-scale, 1));
-  font-size: calc(17px * var(--card-scale, 1));
+  align-items: center;
+  gap: calc(2px * var(--card-scale, 1));
+  font-size: calc(14px * var(--card-scale, 1));
   line-height: 1.2;
 }
 #viewport .album-card:not(.media-card) .card-bottom-overlay > svg {
+  display: block;
   width: calc(20px * var(--card-scale, 1));
   height: calc(20px * var(--card-scale, 1));
   flex-shrink: 0;
 }
-.album-card:not(.media-card) .card-bottom-overlay > span:not(.card-rating) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.album-card:not(.media-card) .card-count {
+#viewport .album-card:not(.media-card) .card-count {
   display: inline-flex;
   align-items: center;
-  transform: translateY(1px);
+  flex-shrink: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  transform: none;
 }
-.album-card:not(.media-card) .card-count-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+#viewport .album-card:not(.media-card) .card-count-value {
+  flex-shrink: 0;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
-.album-card:not(.media-card) .card-count-unit {
+#viewport .album-card:not(.media-card) .card-count-unit {
   flex-shrink: 0;
   white-space: pre;
 }
 #viewport .album-card:not(.media-card) .card-rating {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
+  padding: calc(3px * var(--card-scale, 1));
   font-size: calc(11px * var(--card-scale, 1));
   line-height: 1.4;
+  white-space: nowrap;
 }
 .collection-tile {
   border-radius: 24px;

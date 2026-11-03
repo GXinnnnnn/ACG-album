@@ -45,7 +45,7 @@ function updateMediaView() {
   const timeline = S.view === 'timeline';
   $('.app-shell').dataset.view = S.view;
   $('#timeline-controls').hidden = !timeline;
-  $('#sort').disabled = $('#sort-direction').disabled = timeline;
+  $('#sort').disabled = $('#sort-direction').disabled = false;
   $$('[data-filter]').forEach((b) => {
     b.disabled = timeline;
   });

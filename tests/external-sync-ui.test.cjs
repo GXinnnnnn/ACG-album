@@ -41,7 +41,7 @@ function element() {
     }
   };
 }
-function harness(implementation) {
+function harness(implementation, { realTree = false } = {}) {
   const root = {
     id: 'root-a',
     root: 'root-a',
@@ -97,7 +97,12 @@ function harness(implementation) {
       [root.id, root],
       [child.id, child]
     ]),
-    pages: new Map()
+    pages: new Map(),
+    generation: 0,
+    loading: new Set(),
+    requests: new Map(),
+    positions: new Map(),
+    errors: new Map()
   };
   const grid = {
     active: true,
@@ -210,6 +215,33 @@ function harness(implementation) {
     section(source, 'async function refreshGrowingView(', 'const importChoices =') +
     section(source, 'window.album.onEvent((event)', 'initializeDisplayControls();');
   new vm.Script(code, { filename }).runInContext(context);
+  if (realTree) {
+    const navigation = fs.readFileSync(path.join(__dirname, '../src/ui/navigation.js'), 'utf8');
+    Object.assign(context, {
+      document: { activeElement: null },
+      treeModel: require('../src/ui/sidebar-tree-model.js'),
+      treeLayout: null,
+      treeRecovery: null,
+      treeFocusIntent: 0,
+      treeRetained: new Map(),
+      treeElements: new Map(),
+      treePageOffset: (ordinal) => {
+        const { PAGE_SIZE } = context.treeModel;
+        return Math.floor(ordinal / PAGE_SIZE) * PAGE_SIZE;
+      },
+      treePageKey: (id, offset) => id + ':' + offset,
+      treeProtectedPages: () => new Set(),
+      renderFolderTree() {
+        log.push(['tree-render']);
+      }
+    });
+    $('#category-nav').contains = () => false;
+    new vm.Script(
+      section(navigation, 'function collapseBranch(', 'async function toggleTree(') +
+        '\nwindow.invalidateFolderTree = invalidateFolderTree;',
+      { filename: 'navigation.js' }
+    ).runInContext(context);
+  }
   new vm.Script(
     section(
       mediaSource,
@@ -267,6 +299,244 @@ function rename(old, id, nextPath) {
     node: { ...old, id, root: id, path: nextPath, name: nextPath.split('\\').at(-1) }
   };
 }
+
+function treeRenameHarness(oldList) {
+  let h, nextRoot, nextChild;
+  h = harness(
+    (command, args) => {
+      if (command === 'list') {
+        if (args.parent === h.root.id) return oldList ? oldList.promise : { items: [], total: 0 };
+        return {
+          items: args.parent === nextRoot.id ? [nextChild] : [],
+          total: args.parent === nextRoot.id ? 1 : 0
+        };
+      }
+      if (args.path) return nextChild;
+      return args.id === nextRoot.id ? nextRoot : args.id === nextChild.id ? nextChild : null;
+    },
+    { realTree: true }
+  );
+  h.root.folders = 1;
+  const event = rename(h.root, 'root-b', 'C:\\Fixture\\Moved');
+  nextRoot = event.node;
+  nextChild = {
+    ...h.child,
+    id: 'child-b',
+    root: nextRoot.id,
+    parent: nextRoot.id,
+    path: nextRoot.path + '\\Nested'
+  };
+  h.context.loadSummary = async () => {
+    h.log.push(['summary']);
+    h.S.roots = [nextRoot];
+  };
+  return Object.assign(h, { event, nextRoot, nextChild });
+}
+
+test('real tree validation waits for external ID remapping and fresh roots across later ordinary revisions', async () => {
+  const h = treeRenameHarness();
+  h.changed({ root: h.nextRoot.id, revision: 20, renames: [h.event] });
+  h.changed({ root: h.nextRoot.id, revision: 21 });
+  await h.idle();
+  assert.deepEqual(
+    [...h.folderTree.open],
+    [h.root.id, h.child.id],
+    'queued changes must retain the expanded old identities until remapping'
+  );
+  assert.equal(h.calls.filter(([command]) => command === 'list').length, 0);
+  await h.flush();
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+  assert.equal(h.folderTree.openNodes.get(h.nextChild.id).path, h.nextChild.path);
+  assert.equal(h.state().dirty, false);
+  assert.ok(h.calls.some(([command, args]) => command === 'list' && args.parent === h.nextRoot.id));
+});
+
+test('a structural event cancels an already waiting real tree response without discarding expanded nodes or cached pages', async () => {
+  const gate = deferred(),
+    h = treeRenameHarness(gate);
+  h.context.window.invalidateFolderTree();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(h.folderTree.requests.size, 1);
+  const pages = h.folderTree.pages;
+  h.changed({ root: h.nextRoot.id, revision: 20, renames: [h.event] });
+  assert.equal(
+    h.folderTree.requests.size,
+    0,
+    'obsolete request tokens must not block the remapped identities'
+  );
+  assert.equal(h.folderTree.loading.size, 0);
+  assert.equal(h.folderTree.pages, pages);
+  gate.resolve({ items: [], total: 0 });
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.root.id, h.child.id]);
+  await h.flush();
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+});
+
+test('viewer-open changes retain real expanded branches until close and ordinary no-rename changes still revalidate', async () => {
+  const h = treeRenameHarness();
+  h.$('#viewer').open = true;
+  h.changed({ renames: [h.event] });
+  h.changed({ root: h.nextRoot.id, revision: 21 });
+  await h.idle();
+  await h.flush();
+  assert.deepEqual([...h.folderTree.open], [h.root.id, h.child.id]);
+  await h.close();
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+  const generation = h.folderTree.generation;
+  h.changed({ root: h.nextRoot.id, revision: 22 });
+  await h.flush();
+  await h.idle();
+  assert.ok(h.folderTree.generation > generation);
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+});
+
+test('the real manual rename form guards deferred tree responses and commits its preserved branches after the rename completes', async () => {
+  const oldList = deferred(),
+    result = deferred(),
+    h = treeRenameHarness(oldList);
+  new vm.Script(section(source, 'function renameParts(', 'function renamedPath('), {
+    filename
+  }).runInContext(h.context);
+  const dialog = h.$('#modal');
+  dialog.classList = { add() {} };
+  h.context.modalGeneration = 0;
+  h.context.openModal = () => {
+    dialog.open = true;
+    return dialog;
+  };
+  h.context.closeModal = () => {
+    dialog.open = false;
+  };
+  h.$('#rename-form').isConnected = true;
+  h.$('#rename-name').select = () => {};
+  h.$('#rename-save').setAttribute = () => {};
+  const api = h.context.api;
+  h.context.api = (command, args) => (command === 'rename' ? result.promise : api(command, args));
+  h.context.window.invalidateFolderTree();
+  await Promise.resolve();
+  await Promise.resolve();
+  h.context.renameModal(h.root);
+  h.$('#rename-name').value = 'Moved';
+  const saving = h.$('#rename-form').onsubmit({ preventDefault() {} });
+  assert.equal(h.folderTree.requests.size, 0);
+  oldList.resolve({ items: [], total: 0 });
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.root.id, h.child.id]);
+  h.changed({ root: h.nextRoot.id, revision: 20, rename: { ...h.event, external: false } });
+  await h.flush();
+  assert.deepEqual([...h.folderTree.open], [h.root.id, h.child.id]);
+  result.resolve({ ...h.event, external: false });
+  await saving;
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+  assert.equal(h.state().dirty, false);
+});
+
+test('a later revision during summary refresh postpones real tree validation until the next complete structural batch', async () => {
+  const h = treeRenameHarness(),
+    gate = deferred();
+  let entered;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  let reads = 0;
+  h.context.loadSummary = async () => {
+    reads++;
+    if (reads === 1) {
+      entered();
+      await gate.promise;
+    }
+    h.S.roots = [h.nextRoot];
+  };
+  h.changed({ renames: [h.event] });
+  const running = h.flush();
+  await ready;
+  h.changed({ root: h.nextRoot.id, revision: 21 });
+  gate.resolve();
+  await running;
+  await h.idle();
+  assert.equal(reads, 2);
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+  assert.equal(h.state().dirty, false);
+});
+
+test('a second rename during the remapped summary cannot load the obsolete intermediate directory or prune its real tree branch', async () => {
+  const h = treeRenameHarness(),
+    gate = deferred();
+  let entered;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const finalRoot = { ...h.nextRoot, id: 'root-c', root: 'root-c', path: 'C:\\Fixture\\Final' },
+    finalChild = {
+      ...h.nextChild,
+      id: 'child-c',
+      root: finalRoot.id,
+      parent: finalRoot.id,
+      path: finalRoot.path + '\\Nested'
+    };
+  const api = h.context.api;
+  h.context.api = (command, args) => {
+    if (command === 'list' && args.parent === finalRoot.id)
+      return Promise.resolve({ items: [finalChild], total: 1 });
+    if (command === 'get' && args.path === finalChild.path) return Promise.resolve(finalChild);
+    return api(command, args);
+  };
+  let reads = 0;
+  h.context.loadSummary = async () => {
+    reads++;
+    if (reads === 1) {
+      entered();
+      await gate.promise;
+    }
+    h.S.roots = [finalRoot];
+  };
+  const load = h.context.loadPage;
+  h.context.loadPage = async (...args) => {
+    assert.notEqual(
+      h.S.parent,
+      h.nextChild.id,
+      'the intermediate ID is already absent after the second rename'
+    );
+    await load(...args);
+  };
+  h.changed({ renames: [h.event] });
+  const running = h.flush();
+  await ready;
+  h.changed({
+    renames: [{ ...rename(h.nextRoot, finalRoot.id, finalRoot.path), node: finalRoot }]
+  });
+  gate.resolve();
+  await running;
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [finalRoot.id, finalChild.id]);
+  assert.equal(h.S.parent, finalChild.id);
+});
+
+test('a rename arriving during a missing-directory lookup blocks recovery from pruning branches awaiting identity remapping', async () => {
+  const h = treeRenameHarness(),
+    gate = deferred(),
+    api = h.context.api;
+  h.context.api = (command, args) =>
+    command === 'get' && args.id === h.child.id ? gate.promise : api(command, args);
+  const running = h.context.refreshGrowingView();
+  await Promise.resolve();
+  await Promise.resolve();
+  h.changed({ renames: [h.event] });
+  gate.resolve({ ...h.child, missing: 1 });
+  await running;
+  assert.equal(h.S.parent, h.child.id);
+  assert.deepEqual([...h.folderTree.open], [h.root.id, h.child.id]);
+  assert.equal(h.S.history.length, 2);
+  await h.flush();
+  await h.idle();
+  assert.deepEqual([...h.folderTree.open], [h.nextRoot.id, h.nextChild.id]);
+});
 
 test('external rename chains compose before resolving current descendants and preserve navigation and cached items', async () => {
   let h;

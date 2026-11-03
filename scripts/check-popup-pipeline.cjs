@@ -701,30 +701,138 @@ async function closeApp() {
         await fs.writeFile(path.join(added, 'new.png'), png, { flag: 'wx' });
         await rpc('import', { onlineMatch: false, subjectTypes: [4], directoryKind: 'work' });
         await idle();
-        // New name sorts after the 12-item first page; verify production tree paging as well.
-        await expect(
-          page.locator('#category-nav .tree-pager button').filter({ hasText: '下一页' }).last()
-        ).toBeEnabled();
-        await page
-          .locator('#category-nav .tree-pager button')
-          .filter({ hasText: '下一页' })
-          .last()
-          .click();
-        await expect(page.locator('.tree-node[data-node-id="' + idFor(added) + '"]')).toBeVisible();
-        await page
-          .locator('#category-nav .tree-pager button')
-          .filter({ hasText: '上一页' })
-          .last()
-          .click();
-        await expect(
-          page.locator('.tree-node[data-node-id="' + album.id + '"] > [aria-selected="true"]')
-        ).toBeVisible();
-        assert.equal(await page.evaluate(() => S.current.id), album.id);
-        assert.equal((await rpc('init')).stats.images, 25);
-        report.samples.push({
-          realStructuralImport: { added: idFor(added), selected: album.id, generatedImages: 25 }
+        // A short real viewport makes the thirteenth sibling require continuous scrolling.
+        const originalSize = await app.evaluate(({ BrowserWindow }) => {
+          const win = BrowserWindow.getAllWindows()[0],
+            size = win.getContentSize();
+          win.setContentSize(1440, 700);
+          return size;
         });
-        await shot('real-structural-tree-selection');
+        const sampleTreeGeometry = async (label) => {
+          const measured = await page.evaluate(
+            ({ ids }) => {
+              const measure = (el) => {
+                if (!el) return null;
+                const rect = el.getBoundingClientRect(),
+                  style = getComputedStyle(el);
+                return {
+                  tag: el.tagName,
+                  id: el.id,
+                  className: el.className,
+                  rect: {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.bottom,
+                    left: rect.left
+                  },
+                  clientWidth: el.clientWidth,
+                  clientHeight: el.clientHeight,
+                  scrollTop: el.scrollTop,
+                  scrollHeight: el.scrollHeight,
+                  overflowX: style.overflowX,
+                  overflowY: style.overflowY,
+                  display: style.display,
+                  visibility: style.visibility,
+                  clipPath: style.clipPath,
+                  transform: style.transform
+                };
+              };
+              const host = document.querySelector('#category-nav'),
+                selected = host.querySelector(
+                  '.tree-node[data-node-id="' + ids[1] + '"] > [aria-selected="true"]'
+                ),
+                ancestors = [];
+              for (let el = selected?.parentElement || host; el; el = el.parentElement)
+                ancestors.push(measure(el));
+              return {
+                viewport: { width: innerWidth, height: innerHeight },
+                selectedId: typeof S !== 'undefined' ? S.current?.id : null,
+                host: measure(host),
+                selected: measure(selected),
+                ancestors,
+                rows: ids.map((id) => {
+                  const group = host.querySelector('.tree-node[data-node-id="' + id + '"]'),
+                    descriptor = group?.treeDescriptor;
+                  return {
+                    id,
+                    group: measure(group),
+                    row: measure(group?.querySelector('.tree-row')),
+                    inlineTop: group?.style.top,
+                    logical: descriptor
+                      ? {
+                          index: descriptor.index,
+                          ordinal: descriptor.ordinal,
+                          depth: descriptor.depth,
+                          parent: descriptor.parent?.id
+                        }
+                      : null
+                  };
+                }),
+                activeElement: measure(document.activeElement)
+              };
+            },
+            { ids: [idFor(collection), album.id, idFor(added)] }
+          );
+          report.samples.push({ realStructuralTreeGeometry: { label, ...measured } });
+        };
+        try {
+          await page.waitForFunction(() => innerWidth === 1440 && innerHeight === 700);
+          await sampleTreeGeometry('700-before-scroll');
+          await expect
+            .poll(() => page.locator('#category-nav').evaluate((host) => host.clientHeight))
+            .toBeGreaterThanOrEqual(117);
+          await expect(page.locator('#category-nav .tree-pager')).toHaveCount(0);
+          const host = page.locator('#category-nav'),
+            box = await host.boundingBox();
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.wheel(0, 2000);
+          await page.waitForFunction(() => {
+            const host = document.querySelector('#category-nav');
+            return (
+              host.scrollTop > 0 && host.scrollTop + host.clientHeight >= host.scrollHeight - 2
+            );
+          });
+          await sampleTreeGeometry('700-at-bottom');
+          await expect(
+            page.locator('.tree-node[data-node-id="' + idFor(added) + '"]')
+          ).toBeInViewport();
+          const bottomScroll = await host.evaluate((el) => el.scrollTop);
+          await page.mouse.wheel(0, -2000);
+          await page.waitForFunction(() => document.querySelector('#category-nav').scrollTop === 0);
+          await sampleTreeGeometry('700-returned-top');
+          await expect(
+            page.locator('.tree-node[data-node-id="' + album.id + '"] > [aria-selected="true"]')
+          ).toBeInViewport();
+          await expect(page.locator('#category-nav .tree-pager')).toHaveCount(0);
+          assert.equal(await page.evaluate(() => S.current.id), album.id);
+          assert.equal((await rpc('init')).stats.images, 25);
+          report.samples.push({
+            realStructuralImport: {
+              added: idFor(added),
+              selected: album.id,
+              generatedImages: 25,
+              continuousScroll: {
+                bottomScroll,
+                returnedTop: await host.evaluate((el) => el.scrollTop)
+              }
+            }
+          });
+          await shot('real-structural-tree-selection');
+        } catch (error) {
+          await sampleTreeGeometry('failure-before-size-restore').catch((sampleError) => {
+            report.samples.push({ realStructuralTreeGeometryError: sampleError.stack });
+          });
+          await shot('real-structural-failure-before-size-restore').catch(() => {});
+          throw error;
+        } finally {
+          await app.evaluate(({ BrowserWindow }, size) => {
+            BrowserWindow.getAllWindows()[0].setContentSize(size[0], size[1]);
+          }, originalSize);
+        }
       }
     );
     assert.deepEqual(await page.evaluate(() => window.__popupProbe.unhandled), []);

@@ -33,14 +33,20 @@
   function cardPresets(viewportWidth = 3840) {
     // CSS pixels already account for OS scaling and browser zoom. Physical
     // screen pixels would make a scaled 4K desktop select oversized targets.
-    const width = Number(viewportWidth),
-      progress = Math.max(
-        0,
-        Math.min(1, ((Number.isFinite(width) && width > 0 ? width : 3840) - 1920) / 1920)
-      );
-    return [120, 155, 191].map((compact, index) =>
-      Math.round(compact + ([128, 166, 195][index] - compact) * progress)
-    );
+    const value = Number(viewportWidth),
+      width = Number.isFinite(value) && value > 0 ? value : 3840,
+      stops = [
+        { width: 1920, sizes: [120, 155, 191] },
+        { width: 2560, sizes: [124, 150, 188] },
+        { width: 3840, sizes: [135, 165, 192] }
+      ],
+      upper = stops.findIndex((stop) => width <= stop.width);
+    if (upper === 0) return [...stops[0].sizes];
+    if (upper === -1) return [...stops[stops.length - 1].sizes];
+    const from = stops[upper - 1],
+      to = stops[upper],
+      progress = (width - from.width) / (to.width - from.width);
+    return from.sizes.map((size, index) => Math.round(size + (to.sizes[index] - size) * progress));
   }
   const spec = Object.freeze({ ranges, defaults, valid, normalize, cardPresets });
   if (typeof module === 'object' && module.exports) module.exports = spec;

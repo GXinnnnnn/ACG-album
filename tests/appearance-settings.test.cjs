@@ -41,23 +41,68 @@ test('responsive preset interpolation clamps CSS widths and leaves saved density
   for (const [width, expected] of [
     [800, [120, 155, 191]],
     [1920, [120, 155, 191]],
-    [2560, [123, 159, 192]],
-    [2880, [124, 161, 193]],
-    [3840, [128, 166, 195]],
-    [5120, [128, 166, 195]],
-    [NaN, [128, 166, 195]]
+    [2240, [122, 153, 190]],
+    [2559, [124, 150, 188]],
+    [2560, [124, 150, 188]],
+    [2561, [124, 150, 188]],
+    [2880, [127, 154, 189]],
+    [3200, [130, 158, 190]],
+    [3839, [135, 165, 192]],
+    [3840, [135, 165, 192]],
+    [5120, [135, 165, 192]],
+    [0, [135, 165, 192]],
+    [NaN, [135, 165, 192]]
   ]) {
     const presets = appearance.cardPresets(width);
     assert.deepEqual(presets, expected);
     assert.ok(presets.every((value) => appearance.valid('density', value)));
   }
-  for (const density of [120, 123, 155, 159, 166, 191, 192, 195, 222, 267.5, 360])
+  for (const density of [120, 124, 135, 150, 155, 165, 166, 188, 191, 192, 195, 222, 267.5, 360])
     assert.equal(appearance.normalize({ density }).density, density);
   assert.equal(
     appearance.defaults.density,
     166,
     'No migration guesses from a previous default number'
   );
+});
+
+test('density remains unconfigured until explicitly saved, and every numeric choice survives a worker restart', async (t) => {
+  const data = await fs.mkdtemp(path.join(os.tmpdir(), 'acg-density-state-'));
+  let client;
+  t.after(async () => {
+    if (client) await client.close();
+    assert.ok(path.resolve(data).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    assert.ok(path.basename(data).startsWith('acg-density-state-'));
+    await fs.rm(data, { recursive: true, force: true });
+  });
+  client = await open(data);
+  for (const args of [{ lightweight: true }, {}]) {
+    const settings = (await client.call('init', args)).settings;
+    assert.equal(settings.density, 166);
+    assert.equal(
+      settings.densityConfigured,
+      false,
+      'reading defaults must not create an explicit density row'
+    );
+  }
+  await client.close();
+  client = await open(data);
+  assert.equal(
+    (await client.call('init', { lightweight: true })).settings.densityConfigured,
+    false
+  );
+  // Cover the previous fixed default, every responsive medium, a preset and a
+  // custom continuous width. An explicitly saved 166 must never be guessed away.
+  for (const density of [166, 155, 150, 165, 191, 222, 267.5]) {
+    await client.call('settings', { key: 'density', value: density });
+    await client.close();
+    client = await open(data);
+    for (const args of [{ lightweight: true }, {}]) {
+      const settings = (await client.call('init', args)).settings;
+      assert.equal(settings.density, density);
+      assert.equal(settings.densityConfigured, true);
+    }
+  }
 });
 
 test('glass starts enabled and motion starts high; saved choices and local font survive restart', async (t) => {

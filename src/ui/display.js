@@ -1,9 +1,9 @@
 'use strict';
 // One set of display controls for the toolbar, preferences and category previews.
 const cardDisplayPresets = [
-  { width: 128, name: '小', kind: 'compact', count: 4 },
-  { width: 166, name: '中', kind: 'standard', count: 3 },
-  { width: 195, name: '大', kind: 'large', count: 2 }
+  { width: 135, name: '小', kind: 'compact', count: 4 },
+  { width: 165, name: '中', kind: 'standard', count: 3 },
+  { width: 192, name: '大', kind: 'large', count: 2 }
 ];
 function displayViewportWidth() {
   return document.documentElement.clientWidth || window.innerWidth || 3840;
@@ -26,8 +26,16 @@ function refreshDisplayPresets() {
     button.dataset.cardPreset = preset.kind;
     button.dataset.density = String(preset.width);
   });
-  const style = document.documentElement.style,
-    width = Number(S.settings.density) || 166;
+  const style = document.documentElement.style;
+  // A fresh profile follows the medium preset until the user explicitly chooses
+  // a numeric width, including while the native window restores its size.
+  if (S.settings.densityConfigured === false) {
+    const changed = S.settings.density !== widths[1];
+    S.settings.density = widths[1];
+    style.setProperty('--card-width', widths[1] + 'px');
+    if (changed) window.albumAppearanceControls?.sync();
+  }
+  const width = Number(S.settings.density) || 166;
   style.setProperty('--card-base-size', widths[1] + 'px');
   style.setProperty('--card-scale', String(width / widths[1]));
   return cardDisplayPresets;

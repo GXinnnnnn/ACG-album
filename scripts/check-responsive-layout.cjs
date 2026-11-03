@@ -20,9 +20,10 @@ const report = {
   requested,
   packaged,
   scope:
-    'Real Electron responsive layout, isolated generated profile and PNGs. 420 direct mixed PNGs and 13 two-image subfolders; offline settings, source-worker fixture preparation, actual CSS viewport/DPR and DOM geometry. No original-image viewer, refresh/pressure loop, personal data or deployment.',
+    'Real Electron responsive layout, isolated generated profile and PNGs. 420 direct mixed PNGs and 13 two-image subfolders; the closed generated DB seeds folder display counts of 99,999 and ratings of 10.0 without generating 100,000 files. Offline settings, actual CSS viewport/DPR, left-edge/footer/toolbar DOM geometry and reading anchors. No original-image viewer, refresh/pressure loop, personal data or deployment.',
   started: new Date().toISOString(),
   samples: [],
+  anchorProbes: [],
   screenshots: [],
   errors: [],
   remote: [],
@@ -179,7 +180,7 @@ async function prepare() {
       type: 4,
       name: 'Generated responsive fixture',
       name_cn: '隔离响应式样本',
-      rating: { score: 8.2 },
+      rating: { score: 10 },
       images: {},
       infobox: []
     };
@@ -190,10 +191,10 @@ async function prepare() {
     );
     const updated = db
       .prepare(
-        'UPDATE nodes SET subject_id=?,manual_subject=1,confirmed=1,match_review=0 WHERE id=?'
+        "UPDATE nodes SET files=99999,subject_id=?,manual_subject=1,confirmed=1,match_review=0 WHERE parent=? AND kind='folder'"
       )
-      .run(subject.id, idFor(path.join(collection, '分组-00')));
-    assert.equal(Number(updated.changes), 1);
+      .run(subject.id, idFor(collection));
+    assert.equal(Number(updated.changes), 13);
   } finally {
     db.close();
   }
@@ -201,7 +202,9 @@ async function prepare() {
     directMedia: 420,
     folders: 13,
     nestedMedia: 26,
-    ratingSeededWhileClosed: true,
+    ratingSeededWhileClosed: 10,
+    displayCountSeededWhileClosed: 99999,
+    seededFolderCards: 13,
     sourceWorkerPreparation: true
   };
   console.log('ISOLATED ' + run);
@@ -299,27 +302,33 @@ async function launch() {
   }));
   assert.equal(report.absolutePages.boundary179 && report.absolutePages.boundary180, true);
 }
-async function resize(width) {
-  const bounds = await app.evaluate(({ BrowserWindow }, target) => {
-    const win = BrowserWindow.getAllWindows()[0],
-      outer = win.getBounds(),
-      content = win.getContentBounds();
-    win.setBounds({
-      x: 0,
-      y: 0,
-      width: target + outer.width - content.width,
-      height: 1000 + outer.height - content.height
-    });
-    return { outer: win.getBounds(), content: win.getContentBounds() };
-  }, width);
+async function resize(width, height = Math.round((width * 9) / 16)) {
+  const bounds = await app.evaluate(
+    ({ BrowserWindow }, { width, height }) => {
+      const win = BrowserWindow.getAllWindows()[0],
+        outer = win.getBounds(),
+        content = win.getContentBounds();
+      win.setBounds({
+        x: 0,
+        y: 0,
+        width: width + outer.width - content.width,
+        height: height + outer.height - content.height
+      });
+      return { outer: win.getBounds(), content: win.getContentBounds() };
+    },
+    { width, height }
+  );
   try {
     await page.waitForFunction(
-      (width) => innerWidth === width && document.documentElement.clientWidth === width,
-      width
+      ({ width, height }) =>
+        innerWidth === width &&
+        innerHeight === height &&
+        document.documentElement.clientWidth === width,
+      { width, height }
     );
   } catch (error) {
     report.failedResize = {
-      requestedCSS: width,
+      requestedCSS: { width, height },
       bounds,
       actual: await page.evaluate(() => ({
         innerWidth,
@@ -342,7 +351,8 @@ async function resize(width) {
     width,
     'Use actual renderer CSS viewport, not physical screen pixels'
   );
-  report.samples.push({ type: 'resize', requestedCSS: width, bounds, ...viewport });
+  assert.equal(viewport.innerHeight, height, 'Use the requested renderer CSS height');
+  report.samples.push({ type: 'resize', requestedCSS: { width, height }, bounds, ...viewport });
   return viewport.presets;
 }
 async function sample(label) {
@@ -369,9 +379,56 @@ async function sample(label) {
         !!r && r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'
       );
     };
+    const textRuns = (element) => {
+      if (!element) return [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT),
+        runs = [];
+      let node;
+      while ((node = walker.nextNode())) {
+        if (!node.textContent.trim() || node.parentElement.closest('svg')) continue;
+        const range = document.createRange();
+        range.setStart(node, node.textContent.search(/\S/));
+        range.setEnd(node, node.textContent.trimEnd().length);
+        runs.push({
+          text: range.toString(),
+          box: box(range),
+          lines: range.getClientRects().length
+        });
+      }
+      return runs;
+    };
     const wall = box($('#virtual-grid')),
       main = box(document.querySelector('main')),
-      vp = $('#viewport');
+      vp = $('#viewport'),
+      railElement = $('#sidebar-shell'),
+      rail = box(railElement),
+      railClip = getComputedStyle(railElement).clipPath,
+      insetMatch = railClip.match(/^inset\((.*?)\)$/),
+      insetTokens = insetMatch?.[1]
+        .split(/\s+round\s+/)[0]
+        .trim()
+        .split(/\s+/),
+      clipSupported =
+        railClip === 'none' || !!insetTokens?.every((token) => /^-?[\d.]+(?:px|%)$/.test(token));
+    const expandedInsets = !insetTokens
+      ? ['0px', '0px', '0px', '0px']
+      : insetTokens.length === 1
+        ? Array(4).fill(insetTokens[0])
+        : insetTokens.length === 2
+          ? [...insetTokens, ...insetTokens]
+          : insetTokens.length === 3
+            ? [...insetTokens, insetTokens[1]]
+            : insetTokens;
+    const clipPixels = expandedInsets.map(
+      (token, index) =>
+        parseFloat(token) * (token.endsWith('%') ? (index % 2 ? rail.width : rail.height) / 100 : 1)
+    );
+    const visibleRail = {
+      left: rail.left + clipPixels[3],
+      right: rail.right - clipPixels[1],
+      clipPath: railClip,
+      clipSupported
+    };
     const cards = [...grid.cards].map(([index, element]) => ({
       index,
       id: element.dataset.id,
@@ -478,7 +535,14 @@ async function sample(label) {
       base: parseFloat(root.getPropertyValue('--card-base-size')),
       scale: Number(root.getPropertyValue('--card-scale')),
       cards,
+      wall,
+      main,
+      viewport: box(vp),
+      rail: { box: rail, visible: visibleRail },
+      gap: grid.gap,
       gutter: {
+        railGap: left - visibleRail.right,
+        windowGap: visibleRail.left,
         gridLeft: left - wall.left,
         gridRight: wall.right - right,
         mainLeft: left - main.left,
@@ -488,7 +552,28 @@ async function sample(label) {
       cached: grid.items.size,
       footer: {
         present: !!folder,
+        box: box(footer),
+        text: count?.textContent,
+        ratingText: rating?.textContent,
+        countRuns: textRuns(count),
+        ratingRuns: textRuns(rating),
+        value: box(value),
+        unit: box(unit),
         font: footer && parseFloat(getComputedStyle(footer).fontSize),
+        countFont: count && parseFloat(getComputedStyle(count).fontSize),
+        fontLoaded:
+          count &&
+          document.fonts.check(
+            getComputedStyle(count).fontSize + ' ' + getComputedStyle(count).fontFamily
+          ),
+        countOverflow: count && {
+          overflow: getComputedStyle(count).overflow,
+          textOverflow: getComputedStyle(count).textOverflow,
+          transform: getComputedStyle(count).transform,
+          whiteSpace: getComputedStyle(count).whiteSpace,
+          flexShrink: getComputedStyle(count).flexShrink
+        },
+        contentOverflow: !!footer && footer.scrollWidth > footer.clientWidth + 1,
         icon: box(icon),
         count: box(count),
         countVisible: visible(count) && visible(value) && visible(unit),
@@ -523,21 +608,28 @@ async function sample(label) {
     label + ': enough actual cards to reach both wall edges'
   );
   assert.equal(result.overflow, false, label + ': no horizontal scroll');
-  for (const kind of ['grid', 'main'])
-    assert.ok(
-      Math.abs(result.gutter[kind + 'Left'] - result.gutter[kind + 'Right']) <= 2,
-      label + ': balanced ' + kind + ' edges ' + JSON.stringify(result.gutter)
-    );
-  assert.ok(result.gutter.gridLeft >= -0.75 && result.gutter.gridRight >= -0.75);
+  assert.equal(result.offsetX, 0, label + ': no internal centering offset');
+  assert.equal(result.rail.visible.clipSupported, true, label + ': measured sidebar clipping');
+  assert.ok(Math.abs(result.gutter.gridLeft) <= 1, label + ': cards start at the actual wall left');
+  assert.ok(
+    Math.abs(result.gutter.railGap - result.gutter.windowGap) <= 1,
+    label +
+      ': visible sidebar-to-card gap equals window-to-sidebar inset ' +
+      JSON.stringify(result.gutter)
+  );
+  assert.ok(Math.abs(result.gutter.windowGap - 16) <= 1, label + ': actual 16px window-edge inset');
+  assert.ok(result.gutter.gridRight >= -0.75);
+  assert.ok(
+    result.gutter.gridRight < result.width + result.gap + 1,
+    label + ': only an incomplete column remains on the right'
+  );
   assert.ok(Math.abs(result.width - result.density) <= 0.01, label + ': preserve chosen width');
   assert.ok(result.cached <= 180 * 9, label + ': bounded item window');
   for (const card of result.cards)
     assert.ok(
       Math.abs(card.width - card.expected.width) <= 0.75 &&
-        Math.abs(
-          card.left - result.cards[0].left - card.expected.left + result.cards[0].expected.left
-        ) <= 0.75,
-      label + ': DOM matches centered model'
+        Math.abs(card.left - result.wall.left - card.expected.left) <= 0.75,
+      label + ': DOM matches the left-aligned absolute model'
     );
   const footer = result.footer;
   assert.equal(
@@ -546,7 +638,8 @@ async function sample(label) {
     label + ': actual count, unit and seeded rating are visible'
   );
   for (const [actual, base] of [
-    [footer.font, 17],
+    [footer.font, 14],
+    [footer.countFont, 14],
     [footer.icon.width, 20],
     [footer.icon.height, 20],
     [footer.ratingFont, 11]
@@ -555,15 +648,60 @@ async function sample(label) {
       Math.abs(actual - base * result.scale) <= 0.1,
       label + ': footer scales from medium=' + base
     );
-  assert.ok(
-    footer.count.bottom <= footer.cover.bottom + 0.75 &&
-      footer.rating.right <= footer.cover.right + 0.75,
-    label + ': footer remains inside cover'
+  assert.equal(footer.text, '99,999 张', label + ': actual maximum-width count markup');
+  assert.equal(
+    footer.ratingText.replace(/\s+/g, ' ').trim(),
+    '★ 10.0',
+    label + ': actual rating markup'
   );
+  assert.equal(footer.fontLoaded, true, label + ': footer font loaded before measurement');
+  assert.equal(
+    footer.contentOverflow,
+    false,
+    label + ': footer has no horizontal content overflow'
+  );
+  assert.equal(footer.countOverflow.transform, 'none', label + ': no footer count translation');
+  assert.equal(footer.countOverflow.overflow, 'visible', label + ': full count without clipping');
+  assert.equal(footer.countOverflow.flexShrink, '0', label + ': count cannot shrink');
+  assert.equal(footer.countOverflow.whiteSpace, 'nowrap', label + ': count cannot wrap');
+  const contains = (outer, inner, name, vertical = true) => {
+    assert.ok(
+      outer && inner && inner.width > 0 && inner.height > 0,
+      label + ': actual bounds ' + name
+    );
+    assert.ok(
+      inner.left >= outer.left - 0.75 &&
+        inner.right <= outer.right + 0.75 &&
+        (!vertical || (inner.top >= outer.top - 0.75 && inner.bottom <= outer.bottom + 0.75)),
+      label + ': uncut ' + name + ' ' + JSON.stringify({ outer, inner })
+    );
+  };
+  contains(footer.cover, footer.box, 'footer inside cover');
+  for (const [name, bounds] of [
+    ['icon', footer.icon],
+    ['count', footer.count],
+    ['rating', footer.rating],
+    ['value', footer.value],
+    ['unit', footer.unit]
+  ]) {
+    contains(footer.box, bounds, name + ' inside footer');
+    assert.ok(Math.abs(bounds.cy - footer.box.cy) <= 1, label + ': shared footer center ' + name);
+  }
+  for (const [name, runs, parent] of [
+    ['count', footer.countRuns, footer.count],
+    ['rating', footer.ratingRuns, footer.rating]
+  ]) {
+    assert.ok(runs.length > 0, label + ': actual footer text ranges ' + name);
+    for (const run of runs) {
+      assert.equal(run.lines, 1, label + ': single-line footer text ' + run.text);
+      contains(parent, run.box, name + ' complete text width', false);
+      contains(footer.cover, run.box, name + ' text range inside cover');
+    }
+  }
   assert.ok(
     footer.icon.right <= footer.count.left + 0.75 &&
       footer.count.right <= footer.rating.left + 0.75,
-    label + ': icon, count and rating do not overlap'
+    label + ': icon, complete count and rating do not overlap'
   );
   assert.ok(
     Math.abs(result.actionGaps[0] - result.actionGaps[1]) <= 0.75,
@@ -613,18 +751,80 @@ async function sample(label) {
   console.log('PASS ' + label);
   return result;
 }
-async function choose(index) {
+async function choose(index, { resetScroll = true } = {}) {
   const button = page.locator('#card-size-controls [data-density]').nth(index);
   await expect(button).toBeVisible();
   await button.focus();
   await page.keyboard.press('Enter');
   await expect(button).toHaveAttribute('aria-pressed', 'true');
-  await page.evaluate(async () => {
+  await page.evaluate(async (resetScroll) => {
     await window.albumAppearanceControls.flush();
-    $('#viewport').scrollTop = 0;
+    if (resetScroll) $('#viewport').scrollTop = 0;
+    grid.render();
+  }, resetScroll);
+  await settle();
+}
+async function probeReadingAnchor(label, anchorKind, action) {
+  await page.evaluate(() => {
+    const vp = $('#viewport');
+    vp.scrollTop = Math.min(640, vp.scrollHeight - vp.clientHeight);
     grid.render();
   });
   await settle();
+  const before = await page.evaluate((anchorKind) => {
+    const vp = $('#viewport'),
+      anchor = anchorKind === 'display' ? captureDisplayAnchor() : grid.captureAnchor(),
+      element = anchor && grid.cards.get(anchor.index);
+    if (!element) throw new Error('Reading anchor must have a mounted card');
+    const bounds = element.getBoundingClientRect(),
+      origin = vp.getBoundingClientRect();
+    return {
+      index: anchor.index,
+      id: element.dataset.id,
+      offset: bounds.top - origin.top,
+      scrollTop: vp.scrollTop,
+      density: S.settings.density
+    };
+  }, anchorKind);
+  assert.ok(before.scrollTop > 100, label + ': anchor probe actually starts scrolled');
+  const evidence = { label, anchorKind, before };
+  report.anchorProbes.push(evidence);
+  await action();
+  await settle();
+  const after = await page.evaluate(({ index }) => {
+    const vp = $('#viewport'),
+      element = grid.cards.get(index);
+    if (!element) throw new Error('Original reading anchor was not retained after layout change');
+    const bounds = element.getBoundingClientRect(),
+      origin = vp.getBoundingClientRect();
+    return {
+      id: element.dataset.id,
+      index,
+      offset: bounds.top - origin.top,
+      scrollTop: vp.scrollTop,
+      density: S.settings.density,
+      cached: grid.items.size,
+      overflow: vp.scrollWidth > vp.clientWidth + 1,
+      offsetX: grid.offsetX
+    };
+  }, before);
+  evidence.after = after;
+  evidence.drift = after.offset - before.offset;
+  assert.equal(after.id, before.id, label + ': same actual reading card');
+  assert.ok(
+    Math.abs(evidence.drift) <= 1,
+    label + ': reading pixel anchor drift ' + evidence.drift
+  );
+  assert.equal(after.offsetX, 0, label + ': reading layout remains left aligned');
+  assert.equal(after.overflow, false, label + ': reading layout has no horizontal overflow');
+  assert.ok(after.cached <= 180 * 9, label + ': reading cache remains bounded');
+  if (anchorKind !== 'display')
+    assert.equal(
+      after.density,
+      before.density,
+      label + ': explicit numeric width survives layout change'
+    );
+  evidence.passed = true;
 }
 async function sampleSortLabels(fontLabel) {
   const values = await page
@@ -665,8 +865,8 @@ async function screenshot(width) {
   await launch();
   for (const [width, expected] of [
     [1920, [120, 155, 191]],
-    [2560, [123, 159, 192]],
-    [3840, [128, 166, 195]]
+    [2560, [124, 150, 188]],
+    [3840, [135, 165, 192]]
   ]) {
     assert.deepEqual(await resize(width), expected);
     for (const sidebar of ['compact', 'expanded']) {
@@ -687,6 +887,28 @@ async function screenshot(width) {
       }
     }
   }
+  for (const index of [0, 1, 2])
+    await probeReadingAnchor('3840/preset-' + index, 'display', () =>
+      choose(index, { resetScroll: false })
+    );
+  await probeReadingAnchor('resize-3840-to-2560', 'grid', () => resize(2560));
+  await probeReadingAnchor('sidebar-expanded-to-compact', 'grid', () =>
+    page.evaluate(() => saveSetting('sidebarMode', 'compact'))
+  );
+  await probeReadingAnchor('sidebar-compact-to-expanded', 'grid', () =>
+    page.evaluate(() => saveSetting('sidebarMode', 'expanded'))
+  );
+  await probeReadingAnchor('resize-2560-to-3840', 'grid', () => resize(3840));
+  await resize(2560);
+  await page.evaluate(async () => {
+    await changeDisplaySetting('density', 120);
+    $('#viewport').scrollTop = 0;
+    grid.render();
+  });
+  await settle();
+  const minimum = await sample('2560/expanded/manual-120/base-150');
+  assert.equal(minimum.density, 120);
+  assert.equal(minimum.base, 150);
   await page.evaluate(async () => changeDisplaySetting('density', 222));
   await resize(2560);
   const custom = await sample('2560/expanded/custom-222');

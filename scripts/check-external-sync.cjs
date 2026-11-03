@@ -523,6 +523,7 @@ async function launch() {
         remote: [],
         denied: [],
         windowEvents: [],
+        hookedChannels: [],
         overflow: false
       });
       const add = (array, row) => {
@@ -547,11 +548,12 @@ async function launch() {
         'removeRoot'
       ]);
       const browseIds = new Set(allowedBrowseIds);
-      for (const [channel, original] of [...ipcMain._invokeHandlers]) {
-        if (!channel.startsWith('library:')) continue;
+      const nativeHandle = ipcMain.handle.bind(ipcMain);
+      const wrappedHandlers = new WeakSet();
+      const wrapHandler = (channel, original) => {
+        if (!channel.startsWith('library:') || wrappedHandlers.has(original)) return original;
         const method = channel.slice(8);
-        ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, async (event, args) => {
+        const observed = async (event, args) => {
           const row = add(state.calls, { method, args: args || {}, started: Date.now() });
           if (
             forbidden.has(method) ||
@@ -585,7 +587,16 @@ async function launch() {
             row.error = error.message;
             throw error;
           }
-        });
+        };
+        wrappedHandlers.add(observed);
+        if (!state.hookedChannels.includes(channel)) state.hookedChannels.push(channel);
+        return observed;
+      };
+      ipcMain.handle = (channel, original) => nativeHandle(channel, wrapHandler(channel, original));
+      for (const [channel, original] of [...ipcMain._invokeHandlers]) {
+        if (!channel.startsWith('library:')) continue;
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, original);
       }
       const blocked = (input) => {
         const url = String(input?.url || input);
@@ -670,6 +681,12 @@ async function launch() {
   });
   await page.waitForFunction(
     () => typeof S !== 'undefined' && typeof grid !== 'undefined' && window.album
+  );
+  report.hookedChannels = (await mainProbe()).hookedChannels;
+  assert.ok(
+    report.hookedChannels.includes('library:init') &&
+      report.hookedChannels.includes('library:list'),
+    'External-sync observer must hook library:init and library:list before business checks'
   );
   await page.evaluate(() => {
     const state = (window.__externalSyncRenderer = {

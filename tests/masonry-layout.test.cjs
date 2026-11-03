@@ -1095,7 +1095,7 @@ test('an empty resize before an asynchronous list response selects the final lay
   }
 });
 
-test('centered offsets update loaded cards and unvisited placeholders without changing the skyline or pixel anchor', async () => {
+test('left-aligned loaded cards and unvisited placeholders stay fixed through remainder-only resize and retain pixel anchors', async () => {
   for (const dpr of [1, 1.25, 1.5, 2]) {
     const f = await fixture(179, 900, 970, 166, dpr),
       { grid, wall, viewport } = f;
@@ -1107,18 +1107,17 @@ test('centered offsets update loaded cards and unvisited placeholders without ch
       source = image.src,
       writes = image.writes.length,
       before = [179, 180, 359, 1000].map((index) => grid.getPosition(index)),
-      oldColumns = grid.cols,
-      oldOffset = grid.offsetX;
+      oldColumns = grid.cols;
     wall.clientWidth += 13;
     grid.render();
     await f.settle();
     assert.equal(grid.cols, oldColumns);
-    assert.equal(grid.offsetX, oldOffset + 6.5);
+    assert.equal(grid.offsetX, 0);
     for (const [i, index] of [179, 180, 359, 1000].entries()) {
       const after = grid.getPosition(index);
       assert.equal(after.top, before[i].top);
       assert.equal(after.height, before[i].height);
-      assert.equal(after.left, before[i].left + 6.5);
+      assert.equal(after.left, before[i].left);
     }
     assert.equal(grid.cards.get(anchor.index), card);
     assert.equal(card.querySelector('img'), image);
@@ -1143,9 +1142,9 @@ test('centered offsets update loaded cards and unvisited placeholders without ch
   }
 });
 
-test('continuous card width stays fixed with balanced edge remainder and clamps to narrow widths', async () => {
+test('continuous card width starts at the left edge, leaves only right remainder and clamps to narrow widths', async () => {
   for (const width of [96, 120, 700, 1180, 3448, 3840])
-    for (const density of [120, 158, 186, 222, 297, 360])
+    for (const density of [120, 124, 135, 150, 155, 165, 188, 191, 192, 222, 297, 360])
       for (const [folders, media] of [
         [90, 0],
         [0, 90],
@@ -1158,22 +1157,22 @@ test('continuous card width stays fixed with balanced edge remainder and clamps 
         assert.equal(grid.cols, columns);
         assert.equal(grid.gap, gap);
         const occupied = columns * Math.min(width, density) + (columns - 1) * gap,
-          inset = (width - occupied) / 2;
-        assert.equal(grid.offsetX, inset);
-        assert.ok(inset >= 0);
+          remainder = width - occupied;
+        assert.equal(grid.offsetX, 0);
+        assert.ok(remainder >= 0);
         for (let column = 0; column < columns; column++) {
           const p = grid.getPosition(column);
           assert.ok(Math.abs(p.width - Math.min(width, density)) < 0.001);
-          assert.ok(Math.abs(p.left - inset - column * (grid.width + gap)) < 0.001);
+          assert.ok(Math.abs(p.left - column * (grid.width + gap)) < 0.001);
           assert.ok(p.left + p.width <= width + 0.001);
           if (column === columns - 1) {
             assert.ok(
-              Math.abs(width - p.left - p.width - inset) < 0.001,
-              'Both edges have equal remainder'
+              Math.abs(width - p.left - p.width - remainder) < 0.001,
+              'All incomplete-column remainder stays at the right edge'
             );
             assert.ok(
-              inset * 2 < density + gap,
-              'The combined edge remainder cannot fit another requested card'
+              remainder < density + gap,
+              'The right remainder cannot fit another requested card'
             );
           }
         }

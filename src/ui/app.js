@@ -150,6 +150,61 @@ async function saveSetting(key, value) {
   applySettings();
 }
 window.albumHomeCopy?.mount({ settings: () => S.settings, save: saveSetting, notify: toast });
+if (!window.albumBrowseSort?.create) throw new Error('排序偏好模块未加载，请重新启动应用');
+const browseSortMemory = window.albumBrowseSort.create({
+  requireHydration: true,
+  save: (value) => api('settings', { key: 'browseSortPreferences', value }),
+  onError: (error) => toast(`排序偏好暂未保存：${error.message || error}`, true)
+});
+function browseSortPath() {
+  if (!S.parent) return null;
+  if (S.current?.id === S.parent) return S.current.path;
+  const known =
+    S.roots.find((node) => node.id === S.parent) ||
+    (typeof grid !== 'undefined' ? grid.items.get(S.parent) : null) ||
+    (typeof folderTree !== 'undefined' ? folderTree.openNodes.get(S.parent) : null);
+  return known?.path;
+}
+function rememberBrowseSortRenames(renames) {
+  if (typeof browseSortMemory !== 'undefined' && browseSortMemory) {
+    browseSortMemory.rename(renames);
+    S.settings.browseSortPreferences = browseSortMemory.snapshot();
+  }
+}
+function restoreBrowseSort() {
+  if (!browseSortMemory) return;
+  const path = browseSortPath();
+  if (S.parent && !path) return;
+  Object.assign(S, browseSortMemory.get(S.view, path));
+}
+let browseSortChangeVersion = 0;
+async function changeBrowseSort(sort = S.sort, direction = S.direction) {
+  const pair = { sort, direction },
+    changeVersion = ++browseSortChangeVersion;
+  if (window.albumBrowseSort && !window.albumBrowseSort.validPair(pair)) return;
+  const parent = S.parent,
+    view = S.view,
+    version = S.loadVersion;
+  let path = browseSortPath();
+  if (parent && !path) {
+    const node = await api('get', { id: parent });
+    if (
+      changeVersion !== browseSortChangeVersion ||
+      parent !== S.parent ||
+      view !== S.view ||
+      version !== S.loadVersion
+    )
+      return;
+    path = node?.path;
+    if (!path || node.missing) return;
+  }
+  Object.assign(S, pair);
+  if (browseSortMemory) {
+    browseSortMemory.set(view, path, pair);
+    S.settings.browseSortPreferences = browseSortMemory.snapshot();
+  }
+  await loadPage();
+}
 function queryArgs() {
   return {
     parent: S.parent,
@@ -161,8 +216,7 @@ function queryArgs() {
       ? {
           timeline: true,
           month: S.timelineMonth || '',
-          place: S.timelinePlace || '',
-          direction: 'desc'
+          place: S.timelinePlace || ''
         }
       : {}),
     ...(S.view === 'favorites' ? { favorites: true } : {}),
@@ -197,10 +251,17 @@ async function navigate(
   }
   Object.assign(S, { view, parent, search, filter });
   $('#search').value = search;
-  const version = S.loadVersion + 1,
-    key = viewKey();
+  const version = S.loadVersion + 1;
   await loadPage();
-  if (version !== S.loadVersion || key !== viewKey()) return;
+  if (
+    version !== S.loadVersion ||
+    S.view !== view ||
+    S.parent !== parent ||
+    S.search !== search ||
+    S.filter !== filter
+  )
+    return;
+  const key = viewKey();
   requestBrowseFilesystemSync(version, key);
   $('#viewport').scrollTop = S.scrolls.get(viewKey()) || 0;
   $('#viewport').focus({ preventScroll: true });
@@ -218,8 +279,20 @@ async function back() {
   }
   Object.assign(S, previous);
   $('#search').value = S.search;
+  const version = S.loadVersion + 1;
   await loadPage();
-  $('#viewport').scrollTop = previous.scroll || 0;
+  if (
+    version !== S.loadVersion ||
+    S.view !== previous.view ||
+    S.parent !== previous.parent ||
+    S.search !== previous.search ||
+    S.filter !== previous.filter
+  )
+    return;
+  $('#viewport').scrollTop =
+    S.sort === previous.sort && S.direction === previous.direction
+      ? previous.scroll || 0
+      : S.scrolls.get(viewKey()) || 0;
 }
 function updateSidebar() {
   $('#root-count').textContent = S.roots.length;
@@ -387,23 +460,34 @@ function scheduleSummaryDetails() {
 async function loadSummary() {
   const appearanceRevision = window.albumAppearanceControls.snapshot();
   const taskVersion = typeof startupTaskVersion === 'number' ? startupTaskVersion : null;
-  const init = await api('init', { lightweight: true });
+  const sortRead = typeof browseSortMemory !== 'undefined' ? browseSortMemory?.beginRead() : null;
+  let init;
+  try {
+    init = await api('init', { lightweight: true });
+  } catch (error) {
+    if (typeof browseSortMemory !== 'undefined') browseSortMemory?.cancelRead(sortRead);
+    throw error;
+  }
+  if (typeof browseSortMemory !== 'undefined' && browseSortMemory) {
+    browseSortMemory.hydrate(init.settings.browseSortPreferences, sortRead);
+    init.settings.browseSortPreferences = browseSortMemory.snapshot();
+  }
   if (typeof applyTaskSnapshot === 'function' && taskVersion === startupTaskVersion)
     applyTaskSnapshot(init.taskSnapshot);
   S.dataDir = init.dataDir;
   summaryDetailsDirty = true;
   summaryDetailsVersion++;
   if (init.settings.densityConfigured === false) {
-    init.settings.density =
-      summarySettingsApplied && S.settings.densityConfigured === false
-        ? S.settings.density
-        : cardPresets(document.documentElement.clientWidth || window.innerWidth)[1];
+    init.settings.density = cardPresets(
+      document.documentElement.clientWidth || window.innerWidth
+    )[1];
   }
   init.settings = window.albumAppearanceControls.mergeSummary(init.settings, appearanceRevision);
   if (init.localIndex) window.albumLocalSearch?.setStatus(init.localIndex);
   S.roots = init.roots;
   const settingsChanged = Object.entries(init.settings).some(
-    ([key, value]) => JSON.stringify(S.settings[key]) !== JSON.stringify(value)
+    ([key, value]) =>
+      key !== 'browseSortPreferences' && JSON.stringify(S.settings[key]) !== JSON.stringify(value)
   );
   S.settings = { ...S.settings, ...init.settings };
   if (!summarySettingsApplied || settingsChanged) {
@@ -434,6 +518,7 @@ async function loadPage(keepScroll = false) {
     if (!recovery.unavailable) S.parent = recovery.node?.id || null;
   }
   if (S.parent && !S.current) S.parent = null;
+  if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
   grid.reset();
   $('#category-overview').replaceChildren();
   $('#empty-state').replaceChildren();
@@ -684,18 +769,37 @@ async function renderOverview(version) {
   const target = $('#category-overview');
   target.className = 'category-overview';
   let roots = [...S.roots];
-  const k = { name: 'name', date: 'birth', modified: 'mtime', size: 'total_bytes' }[S.sort];
+  const k = {
+    name: 'name',
+    date: 'birth',
+    modified: 'mtime',
+    size: 'total_bytes',
+    contentDate: 'content_date'
+  }[S.sort];
   const compareName = (a, b) => {
     if (typeof a.sortkey === 'string' && typeof b.sortkey === 'string')
       return a.sortkey < b.sortkey ? -1 : a.sortkey > b.sortkey ? 1 : 0;
     return a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
   };
+  const contentDate = (node) => {
+    if (node.content_date != null) return Number(node.content_date) || 0;
+    const birth = Number(node.birth),
+      mtime = Number(node.mtime);
+    if (node.kind === 'folder') {
+      if (Number.isFinite(birth) && birth > 0) return birth;
+      return Number.isFinite(mtime) && mtime > 0 ? mtime : 0;
+    }
+    const dates = [birth, mtime].filter((date) => Number.isFinite(date) && date > 0);
+    return dates.length ? Math.min(...dates) : 0;
+  };
   const value = (n) =>
-    k === 'birth'
-      ? Number(n.birth) > 0
-        ? Number(n.birth)
-        : Number(n.mtime) || 0
-      : Number(n[k]) || 0;
+    k === 'content_date'
+      ? contentDate(n)
+      : k === 'birth'
+        ? Number(n.birth) > 0
+          ? Number(n.birth)
+          : Number(n.mtime) || 0
+        : Number(n[k]) || 0;
   roots.sort(
     (a, b) =>
       ((k === 'name' ? compareName(a, b) : value(a) - value(b)) ||
@@ -1363,14 +1467,11 @@ async function applyRenameNavigation(result, saved, options = {}) {
   S.parent = remapId(S.parent);
   if (mappings.has(S.current?.id)) S.current = mappings.get(S.current.id);
   if (V.node && mappings.has(V.node.id)) V.node = mappings.get(V.node.id);
-  if (options.external) {
-    window.invalidateFolderTree?.();
-    return true;
-  }
+  if (options.external) return true;
   const restoredKey = viewKey(),
     restoredVersion = S.loadVersion;
   await loadSummary();
-  window.invalidateFolderTree?.();
+  if (typeof structuralDirty === 'undefined' || !structuralDirty) window.invalidateFolderTree?.();
   if (sameBrowse && restoredKey === viewKey() && restoredVersion === S.loadVersion) {
     await loadPage(true);
     if (restoredKey === viewKey() && S.loadVersion === restoredVersion + 1)
@@ -1415,6 +1516,7 @@ function renameModal(n) {
     }
     const saved = captureRenameNavigation(n);
     renamingNodes.add(n.id);
+    if (typeof rememberStructuralChange === 'function') rememberStructuralChange();
     save.disabled = true;
     input.disabled = true;
     save.setAttribute('aria-busy', 'true');
@@ -1423,6 +1525,8 @@ function renameModal(n) {
     let result;
     try {
       result = await api('rename', { id: n.id, name });
+      if (result?.renamed && typeof rememberBrowseSortRenames === 'function')
+        rememberBrowseSortRenames([result]);
       if (connected()) closeModal();
       await applyRenameNavigation(result, saved);
       toast(result?.renamed ? '名称已更新，关联与缓存已保留' : '名称未改变');
@@ -1856,10 +1960,19 @@ const externalRenameQueue = [];
 function rememberStructuralChange(data) {
   structuralDirty = true;
   structuralRevision++;
-  for (const rename of data?.renames || []) {
-    if (rename?.renamed && rename.external && rename.oldId && rename.oldPath && rename.path)
-      externalRenameQueue.push(rename);
+  if (typeof folderTree !== 'undefined') {
+    // Old directory IDs can disappear before this batch is remapped. Retire its
+    // asynchronous validation now, keeping the visible branches and cached rows.
+    folderTree.generation = (folderTree.generation || 0) + 1;
+    folderTree.requests?.clear();
+    folderTree.loading?.clear();
   }
+  const renames = (data?.renames || []).filter(
+    (rename) => rename?.renamed && rename.external && rename.oldId && rename.oldPath && rename.path
+  );
+  if (renames.length && typeof rememberBrowseSortRenames === 'function')
+    rememberBrowseSortRenames(renames);
+  externalRenameQueue.push(...renames);
 }
 function flushStructuralChanges() {
   if (structuralTask) return structuralTask;
@@ -1885,13 +1998,27 @@ function flushStructuralChanges() {
         const restoredKey = viewKey(),
           version = S.loadVersion;
         await loadSummary();
-        if (restoredKey !== viewKey() || version !== S.loadVersion || $('#viewer').open) continue;
+        if (
+          restoredKey !== viewKey() ||
+          version !== S.loadVersion ||
+          $('#viewer').open ||
+          revision !== structuralRevision ||
+          externalRenameQueue.length
+        )
+          continue;
         await loadPage(true);
         if (restoredKey === viewKey() && S.loadVersion === version + 1)
           $('#viewport').scrollTop = scroll;
       } else await refreshGrowingView(null, true);
-      if (!$('#viewer').open && revision === structuralRevision && !externalRenameQueue.length)
+      if (
+        !$('#viewer').open &&
+        !renamingNodes.size &&
+        revision === structuralRevision &&
+        !externalRenameQueue.length
+      ) {
         structuralDirty = false;
+        window.invalidateFolderTree?.();
+      }
     }
   })().finally(() => {
     structuralTask = null;
@@ -1899,7 +2026,12 @@ function flushStructuralChanges() {
   return structuralTask;
 }
 async function recoverMissingBrowse(current, version, key, previous = S.current) {
-  const valid = () => version === S.loadVersion && key === viewKey() && !$('#viewer').open;
+  const valid = () =>
+    version === S.loadVersion &&
+    key === viewKey() &&
+    !$('#viewer').open &&
+    !renamingNodes.size &&
+    !externalRenameQueue.length;
   const cached = current ||
     (previous?.id === S.parent ? previous : null) || {
       id: S.parent,
@@ -1966,7 +2098,7 @@ function pruneMissingNavigation(missing, ancestor) {
       }
     }
     for (const id of removed) folderTree.open.delete(id);
-    window.invalidateFolderTree?.();
+    if (!structuralDirty && !renamingNodes.size) window.invalidateFolderTree?.();
   }
   for (const key of S.scrolls.keys()) {
     try {
@@ -3103,7 +3235,6 @@ window.album.onEvent((event) => {
         renderIntro(S.current);
     });
   } else if (event.type === 'changed') {
-    window.invalidateFolderTree?.();
     if (
       scanActive ||
       hasOnlineWork(latestOnlineProgress) ||
@@ -3223,14 +3354,9 @@ $$('[data-filter]').forEach(
       attempt(() => loadPage());
     })
 );
-$('#sort').onchange = (e) => {
-  S.sort = e.target.value;
-  attempt(() => loadPage());
-};
-$('#sort-direction').onclick = () => {
-  S.direction = S.direction === 'asc' ? 'desc' : 'asc';
-  attempt(() => loadPage());
-};
+$('#sort').onchange = (e) => attempt(() => changeBrowseSort(e.target.value));
+$('#sort-direction').onclick = () =>
+  attempt(() => changeBrowseSort(S.sort, S.direction === 'asc' ? 'desc' : 'asc'));
 $('#search').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
   const search = e.target.value.trim();
@@ -3303,9 +3429,9 @@ document.addEventListener(
       const init = await loadSummary();
       if (init.progress.active || init.progress.busy) showProgress(init.progress);
       if (init.online) showOnlineStatus(init.online);
-      const version = S.loadVersion + 1,
-        key = viewKey();
+      const version = S.loadVersion + 1;
       await loadPage();
+      const key = viewKey();
       requestBrowseFilesystemSync(version, key);
       if (!scanActive && !hasOnlineWork(latestOnlineProgress))
         $('#footer-status').textContent = '就绪';

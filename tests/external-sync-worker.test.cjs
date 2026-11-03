@@ -33,6 +33,47 @@ const holdRead = value => {
   return {path:path.resolve(value),promise,release,consumed:false};
 };
 if (workerData.holdDirectoryRead) readGate = holdRead(workerData.holdDirectoryRead);
+// Only this regression delays its first real debounce handle. Cancellation still
+// goes through native clearTimeout; later watcher deadlines run unchanged.
+let armFirstWatchTimer = false, firstWatchTimer = null, renameMoveGate = null;
+if (workerData.observeRenameWatchTimer) {
+  const nativeSetTimeout = global.setTimeout, nativeClearTimeout = global.clearTimeout;
+  global.setTimeout = (callback, delay, ...args) => {
+    const first = armFirstWatchTimer && !firstWatchTimer && callback.name === 'drainWatches';
+    const timer = nativeSetTimeout(callback, first ? Math.max(8000, delay) : delay, ...args);
+    if (first) {
+      firstWatchTimer = timer;
+      parentPort.postMessage({event:'fixture-watch-timer',data:{phase:'armed',delay,due:Date.now()+delay}});
+    }
+    return timer;
+  };
+  global.clearTimeout = timer => {
+    const result = nativeClearTimeout(timer);
+    if (timer && timer === firstWatchTimer)
+      parentPort.postMessage({event:'fixture-watch-timer',data:{phase:'cancelled',destroyed:timer._destroyed}});
+    return result;
+  };
+  const Module = require('node:module'), nativeLoad = Module._load;
+  Module._load = function(request,parent,isMain) {
+    const loaded = nativeLoad.apply(this,arguments);
+    if (request !== './fs-rename.cjs' || parent?.filename !== workerData.script) return loaded;
+    return {...loaded,createFsRename(options) {
+      let used = false;
+      return loaded.createFsRename({...options,moveNoReplace:async (...args) => {
+        if (!used) {
+          used = true;
+          let release;
+          const promise = new Promise(resolve => {release=resolve;});
+          renameMoveGate = {release};
+          parentPort.postMessage({event:'fixture-rename-move',data:{phase:'held',oldPath:args[0],path:args[1]}});
+          await promise;
+          parentPort.postMessage({event:'fixture-rename-move',data:{phase:'released'}});
+        }
+        return loaded.windowsMoveNoReplace(...args);
+      }});
+    }};
+  };
+}
 // Observe the real journal row immediately before the real indexing write. This
 // adds no SQL writes and does not replace the journal, scanner or transaction.
 if (workerData.observeRootUpsert) {
@@ -115,7 +156,9 @@ fs.promises.lstat = async (value, options) => {
   return nativeLstat(value, options);
 };
 workerData.control.on('message', message => {
-  if (message.type === 'fail-next-directory-read') failDirectory = path.resolve(message.path);
+  if (message.type === 'arm-first-watch-timer') armFirstWatchTimer = true;
+  else if (message.type === 'release-rename-move') {renameMoveGate?.release();renameMoveGate=null;}
+  else if (message.type === 'fail-next-directory-read') failDirectory = path.resolve(message.path);
   else if (message.type === 'hold-next-directory-read') {
     if (readGate) return workerData.control.postMessage({request:message.request,error:'A directory read gate is already armed'});
     readGate = holdRead(message.path);
@@ -155,6 +198,7 @@ async function client(dataDir, options = {}) {
       muteWatchNotifications: !!options.muteWatchNotifications,
       holdDirectoryRead: options.holdDirectoryRead || null,
       observeRootUpsert: options.observeRootUpsert || null,
+      observeRenameWatchTimer: !!options.observeRenameWatchTimer,
       control: channel.port2,
       script: path.resolve(__dirname, '../src/library-worker.cjs')
     },
@@ -282,6 +326,7 @@ async function client(dataDir, options = {}) {
     },
     async close() {
       if (closed) return;
+      channel.port1.postMessage({ type: 'release-rename-move' });
       channel.port1.postMessage({ type: 'release-directory-read' });
       channel.port1.postMessage({ type: 'release-directory-stat' });
       closed = true;
@@ -381,8 +426,81 @@ async function fixture(t) {
       await fs.mkdir(path.dirname(value), { recursive: true });
       await fs.writeFile(value, png);
     },
-    async move(from, to) {
-      await fs.rename(safe(from), safe(to));
+    async move(from, to, { retryWindowsBusy = false } = {}) {
+      const sourcePath = safe(from),
+        destinationPath = safe(to);
+      if (!retryWindowsBusy || process.platform !== 'win32') {
+        await fs.rename(sourcePath, destinationPath);
+        return;
+      }
+      // Only the offline-root trigger opts in. A transient Windows sharing
+      // conflict must not prevent exercising the unchanged business assertions.
+      const original = await fs.lstat(sourcePath, { bigint: true });
+      assert.ok(original.isDirectory() && !original.isSymbolicLink());
+      const started = performance.now(),
+        deadline = started + 2000;
+      let attempts = 0,
+        firstError;
+      const errors = [];
+      try {
+        for (;;) {
+          if (attempts && performance.now() >= deadline) throw firstError;
+          try {
+            safe(sourcePath);
+            safe(destinationPath);
+            const current = await fs.lstat(sourcePath, { bigint: true });
+            assert.ok(current.isDirectory() && !current.isSymbolicLink());
+            assert.equal(current.dev, original.dev, 'Offline root device must stay unchanged');
+            assert.equal(current.ino, original.ino, 'Offline root inode must stay unchanged');
+            assert.equal(
+              current.birthtimeNs,
+              original.birthtimeNs,
+              'Offline root creation identity must stay unchanged'
+            );
+            const parent = await fs.lstat(path.dirname(destinationPath));
+            assert.ok(parent.isDirectory() && !parent.isSymbolicLink());
+            try {
+              await fs.lstat(destinationPath);
+              throw new Error('Offline root destination must remain absent');
+            } catch (error) {
+              if (error.code !== 'ENOENT') throw error;
+            }
+          } catch (error) {
+            if (firstError) {
+              firstError.cause = error;
+              throw firstError;
+            }
+            throw error;
+          }
+          if (attempts && performance.now() >= deadline) throw firstError;
+          attempts++;
+          try {
+            await fs.rename(sourcePath, destinationPath);
+            return;
+          } catch (error) {
+            if (!['EPERM', 'EBUSY'].includes(error.code)) throw error;
+            firstError ||= error;
+            errors.push(error.code);
+            const remaining = deadline - performance.now();
+            if (remaining <= 0) throw firstError;
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(25 * 2 ** Math.min(attempts - 1, 3), 200, remaining))
+            );
+          }
+        }
+      } finally {
+        t.diagnostic(
+          JSON.stringify({
+            fixture: 'offline-root-native-rename',
+            sourcePath,
+            destinationPath,
+            attempts,
+            errors,
+            elapsedMs: Number((performance.now() - started).toFixed(3)),
+            budgetMs: 2000
+          })
+        );
+      }
     },
     async remove(value) {
       await fs.rm(safe(value), { recursive: true, force: false });
@@ -410,7 +528,7 @@ async function importOnce(c, f) {
     'real watch construction attempted'
   );
 }
-async function saveManualState(f, c, album, cover, unchangedImage) {
+async function saveManualState(f, c, album, cover, unchangedImage, options) {
   await c.close();
   const db = f.sql();
   try {
@@ -439,7 +557,7 @@ async function saveManualState(f, c, album, cover, unchangedImage) {
   } finally {
     db.close();
   }
-  return f.open();
+  return f.open(options);
 }
 async function assertManual(c, album, cover) {
   const row = await c.live(album);
@@ -690,7 +808,7 @@ test(
     await importOnce(c, f);
     const start = c.events.length,
       parked = path.join(f.tmp, 'temporarily-offline-source');
-    await f.move(f.source, parked);
+    await f.move(f.source, parked, { retryWindowsBusy: true });
     await c.hint();
     await c.until(
       () =>
@@ -719,7 +837,7 @@ test(
       db.close();
     }
     await f.image(path.join(parked, 'Album', 'Deep', 'added-offline.png'));
-    await f.move(parked, f.source);
+    await f.move(parked, f.source, { retryWindowsBusy: true });
     await c.hint();
     const added = path.join(deep, 'added-offline.png');
     await c.until(
@@ -1009,6 +1127,111 @@ test(
       recovered.scanCalls,
       0,
       'Both recoveries use durable startup continuation without a manual scan'
+    );
+  }
+);
+
+test(
+  'manual rename cancels a queued watch debounce without starving a later native external rename',
+  { timeout: 40000 },
+  async (t) => {
+    const f = await fixture(t),
+      album = path.join(f.source, 'Original Album'),
+      cover = path.join(album, 'Deep', 'keep.png'),
+      renamed = path.join(f.source, 'Renamed Album'),
+      external = path.join(f.source, 'External Album');
+    await f.image(cover);
+    let c = await f.open();
+    await importOnce(c, f);
+    await c.call('settings', { key: 'watchChanges', value: false });
+    c = await saveManualState(f, c, album, cover, undefined, { observeRenameWatchTimer: true });
+    await c.call('settings', { key: 'watchChanges', value: true });
+    await c.until(
+      () => c.events.some((row) => row.event === 'fixture-watch' && row.data.phase === 'installed'),
+      'native watcher installed after maintenance is ready'
+    );
+    await c.control({ type: 'arm-first-watch-timer' });
+    await c.control({
+      type: 'emit-watch-notification',
+      path: f.source,
+      eventType: 'change',
+      filename: path.basename(album)
+    });
+    const armed = await c.until(
+      () =>
+        c.events.find((row) => row.event === 'fixture-watch-timer' && row.data.phase === 'armed'),
+      'first real debounce handle is armed'
+    );
+    assert.ok(armed.data.delay > 0 && armed.data.delay <= 1500);
+    const manual = c.call('rename', { id: idFor(album), name: path.basename(renamed) });
+    // Attach a handler before awaiting the gate so an unexpected early rejection
+    // is still owned by this test and failure cleanup can unblock the mover.
+    manual.catch(() => {});
+    await c.until(
+      () =>
+        c.events.some((row) => row.event === 'fixture-rename-move' && row.data.phase === 'held'),
+      'manual rename reaches the real filesystem mover'
+    );
+    assert.ok(
+      c.events.some(
+        (row) =>
+          row.event === 'fixture-watch-timer' &&
+          row.data.phase === 'cancelled' &&
+          row.data.destroyed === true
+      ),
+      'rename cancelled the exact native debounce handle'
+    );
+    await c.until(
+      () => Date.now() > armed.data.due + 50,
+      'old production deadline passes while rename reserves the root'
+    );
+    const installedBefore = c.events.filter(
+      (row) => row.event === 'fixture-watch' && row.data.phase === 'installed'
+    ).length;
+    await c.control({ type: 'release-rename-move' });
+    const result = await manual;
+    assert.equal(result.oldId, idFor(album));
+    assert.equal(result.id, idFor(renamed));
+    assert.equal(result.path, renamed);
+    await c.until(
+      () =>
+        c.events.filter((row) => row.event === 'fixture-watch' && row.data.phase === 'installed')
+          .length > installedBefore,
+      'native watcher reinstalled after manual rename'
+    );
+    const renamedCover = path.join(renamed, 'Deep', 'keep.png'),
+      externalCover = path.join(external, 'Deep', 'keep.png');
+    await assertManual(c, renamed, renamedCover);
+    const afterManual = c.events.length;
+    await f.move(renamed, external);
+    await c.until(
+      () =>
+        c.events
+          .slice(afterManual)
+          .some(
+            (row) =>
+              row.event === 'changed' &&
+              row.data.renames?.some(
+                (move) => move.oldId === idFor(renamed) && move.id === idFor(external)
+              )
+          ),
+      'later native external rename is automatically reconciled',
+      12000
+    );
+    await c.idle();
+    assert.equal(await c.live(album), null);
+    assert.equal(await c.live(renamed), null);
+    await assertManual(c, external, externalCover);
+    assert.equal((await c.live(f.source)).files, 1);
+    assert.equal((await c.call('asset', { id: idFor(externalCover) })).path, externalCover);
+    assert.equal(c.scanCalls, 0, 'No manual scan or refresh in the regression worker');
+    assert.equal(
+      c.events.filter(
+        (row) =>
+          row.event === 'fixture-watch-notification' && row.data.phase === 'forwarded-control'
+      ).length,
+      1,
+      'Only the initial debounce was explicitly notified; the later rename uses the real OS watcher'
     );
   }
 );
