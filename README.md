@@ -1,4 +1,4 @@
-<img width="1920" height="1044" alt="微信图片_20261102235436_660_3" src="https://github.com/user-attachments/assets/734e2763-c14d-4ed1-9501-3d865021b3fd" /><img width="1920" height="1044" alt="微信图片_20261103000439_666_3" src="https://github.com/user-attachments/assets/01c29c0b-5e19-44a2-82dc-a4741983586a" /><img width="1920" height="1044" alt="微信图片_20261103001133_669_" src="https://github.com/user-attachments/assets/54604889-9f14-4631-89d9-2a9ada06ba2f" /># ACG-album
+<img width="1920" height="1044" alt="微信图片_20261103001133_669_" src="https://github.com/user-attachments/assets/54604889-9f14-4631-89d9-2a9ada06ba2f" /># ACG-album
 
 **给硬盘里的 ACG 收藏，一个想常常打开的相册。**
 
@@ -14,7 +14,7 @@ ACG-album 是为 ACG「囤囤鼠」准备的 Windows 本地相册。游戏 CG、
 
 > 1.2.1 调整首次中卡片与尺寸记忆，修复展开目录在后台索引和滚动期间闪烁，并汇入近期本机布局与排序修订。功能变化见 [1.2.1 说明](docs/RELEASE_NOTES_1.2.1.md)，安装与备份见 [安装说明](docs/INSTALLATION.md)。下方五张图片保留自此前实际界面；本轮功能的操作验证以随 Release 提供的实际报告为准。
 
-![Uploading 微信图片_20261103001133_669_.png…](
+<img width="1920" height="1044" alt="微信图片_20261103000439_666_3" src="https://github.com/user-attachments/assets/01c29c0b-5e19-44a2-82dc-a4741983586a" />
 
 ## 下载与版本选择
 
@@ -112,8 +112,7 @@ ACG-album 是为 ACG「囤囤鼠」准备的 Windows 本地相册。游戏 CG、
 - **GIF 与动态 WebP 也能调**：同一编辑器支持播放预览、逐帧查看、截取起止帧、统一帧时长和设置循环次数；可以导出动画副本，或把当前帧另存 PNG。时长留空保留原逐帧延时；GIF 时长按 10 ms 精度处理，APNG 仅支持静态帧编辑。
 - **缓存位置可管理**：在右上角「偏好设置 → 缓存与资料库」查看实际路径与占用，打开缓存目录、更换存储位置、恢复默认位置，或清空后重建。
 - **首页文字可编辑**：首页英文眉题、标题和说明可单击原位编辑，回车或失焦保存，Esc 取消，重启后保留；输入法组合输入不会被提前提交。
-
-![Uploading 微信图片_20261102235436_660_3.png…](
+<img width="1920" height="1044" alt="微信图片_20261102235436_660_3" src="https://github.com/user-attachments/assets/734e2763-c14d-4ed1-9501-3d865021b3fd" />
 
 ## 开始使用
 
