@@ -1,4 +1,4 @@
-<img width="1920" height="1044" alt="微信图片_20261103001133_669_" src="https://github.com/user-attachments/assets/54604889-9f14-4631-89d9-2a9ada06ba2f" /># ACG-album
+# ACG-album
 
 **给硬盘里的 ACG 收藏，一个想常常打开的相册。**
 
@@ -48,6 +48,7 @@ ACG-album 是为 ACG「囤囤鼠」准备的 Windows 本地相册。游戏 CG、
 - **批量导入反馈更稳定**：导入选择、扫描、在线补齐与取消收尾共用忙状态；侧栏添加按钮保持禁用反馈，取消按钮在任务收尾前保持可用。小、中、大卡片档位随窗口适配，新资料库以中档起步，保留已有显式尺寸和外观选择；跨页媒体按连续瀑布流排布，长图总高度限制继续保留。
 
 本轮改动的验证状态与使用边界见 [1.2.1 说明](docs/RELEASE_NOTES_1.2.1.md)。
+<img width="1920" height="1044" alt="微信图片_20261103001133_669_" src="https://github.com/user-attachments/assets/54604889-9f14-4631-89d9-2a9ada06ba2f" />
 
 ## 历史：1.1.1
 
