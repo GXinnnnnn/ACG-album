@@ -283,8 +283,13 @@ async function migrateSortKeys() {
     await yieldNow();
   }
 }
-function migrateBrowseSchema() {
-  browseDate.migrate();
+async function migrateBrowseSchema() {
+  const migrated = await browseDate.migrateAsync({
+    onProgress: (state) => send('dateMigration', state),
+    shouldStop: () => stopping,
+    yieldNow
+  });
+  if (!migrated || stopping) return;
   if (setting('searchVersion') !== 1) {
     db.exec(
       'DELETE FROM search_index; INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes WHERE missing=0'
@@ -433,6 +438,7 @@ function taskSnapshot() {
       active: onlineRunning,
       pausedReason: one('SELECT reason FROM match_resume WHERE singleton=1')?.reason || ''
     },
+    dateMigration: browseDate.status(),
     maintenance: { ...maintenanceState }
   };
 }
@@ -712,7 +718,12 @@ function list(options = {}) {
   // name index until migration commits, and expose that temporary order to callers.
   const sortFallback =
     !timelineDateOrder && sort === 'contentDate' && !browseDate.ready()
-      ? { requested: 'contentDate', sort: 'name', reason: 'content-date-migration' }
+      ? {
+          requested: 'contentDate',
+          sort: 'name',
+          direction: 'asc',
+          reason: 'content-date-migration'
+        }
       : null;
   const col = timelineDateOrder
     ? 'm.taken'
@@ -723,7 +734,7 @@ function list(options = {}) {
         size: "CASE WHEN n.kind='folder' THEN n.total_bytes ELSE n.bytes END",
         contentDate: 'n.content_date'
       }[sortFallback ? 'name' : sort] || 'n.sortkey';
-  const dir = direction === 'desc' ? 'DESC' : 'ASC',
+  const dir = !sortFallback && direction === 'desc' ? 'DESC' : 'ASC',
     clause = where.join(' AND ');
   const from = timelineDateOrder
     ? 'media m CROSS JOIN nodes n ON n.id=m.id'
@@ -4102,6 +4113,7 @@ const methods = {
     removal: rootRemoval.status(),
     online: onlineStatus({ active: onlineRunning }, { lightweight }),
     taskSnapshot: taskSnapshot(),
+    dateMigration: browseDate.status(),
     maintenance: { ...maintenanceState },
     stats: lightweight ? null : await methods.statistics(),
     dataDir: home
@@ -4572,7 +4584,8 @@ function startupResume() {
         try {
           if (stopping) return resolve(false);
           await recoverRenames();
-          migrateBrowseSchema();
+          await migrateBrowseSchema();
+          if (stopping) return resolve(false);
           migrateReviewPolicies();
           await migrateSortKeys();
           if (stopping) return resolve(false);
@@ -4620,7 +4633,7 @@ function startupResume() {
     );
     maintenanceTask.catch((error) => send('error', { message: error.message }));
   }
-  return { accepted: !stopping, taskSnapshot: taskSnapshot() };
+  return { accepted: !stopping, taskSnapshot: taskSnapshot(), dateMigration: browseDate.status() };
 }
 async function ensureMaintenance() {
   startupResume();
@@ -4672,5 +4685,8 @@ parentPort.on('message', async ({ request, method, args }) => {
   }
 });
 scanReserved = !!nextScanJob();
-parentPort.postMessage({ event: 'ready', data: { taskSnapshot: taskSnapshot() } });
+parentPort.postMessage({
+  event: 'ready',
+  data: { taskSnapshot: taskSnapshot(), dateMigration: browseDate.status() }
+});
 if (startupReleased) setImmediate(startupResume);

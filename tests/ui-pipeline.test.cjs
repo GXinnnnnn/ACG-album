@@ -129,9 +129,11 @@ function startupHarness({ statsReject = false, densityConfigured, density = 222 
       throw new Error(`unexpected API ${command}`);
     }
   });
-  new vm.Script(section('let summarySettingsApplied = false', 'let filterResizeObserver'), {
-    filename
-  }).runInContext(context);
+  new vm.Script(
+    section('function viewKey()', 'function snapshot()') +
+      section('let summarySettingsApplied = false', 'let filterResizeObserver'),
+    { filename }
+  ).runInContext(context);
   return {
     context,
     S,

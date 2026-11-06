@@ -6,7 +6,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 // Exercise the real panel controller with a small DOM adapter, without launching
 // Electron or an installer. Existing dialog tests cover mount/focus/lifetime.
-function harness({ edition = 'full', assets, failure = false } = {}) {
+function harness({
+  edition = 'full',
+  assets,
+  failure = false,
+  runtime = null,
+  runtimeReason = ''
+} = {}) {
   const calls = [],
     listeners = [],
     nodes = new Map();
@@ -57,6 +63,8 @@ function harness({ edition = 'full', assets, failure = false } = {}) {
   const repo = 'custom-owner/custom-repo';
   const latest = {
     status: 'available',
+    runtime,
+    runtimeReason,
     repository: repo,
     latestVersion: '2.0.0',
     url: `https://github.com/${repo}/releases/tag/v2.0.0`,
@@ -84,7 +92,13 @@ function harness({ edition = 'full', assets, failure = false } = {}) {
       for (const handler of listeners)
         handler({
           type: 'update',
-          data: { phase: 'ready', repository: repo, version: '2.0.0', edition: args.edition }
+          data: {
+            phase: 'ready',
+            repository: repo,
+            version: '2.0.0',
+            edition: args.edition,
+            mode: args.mode
+          }
         });
     }
   };
@@ -123,7 +137,13 @@ function harness({ edition = 'full', assets, failure = false } = {}) {
     node(selector).listeners.click({
       target: { closest: (target) => (target === action ? {} : null) }
     });
-  return { window, calls, node, click };
+  return {
+    window,
+    calls,
+    node,
+    click,
+    emit: (data) => listeners.forEach((handler) => handler({ type: 'update', data }))
+  };
 }
 
 test('opening updates auto-checks custom repository, defaults to current edition, and never downloads or installs', async () => {
@@ -171,10 +191,103 @@ test('missing current edition cannot silently pick another installer and missing
   );
 });
 
+test('compatible runtime defaults smaller; explicit full mode and edition switching remain available', async () => {
+  const h = harness({
+    runtime: { edition: 'full', size: 1234, verifiable: true },
+    runtimeReason: '原随包索引身份全部匹配'
+  });
+  await h.window.showUpdates();
+  const mode = h.node('[data-update-assets]').querySelector('#album-update-mode');
+  assert.equal(mode.value, 'runtime');
+  assert.match(
+    h.node('[data-update-assets]').querySelector('[data-update-mode-help]').textContent,
+    /原随包索引身份全部匹配/
+  );
+  await h.click('[data-update-assets]', '[data-update-download]');
+  assert.equal(h.calls.find(([method]) => method === 'downloadUpdate')[1].mode, 'runtime');
+  assert.match(h.node('[data-update-transfer]').innerHTML, /原随包索引保持原路径与内容/);
+  mode.value = 'full';
+  mode.onchange();
+  assert.equal(mode.value, 'full');
+  const select = h.node('[data-update-assets]').querySelector('select');
+  select.value = 'lite';
+  select.onchange();
+  assert.equal(mode.value, 'full');
+  assert.equal(mode.querySelector('option[value="runtime"]').disabled, true);
+});
+
+test('timeout, manual cancel and network states have a working retry and manual download link', async () => {
+  const h = harness();
+  await h.window.showUpdates();
+  for (const [phase, errorKind, label] of [
+    ['error', 'timeout', /下载超时/],
+    ['error', 'network', /网络连接中断/],
+    ['cancelled', 'cancelled', /你已取消/]
+  ]) {
+    h.emit({
+      phase,
+      errorKind,
+      error: 'fixture',
+      edition: 'full',
+      mode: 'full',
+      repository: 'custom-owner/custom-repo',
+      version: '2.0.0',
+      releaseUrl: 'https://github.com/custom-owner/custom-repo/releases'
+    });
+    assert.match(h.node('[data-update-transfer]').innerHTML, label);
+    assert.match(h.node('[data-update-transfer]').innerHTML, /前往发布页手动下载/);
+    await h.click('[data-update-transfer]', '[data-update-retry]');
+  }
+  assert.equal(h.calls.filter(([method]) => method === 'downloadUpdate').length, 3);
+});
+
+test('ownership refusal names the path, disables installation and supplies a manual release link', async () => {
+  const h = harness();
+  await h.window.showUpdates();
+  h.emit({
+    phase: 'ready',
+    errorKind: 'ownership',
+    error: '未知文件 C:\\Apps\\notes.txt；请从发布页手动更新。',
+    edition: 'full',
+    mode: 'full',
+    repository: 'custom-owner/custom-repo',
+    version: '2.0.0',
+    releaseUrl: 'https://github.com/custom-owner/custom-repo/releases'
+  });
+  const html = h.node('[data-update-transfer]').innerHTML;
+  assert.match(html, /notes\.txt/);
+  assert.match(html, /data-update-install disabled/);
+  assert.match(html, /前往发布页手动更新/);
+  assert.match(html, /custom-owner\/custom-repo\/releases/);
+});
+
 test('automatic metadata failure leaves a retryable error and a release-page link', async () => {
   const h = harness({ failure: true });
   await h.window.showUpdates();
   assert.match(h.node('#album-update-error').textContent, /offline/);
   assert.match(h.node('[data-update-result]').innerHTML, /custom-owner\/custom-repo\/releases/);
   assert.equal(h.node('[data-update-check]').disabled, false);
+});
+
+test('unknown current edition displays unknown and needs an explicit choice before downloading', async () => {
+  const h = harness({ edition: null });
+  await h.window.showUpdates();
+  assert.match(h.node('[data-update-version]').textContent, /未知版型/);
+  assert.match(h.node('[data-update-assets]').innerHTML, /当前 未知版型/);
+  const select = h.node('[data-update-assets]').querySelector('select');
+  const button = h.node('[data-update-assets]').querySelector('[data-update-download]');
+  assert.equal(select.value, '');
+  assert.equal(button.disabled, true);
+  await h.click('[data-update-assets]', '[data-update-download]');
+  assert.equal(
+    h.calls.some(([method]) => method === 'downloadUpdate'),
+    false
+  );
+  select.value = 'full';
+  select.onchange();
+  assert.equal(button.disabled, false);
+  await h.click('[data-update-assets]', '[data-update-download]');
+  const download = h.calls.find(([method]) => method === 'downloadUpdate');
+  assert.equal(download[1].edition, 'full');
+  assert.equal(download[1].mode, 'full');
 });

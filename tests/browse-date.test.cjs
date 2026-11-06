@@ -272,6 +272,207 @@ test('failed legacy backfill rolls back cached dates, indexes and version before
   assert.equal(f.node('failure').content_date, 600);
 });
 
+test('async migration yields committed bounded batches and observes interleaved trigger updates', async (t) => {
+  const f = fixture(t);
+  for (let i = 1; i <= 7; i++) f.insert('image-' + i, 900, i * 10);
+  const dates = createBrowseDate(f.db);
+  const progress = [];
+  let interleaved = false,
+    timerRan = false;
+  setImmediate(() => {
+    timerRan = true;
+  });
+  const task = dates.migrateAsync({
+    batchSize: 2,
+    onProgress(state) {
+      progress.push(state);
+      assert.equal(f.db.isTransaction, false, 'progress is published outside write transactions');
+      if (state.stage === 'backfill' && state.processed === 2) {
+        // Simulate callbacks queued between pages, including both rename orders.
+        f.db.exec("BEGIN; UPDATE nodes SET id='renamed' WHERE id='image-1'; COMMIT");
+        f.media('renamed', -100, 'exif-offset');
+        f.db.prepare("UPDATE nodes SET birth=77,kind='folder' WHERE id='image-2'").run();
+        f.insert('new', 500, 100);
+        interleaved = true;
+      }
+      if (state.stage !== 'ready') {
+        assert.equal(dates.ready(), false);
+        assert.equal(
+          f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateVersion'").get(),
+          undefined
+        );
+      } else {
+        assert.equal(dates.ready(), true);
+        assert.equal(state.indexesCompleted, 2);
+        assert.equal(
+          f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateVersion'").get()
+            .value,
+          '2'
+        );
+      }
+    }
+  });
+  assert.equal(dates.migrateAsync(), task, 'concurrent async calls share work');
+  assert.throws(() => dates.migrate(), /already running/);
+  assert.equal(await task, true);
+  assert.ok(timerRan && interleaved);
+  assert.deepEqual(
+    progress.filter((p) => p.stage === 'backfill').map((p) => p.processed),
+    [0, 2, 4, 6, 7]
+  );
+  assert.equal(f.node('renamed').content_date, -100);
+  assert.equal(f.node('image-2').content_date, 77);
+  assert.equal(
+    f.node('new').content_date,
+    100,
+    'new rows outside the bounded snapshot use triggers'
+  );
+  assert.deepEqual(
+    progress.filter((p) => p.stage === 'index' && p.blocking).map((p) => p.indexesCompleted),
+    [0, 1]
+  );
+  assert.equal(dates.status().stage, 'ready');
+  assert.deepEqual(
+    progress.map((p) => p.revision),
+    progress.map((_, i) => i + 1)
+  );
+  assert.equal(dates.status().revision, progress.at(-1).revision);
+  const copy = dates.status();
+  copy.ready = false;
+  assert.equal(dates.status().ready, true, 'snapshots cannot mutate migration state');
+});
+
+test('async failure truly rolls back its entire batch and cursor, retaining earlier durable batches', async (t) => {
+  const f = fixture(t);
+  for (let i = 1; i <= 4; i++) f.insert('image-' + i, 900, i * 10);
+  const dates = createBrowseDate(f.db);
+  f.db.exec(`CREATE TRIGGER fail_async_date BEFORE UPDATE OF content_date ON nodes
+    WHEN NEW.id='image-4' BEGIN SELECT RAISE(ABORT,'fixture async backfill failure'); END`);
+  await assert.rejects(dates.migrateAsync({ batchSize: 2 }), /fixture async backfill failure/);
+  assert.equal(dates.status().stage, 'error');
+  assert.equal(dates.ready(), false);
+  assert.equal(f.node('image-1').content_date, 10);
+  assert.equal(f.node('image-2').content_date, 20);
+  assert.equal(
+    f.node('image-3').content_date,
+    null,
+    'earlier write within failed batch rolled back'
+  );
+  assert.equal(f.node('image-4').content_date, null);
+  const cursor = JSON.parse(
+    f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateCursor'").get().value
+  );
+  assert.equal(cursor.after, 2);
+  assert.equal(cursor.processed, 2);
+  assert.equal(
+    f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateVersion'").get(),
+    undefined
+  );
+  assert.equal(dates.status().indexesCompleted, 0);
+  f.db.exec('DROP TRIGGER fail_async_date');
+  const resumed = createBrowseDate(f.db);
+  assert.equal(resumed.status().processed, 2);
+  const batches = [];
+  await resumed.migrateAsync({
+    batchSize: 2,
+    onProgress: (p) => {
+      if (p.stage === 'backfill') batches.push(p.processed);
+    }
+  });
+  assert.deepEqual(batches, [2, 4]);
+  assert.equal(f.node('image-3').content_date, 30);
+  assert.equal(
+    f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateCursor'").get(),
+    undefined
+  );
+});
+
+test('async pause and real database reopen reuse cursor and a committed staged index', async (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  // Keep the tiny owned fixture as evidence; no user library or source paths are used.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acg-browse-date-reopen-'));
+  const filename = path.join(directory, 'fixture.sqlite');
+  const f = fixture(t);
+  for (let i = 1; i <= 5; i++) f.insert('image-' + i, 900, i * 10);
+  const dates = createBrowseDate(f.db);
+  let stop = false;
+  assert.equal(
+    await dates.migrateAsync({
+      batchSize: 2,
+      shouldStop: () => stop,
+      onProgress(p) {
+        if (p.stage === 'backfill' && p.processed === 2) stop = true;
+      }
+    }),
+    false
+  );
+  assert.equal(dates.status().stage, 'paused');
+  assert.equal(dates.ready(), false);
+  // VACUUM INTO copies committed SQLite state, then a new connection actually opens it.
+  f.db.prepare('VACUUM INTO ?').run(filename);
+  let db = new DatabaseSync(filename);
+  let reopened = createBrowseDate(db);
+  const backfills = [];
+  stop = false;
+  assert.equal(
+    await reopened.migrateAsync({
+      batchSize: 2,
+      shouldStop: () => stop,
+      onProgress(p) {
+        if (p.stage === 'backfill') backfills.push(p.processed);
+        if (p.stage === 'index' && !p.blocking && p.indexesCompleted === 1) stop = true;
+      }
+    }),
+    false
+  );
+  assert.deepEqual(backfills, [2, 4, 5]);
+  assert.equal(reopened.ready(), false);
+  assert.equal(reopened.status().indexesCompleted, 1);
+  db.close();
+  db = new DatabaseSync(filename);
+  t.after(() => db.close());
+  reopened = createBrowseDate(db);
+  assert.equal(reopened.status().processed, 5);
+  assert.equal(reopened.status().indexesCompleted, 1);
+  assert.equal(await reopened.migrateAsync(), true);
+  assert.equal(reopened.ready(), true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM nodes WHERE content_date IS NULL').get().n, 0);
+});
+
+test('async index failure leaves the version uncommitted and safely retries without backfilling again', async (t) => {
+  const f = fixture(t);
+  f.insert('first', 900, 100);
+  const dates = createBrowseDate(f.db);
+  // Name collision causes real CREATE INDEX failure after the parent index commits.
+  f.db.exec('CREATE TABLE nodes_global_content_date(value TEXT)');
+  await assert.rejects(dates.migrateAsync(), /already a table named nodes_global_content_date/);
+  assert.equal(dates.ready(), false);
+  assert.equal(dates.status().indexesCompleted, 1);
+  assert.equal(
+    f.db.prepare("SELECT value FROM settings WHERE key='browseContentDateVersion'").get(),
+    undefined
+  );
+  f.db.exec('DROP TABLE nodes_global_content_date');
+  const writes = f.db.prepare('SELECT total_changes() n').get().n;
+  await dates.migrateAsync();
+  // Only the version insert and cursor delete change rows on retry.
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n - writes, 2);
+  assert.equal(dates.ready(), true);
+});
+
+test('a version marker without both indexes remains unavailable until repaired', async (t) => {
+  const f = fixture(t);
+  createBrowseDate(f.db).migrate();
+  f.db.exec('DROP INDEX nodes_global_content_date');
+  const dates = createBrowseDate(f.db);
+  assert.equal(dates.ready(), false);
+  await dates.migrateAsync();
+  assert.equal(dates.ready(), true);
+  assert.equal(dates.status().indexesCompleted, 2);
+});
+
 const scope = (view, p = null) => JSON.stringify([view, p]);
 test('browse preferences accept canonical Unicode, UNC and long Windows scopes without changing LRU order', () => {
   const input = {};

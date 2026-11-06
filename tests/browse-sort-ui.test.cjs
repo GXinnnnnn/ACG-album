@@ -314,7 +314,8 @@ test('actual navigation restores saved parent/child before list; search and filt
   assert.equal(h.state.sort, 'name');
   await vm.runInContext("changeBrowseSort('modified','desc');", h.context);
   await vm.runInContext("navigate({parent:'child'})", h.context);
-  assert.equal(h.state.sort, 'name');
+  assert.equal(h.state.sort, 'contentDate');
+  assert.equal(h.state.direction, 'desc');
   await vm.runInContext("changeBrowseSort('size','asc')", h.context);
   h.state.search = 'image';
   h.state.filter = 'images';
@@ -447,6 +448,109 @@ test('overview date preserves content_date including zero; folders prefer birth 
     roots.map((n) => n.id),
     ['c', 'e', 'd', 'f', 'a', 'b']
   );
+});
+test('layer defaults follow imported roots, not physical path depth; explicit defaults survive restart and changed roots', async () => {
+  let stored;
+  const { api, memory } = fixture(async (value) => {
+    stored = plain(value);
+  });
+  const rootContext = { insideAlbum: true, importedRoot: true },
+    childContext = { insideAlbum: true, importedRoot: false };
+  assert.deepEqual(plain(memory.get('library', 'D:/深/层/导入根', rootContext)), {
+    sort: 'name',
+    direction: 'asc'
+  });
+  assert.deepEqual(plain(memory.get('library', 'D:/导入根/一级', childContext)), {
+    sort: 'contentDate',
+    direction: 'desc'
+  });
+  assert.deepEqual(plain(memory.get('library', 'D:/导入根/一级/二级', childContext)), {
+    sort: 'contentDate',
+    direction: 'desc'
+  });
+  assert.equal(Object.keys(memory.snapshot()).length, 0, 'defaults do not write preferences');
+  assert.equal(memory.set('library', 'D:/导入根/一级', { sort: 'name', direction: 'asc' }), true);
+  await memory.flush();
+  const next = api.create({
+    save: async () => {
+      throw Error('read must not save');
+    }
+  });
+  next.hydrate(stored, next.beginRead());
+  assert.deepEqual(plain(next.get('library', 'd:/导入根/一级', childContext)), {
+    sort: 'name',
+    direction: 'asc'
+  });
+  assert.deepEqual(plain(next.get('library', 'd:/导入根/一级', rootContext)), {
+    sort: 'name',
+    direction: 'asc'
+  });
+});
+test('return navigation restores before delayed ancestors without a cold list or a second reset', async () => {
+  const h = appFixture(),
+    grid = h.context.grid,
+    ancestors = deferred(),
+    baseApi = h.context.api,
+    cached = new Map();
+  let active = null,
+    resets = 0,
+    restores = 0;
+  grid.reset = () => {
+    resets++;
+  };
+  grid.retain = (key, scroll) => {
+    if (active !== key) return false;
+    cached.set(key, { scroll, total: grid.total });
+    active = null;
+    return true;
+  };
+  grid.restore = (key) => {
+    const saved = cached.get(key);
+    if (!saved) return null;
+    cached.delete(key);
+    active = key;
+    grid.total = saved.total;
+    h.$('#viewport').scrollTop = saved.scroll;
+    restores++;
+    return saved.scroll;
+  };
+  grid.load = async (q, version, key) => {
+    active = key;
+    grid.total = 42;
+    h.queries.push(plain(q));
+    return grid.total;
+  };
+  await vm.runInContext("navigate({parent:'root'})", h.context);
+  h.$('#viewport').scrollTop = 1200;
+  await vm.runInContext("navigate({parent:'child'})", h.context);
+  const coldCalls = h.queries.length;
+  h.context.api = (method, args) =>
+    method === 'ancestors' ? ancestors.promise : baseApi(method, args);
+  const pending = vm.runInContext('back()', h.context);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(restores, 1, 'cached parent is restored before ancestor RPC resolves');
+  assert.equal(h.$('#viewport').scrollTop, 1200);
+  assert.equal(h.queries.length, coldCalls);
+  assert.equal(resets, 0, 'ordinary navigation leaves reset ownership to the grid');
+  ancestors.resolve([]);
+  await pending;
+  assert.equal(h.$('#viewport').scrollTop, 1200);
+});
+test('restored scroll zero is a hit, timeline month and place have distinct view keys', async () => {
+  const h = appFixture();
+  h.state.parent = 'root';
+  h.context.grid.restore = () => 0;
+  h.context.grid.total = 7;
+  await vm.runInContext('loadPage(true)', h.context);
+  assert.equal(h.queries.length, 0);
+  h.state.view = 'timeline';
+  h.state.timelineMonth = '2026-10';
+  const first = vm.runInContext('viewKey()', h.context);
+  h.state.timelineMonth = '2026-11';
+  assert.notEqual(vm.runInContext('viewKey()', h.context), first);
+  const month = vm.runInContext('viewKey()', h.context);
+  h.state.timelinePlace = 'Tokyo';
+  assert.notEqual(vm.runInContext('viewKey()', h.context), month);
 });
 test('toolbar and real browse context menu call the shared persistent action with a distinct 日期 option', () => {
   assert.match(appSource, /#sort'\)\.onchange[^\n]*changeBrowseSort/);

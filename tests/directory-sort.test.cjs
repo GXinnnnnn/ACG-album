@@ -203,6 +203,7 @@ test('directory ordering uses actual natural names, separate filesystem dates an
   assert.deepEqual(cached.sortFallback, {
     requested: 'contentDate',
     sort: 'name',
+    direction: 'asc',
     reason: 'content-date-migration'
   });
   assert.ok(

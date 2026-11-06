@@ -5,7 +5,8 @@
   font-family: 'ACG Lanting Yuan';
   src:
     local('方正兰亭圆_GBK'),
-    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/regular.ttf') format('truetype');
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -14,7 +15,8 @@
   font-family: 'ACG Lanting Yuan';
   src:
     local('方正兰亭圆_GBK_准'),
-    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/medium.ttf') format('truetype');
   font-style: normal;
   font-weight: 500;
   font-display: swap;
@@ -23,7 +25,8 @@
   font-family: 'ACG Lanting Yuan';
   src:
     local('方正兰亭圆_GBK_中'),
-    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
   font-style: normal;
   font-weight: 600;
   font-display: swap;
@@ -32,7 +35,8 @@
   font-family: 'ACG Lanting Yuan';
   src:
     local('方正兰亭圆_GBK_中粗'),
-    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/bold.ttf') format('truetype');
   font-style: normal;
   font-weight: 700 800;
   font-display: swap;
@@ -41,7 +45,8 @@
   font-family: 'ACG Lanting Yuan';
   src:
     local('方正兰亭圆_GBK_特'),
-    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
   font-style: normal;
   font-weight: 900;
   font-display: swap;
@@ -50,7 +55,8 @@
   font-family: '方正兰亭圆_GBK';
   src:
     local('方正兰亭圆_GBK'),
-    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/regular.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/regular.ttf') format('truetype');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -59,7 +65,8 @@
   font-family: '方正兰亭圆_GBK_准';
   src:
     local('方正兰亭圆_GBK_准'),
-    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/medium.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/medium.ttf') format('truetype');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -68,7 +75,8 @@
   font-family: '方正兰亭圆_GBK_中';
   src:
     local('方正兰亭圆_GBK_中'),
-    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/semibold.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/semibold.ttf') format('truetype');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -77,7 +85,8 @@
   font-family: '方正兰亭圆_GBK_中粗';
   src:
     local('方正兰亭圆_GBK_中粗'),
-    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/bold.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/bold.ttf') format('truetype');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
@@ -86,7 +95,8 @@
   font-family: '方正兰亭圆_GBK_特';
   src:
     local('方正兰亭圆_GBK_特'),
-    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
+    url('../assets/fonts/founder-lanting-yuan/heavy.ttf') format('truetype'),
+    url('../../../fonts/founder-lanting-yuan/heavy.ttf') format('truetype');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;

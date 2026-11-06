@@ -810,6 +810,7 @@ function renderFolderTree() {
 }
 function updateCoverNode(n) {
   if (!n) return;
+  grid.invalidateNavigationCache?.();
   for (const page of folderTree.pages.values())
     for (const item of page.items) if (item.id === n.id) Object.assign(item, n);
   const opened = folderTree.openNodes.get(n.id);
@@ -824,7 +825,8 @@ function updateCoverNode(n) {
       img.style.display = '';
       applyCoverCrop(img, n);
       const src = thumb(n);
-      if (img.getAttribute('src') !== src) img.src = src;
+      if (img.getAttribute('src')?.replace(/&p=1(?=&|$)/g, '') !== src.replace(/&p=1(?=&|$)/g, ''))
+        img.src = src;
     }
   }
   for (const el of $$(`.album-card[data-id="${n.id}"]`)) {
@@ -840,7 +842,7 @@ function updateCoverNode(n) {
       n.cover_source === 'folder-icon' || n.cover_source === 'local-icon' || !n.cover
     );
     applyCoverCrop(img, n);
-    if (img.getAttribute('src') !== src) {
+    if (img.getAttribute('src')?.replace(/&p=1(?=&|$)/g, '') !== src.replace(/&p=1(?=&|$)/g, '')) {
       img.fetchPriority = 'high';
       img.src = src;
     }
@@ -864,7 +866,8 @@ function updateCoverNode(n) {
       applyCoverCrop(img, n);
       img.classList.toggle('folder-icon', n.cover_source === 'folder-icon' || !n.cover);
       const src = thumb(n);
-      if (img.getAttribute('src') !== src) img.src = src;
+      if (img.getAttribute('src')?.replace(/&p=1(?=&|$)/g, '') !== src.replace(/&p=1(?=&|$)/g, ''))
+        img.src = src;
       tile.querySelector('.card-review')?.remove();
       tile.querySelector('.collection-image').insertAdjacentHTML('beforeend', cardReviewBadge(n));
       tile

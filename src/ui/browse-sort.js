@@ -3,8 +3,8 @@
 (() => {
   const sorts = new Set(['name', 'date', 'modified', 'size', 'contentDate']);
   const views = new Set(['library', 'favorites', 'pending', 'timeline']);
-  const defaultPair = (view) =>
-    view === 'timeline'
+  const defaultPair = (view, { insideAlbum = false, importedRoot = false } = {}) =>
+    view === 'timeline' || (view === 'library' && insideAlbum && !importedRoot)
       ? { sort: 'contentDate', direction: 'desc' }
       : { sort: 'name', direction: 'asc' };
   function normalizePath(value) {
@@ -169,20 +169,22 @@
         persist();
         return true;
       },
-      get(view, path = null) {
+      get(view, path = null, context = {}) {
         const key = scope(view, path),
           value = entries.get(key);
         if (value) {
           entries.delete(key);
           entries.set(key, value);
         }
-        return { ...(value || defaultPair(view)) };
+        return { ...(value || defaultPair(view, context)) };
       },
       set(view, path, pair) {
         const key = scope(view, path);
         if (!key || !validPair(pair)) return false;
-        const previous = entries.get(key) || defaultPair(view);
-        if (previous.sort === pair.sort && previous.direction === pair.direction) {
+        // An explicit first choice is meaningful even when it equals today's
+        // default: importing a parent later must not replace that saved choice.
+        const previous = entries.get(key);
+        if (previous?.sort === pair.sort && previous.direction === pair.direction) {
           persist();
           return false;
         }

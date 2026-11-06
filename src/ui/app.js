@@ -175,7 +175,13 @@ function restoreBrowseSort() {
   if (!browseSortMemory) return;
   const path = browseSortPath();
   if (S.parent && !path) return;
-  Object.assign(S, browseSortMemory.get(S.view, path));
+  Object.assign(
+    S,
+    browseSortMemory.get(S.view, path, {
+      insideAlbum: !!S.parent,
+      importedRoot: S.roots.some((root) => root.id === S.parent)
+    })
+  );
 }
 let browseSortChangeVersion = 0;
 async function changeBrowseSort(sort = S.sort, direction = S.direction) {
@@ -227,7 +233,16 @@ function isOverview() {
   return !S.parent && !S.search && S.view === 'library' && S.filter !== 'images';
 }
 function viewKey() {
-  return JSON.stringify([S.view, S.parent, S.search, S.filter, S.sort, S.direction]);
+  return JSON.stringify([
+    S.view,
+    S.parent,
+    S.search,
+    S.filter,
+    S.sort,
+    S.direction,
+    S.view === 'timeline' ? S.timelineMonth || '' : '',
+    S.view === 'timeline' ? S.timelinePlace || '' : ''
+  ]);
 }
 function snapshot() {
   return {
@@ -249,6 +264,7 @@ async function navigate(
     S.history.push(snapshot());
     S.scrolls.set(viewKey(), $('#viewport').scrollTop);
   }
+  grid.retain?.(viewKey(), $('#viewport').scrollTop);
   Object.assign(S, { view, parent, search, filter });
   $('#search').value = search;
   const version = S.loadVersion + 1;
@@ -277,6 +293,7 @@ async function back() {
     if (S.parent) return navigate({}, false);
     return;
   }
+  grid.retain?.(viewKey(), $('#viewport').scrollTop);
   Object.assign(S, previous);
   $('#search').value = S.search;
   const version = S.loadVersion + 1;
@@ -496,6 +513,8 @@ async function loadSummary() {
   }
   renderSummaryStats(init.stats);
   updateSidebar();
+  if (init.dateMigration && typeof showDateMigration === 'function')
+    showDateMigration(init.dateMigration);
   return init;
 }
 async function loadPage(keepScroll = false) {
@@ -519,7 +538,9 @@ async function loadPage(keepScroll = false) {
   }
   if (S.parent && !S.current) S.parent = null;
   if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
-  grid.reset();
+  // Restore the already decoded cards synchronously, before breadcrumbs or any
+  // background list validation can finish. A cold load owns its single reset.
+  const restoredScroll = isOverview() ? null : (grid.restore?.(viewKey(), version) ?? null);
   $('#category-overview').replaceChildren();
   $('#empty-state').replaceChildren();
   $('#intro-area').replaceChildren();
@@ -569,20 +590,24 @@ async function loadPage(keepScroll = false) {
   renderBreadcrumbs(ancestors);
   if (S.current && !S.search) renderIntro(S.current);
   if (isOverview()) {
+    grid.retain?.();
+    grid.reset();
     grid.hide();
     setResultCount(`${fmt(S.roots.length)} 个分类`);
     if (!S.roots.length) renderEmpty();
     else await renderOverview(version);
   } else {
-    const total = await grid.load(queryArgs(), version);
+    const total =
+      restoredScroll === null ? await grid.load(queryArgs(), version, viewKey()) : grid.total;
     if (version !== S.loadVersion) return;
     setResultCount(`${fmt(total)} 项`);
     if (!total) renderEmpty(false);
   }
-  if (keepScroll) $('#viewport').scrollTop = scroll;
-  else $('#viewport').scrollTop = 0;
+  $('#viewport').scrollTop = restoredScroll ?? (keepScroll ? scroll : 0);
   updateScrollActions();
   scheduleSummaryDetails();
+  if (restoredScroll !== null && typeof scheduleGrowingRefresh === 'function')
+    scheduleGrowingRefresh();
 }
 let filterResizeObserver;
 function updateFilterIndicator() {
@@ -739,7 +764,10 @@ function updateFolderCard(
   );
   applyCoverCrop(img, n);
   const src = thumb(n, width);
-  if (img.getAttribute('src') !== src) img.src = src;
+  // Queue priority is a hint, not image identity. Keep a decoded cover when
+  // only that hint differs between initial rendering and data reconciliation.
+  if (img.getAttribute('src')?.replace(/&p=1(?=&|$)/g, '') !== src.replace(/&p=1(?=&|$)/g, ''))
+    img.src = src;
   b.querySelector('.card-title').textContent = n.name;
   const subtitle = b.querySelector('.card-subtitle');
   subtitle.firstElementChild.textContent = n.folders ? fmt(n.folders) + ' 个子相册' : '本地相册';
@@ -1900,8 +1928,16 @@ async function refreshGrowingView(renameResult = null, structuralPass = false) {
       S.current = recovery.node;
       return loadPage(true);
     }
-    const total = await grid.refreshGrowing();
-    if (version !== S.loadVersion || key !== viewKey() || $('#viewer').open) return;
+    const args = JSON.stringify(grid.args),
+      total = await grid.refreshGrowing();
+    if (
+      version !== S.loadVersion ||
+      key !== viewKey() ||
+      args !== JSON.stringify(grid.args) ||
+      $('#viewer').open
+    )
+      return;
+    grid.commitNavigationKey?.(key, version);
     setResultCount(`${fmt(total)} 项`);
     if (total) $('#empty-state').replaceChildren();
     else renderEmpty(false);
@@ -1958,6 +1994,7 @@ let structuralDirty = false,
   structuralTask = null;
 const externalRenameQueue = [];
 function rememberStructuralChange(data) {
+  if (typeof grid !== 'undefined') grid.invalidateNavigationCache?.();
   structuralDirty = true;
   structuralRevision++;
   if (typeof folderTree !== 'undefined') {
@@ -3031,6 +3068,66 @@ function paintProgress({
     bar.scanMotion = null;
   }
 }
+let latestDateMigration = null;
+function renderDateMigration() {
+  const p = latestDateMigration;
+  if (!p) return;
+  const backfill = p.stage === 'backfill',
+    total = Number.isFinite(p.total) ? p.total : null,
+    processed = Math.max(0, Number(p.processed) || 0),
+    indexing = p.stage === 'index',
+    active = !!p.active,
+    error = p.error || '',
+    label = p.ready
+      ? '完成'
+      : error
+        ? '未完成'
+        : indexing
+          ? `索引 ${p.indexesCompleted || 0}/${p.indexesTotal || 2}`
+          : backfill && total !== null
+            ? `${fmt(processed)}/${fmt(total)}`
+            : '准备中…';
+  paintProgress({
+    title: p.ready ? '日期缓存已准备好' : error ? '日期缓存暂未完成' : '正在准备日期排序',
+    detail: p.ready
+      ? '已启用缓存日期排序'
+      : error
+        ? String(error)
+        : indexing
+          ? '正在建立日期索引，此阶段无法显示准确百分比'
+          : backfill
+            ? `已缓存 ${fmt(processed)} 项${total === null ? '' : ` · 共 ${fmt(total)} 项`}`
+            : '正在读取日期缓存状态',
+    current: p.ready
+      ? '保留已加载封面与滚动位置。'
+      : '日期尚未准备的相册先按名称显示，完成后使用日期排序。',
+    active,
+    paused: !active && !p.ready,
+    percent: p.ready ? 100 : backfill && total > 0 ? Math.floor((processed / total) * 100) : null,
+    label
+  });
+}
+function showDateMigration(data) {
+  if (!data || typeof data !== 'object') return;
+  if (
+    Number.isFinite(data.revision) &&
+    Number.isFinite(latestDateMigration?.revision) &&
+    data.revision < latestDateMigration.revision
+  )
+    return;
+  const wasActive = !!latestDateMigration?.active;
+  latestDateMigration = data;
+  if (
+    (data.active || wasActive || data.error) &&
+    !scanActive &&
+    !hasOnlineWork(latestOnlineProgress)
+  )
+    renderDateMigration();
+  if (data.ready && wasActive) {
+    grid.invalidateNavigationCache?.();
+    if (S.sort === 'contentDate') scheduleGrowingRefresh();
+  }
+}
 function showProgress(p) {
   // An idle worker snapshot can still contain the previous batch's totals.
   // Keep this import's summary until actual online work joins the new scan.
@@ -3042,6 +3139,10 @@ function showProgress(p) {
   renderOnlineProgress(latestOnlineProgress || {});
 }
 function renderOnlineProgress(data, settled = false) {
+  if (latestDateMigration?.active && !scanActive && !hasOnlineWork(data)) {
+    renderDateMigration();
+    return;
+  }
   // Adjacent queue snapshots can briefly report idle between two pieces of work.
   // Keep the live panel steady until the idle state survives one short settling window.
   const resumedScan = typeof hasStartupScanWork === 'function' && hasStartupScanWork();
@@ -3181,6 +3282,7 @@ function showOnlineStatus(data) {
   else setProgressText(status, '就绪');
 }
 window.album.onEvent((event) => {
+  if (event.type === 'changed') grid.invalidateNavigationCache?.();
   if (
     event.type === 'changed' &&
     !event.data.cover &&
@@ -3204,6 +3306,7 @@ window.album.onEvent((event) => {
     renameDeferredChanged = true;
     return;
   }
+  if (event.type === 'dateMigration') showDateMigration(event.data);
   if (event.type === 'sortMigration') {
     const active = event.data.active !== false;
     paintProgress({

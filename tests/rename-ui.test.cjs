@@ -479,9 +479,11 @@ function startupHarness({ resumeReject = false } = {}) {
       throw new Error('unexpected ' + command);
     }
   });
-  new vm.Script(section('let startupTaskSnapshot =', 'let filterResizeObserver'), {
-    filename
-  }).runInContext(context);
+  new vm.Script(
+    section('function viewKey()', 'function snapshot()') +
+      section('let startupTaskSnapshot =', 'let filterResizeObserver'),
+    { filename }
+  ).runInContext(context);
   return { context, nodes, calls, frames, timers, idle, rendered, snapshot };
 }
 

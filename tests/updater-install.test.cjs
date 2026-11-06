@@ -10,9 +10,12 @@ const {
   appGuid,
   registryValidationScript,
   editionTransactionScript,
+  runtimeTransactionScript,
   preflightInstallation
 } = require('../src/update-install.cjs');
 const { assertExternalPaths } = require('../src/update-service.cjs');
+const { makeRuntimeOwnership, OWNERSHIP_PATH } = require('../src/runtime-update.cjs');
+const { runtimeInventory } = require('../scripts/build-runtime-update.cjs');
 const powershell = path.win32.join(
   process.env.SystemRoot || 'C:\\Windows',
   'System32',
@@ -23,18 +26,22 @@ const powershell = path.win32.join(
 const decode = (value) =>
   `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(JSON.stringify(value)).toString('base64')}')) | ConvertFrom-Json`;
 function run(source) {
-  const result = spawnSync(
-    powershell,
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-EncodedCommand',
-      Buffer.from("$ErrorActionPreference = 'Stop'\n" + source, 'utf16le').toString('base64')
-    ],
-    { encoding: 'utf8', timeout: 15000, windowsHide: true }
-  );
-  assert.equal(result.error, undefined);
-  return result;
+  const syncFs = require('node:fs');
+  const root = syncFs.mkdtempSync(path.join(os.tmpdir(), 'album-install-fixture-script-'));
+  const file = path.join(root, 'fixture.ps1');
+  try {
+    syncFs.writeFileSync(file, "\uFEFF$ErrorActionPreference = 'Stop'\n" + source);
+    const result = spawnSync(
+      powershell,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
+      { encoding: 'utf8', timeout: 15000, windowsHide: true }
+    );
+    assert.equal(result.error, undefined);
+    return result;
+  } finally {
+    // This invocation created the exact synthetic leaf above.
+    syncFs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 test('NSIS identity is stable even when packaged metadata has no build field', () => {
@@ -166,11 +173,18 @@ for (const [oldEdition, edition, failure] of [
       await fs.writeFile(executable, 'THIS IS NOT AN EXECUTABLE');
       if (oldEdition !== 'standard') {
         await fs.mkdir(index);
-        await fs.writeFile(path.join(index, 'old-index'), oldEdition);
+        await fs.writeFile(path.join(index, 'subjects.sqlite'), oldEdition);
+        await fs.writeFile(path.join(index, 'manifest.json'), '{}');
       }
+      await fs.writeFile(
+        path.join(directory, OWNERSHIP_PATH),
+        JSON.stringify(
+          makeRuntimeOwnership({ version: '1.2.2', files: await runtimeInventory(directory) })
+        )
+      );
       // Only shared function definitions are evaluated; the installer function is
       // replaced before the transaction. No real helper or installer is executed.
-      const source = `$p = ${decode({ directory, executable, edition, installer: 'NEVER_EXECUTE' })}\n$failure = '${failure}'\n${editionTransactionScript()}\nfunction Invoke-AlbumInstaller($mode) {
+      const source = `$p = ${decode({ mode: 'full', directory, executable, edition, version: '1.2.2', installer: 'NEVER_EXECUTE' })}\n$failure = '${failure}'\n${runtimeTransactionScript()}\n${editionTransactionScript()}\nfunction Invoke-AlbumInstaller($mode) {
       if ($failure -eq 'exit') { return @{ ExitCode = 7 } }
       if ($p.edition -ne 'standard') {
         $index = Join-Path $p.directory 'resources\\local-index'
@@ -187,7 +201,7 @@ for (const [oldEdition, edition, failure] of [
       const result = run(source);
       assert.equal(result.status, 0, result.stdout + result.stderr);
       if (failure && oldEdition !== 'standard')
-        assert.equal(await fs.readFile(path.join(index, 'old-index'), 'utf8'), oldEdition);
+        assert.equal(await fs.readFile(path.join(index, 'subjects.sqlite'), 'utf8'), oldEdition);
       else if (failure) await assert.rejects(fs.stat(index), { code: 'ENOENT' });
       else if (edition === 'standard') await assert.rejects(fs.stat(index), { code: 'ENOENT' });
       else {
@@ -197,7 +211,10 @@ for (const [oldEdition, edition, failure] of [
           ).variant,
           edition
         );
-        await assert.rejects(fs.stat(path.join(index, 'old-index')), { code: 'ENOENT' });
+        assert.equal(
+          await fs.readFile(path.join(index, 'subjects.sqlite'), 'utf8'),
+          'NEW DATABASE FIXTURE'
+        );
       }
       assert.equal(
         await fs.readFile(path.join(profile, 'token'), 'utf8'),

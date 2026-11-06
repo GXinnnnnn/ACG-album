@@ -208,13 +208,21 @@ function createVirtualGrid() {
     FOLDER_DETAILS_INFO = 70,
     FOLDER_TITLE_INFO = 40,
     METRIC_LIMIT = 256,
+    NAVIGATION_VIEWS = 2,
+    NAVIGATION_CARDS = 180,
+    NAVIGATION_PAGES = 7,
+    navigationCache = new Map(),
     heights = new Map(),
     loaded = new Set(),
     failed = new Set(),
     reported = new Set();
   const positions = new Map(),
     cardLayouts = new WeakMap();
-  let keys = [],
+  let committedKey = null,
+    navigationEpoch = 0,
+    validatedNavigationEpoch = -1,
+    restoredGeometry = false,
+    keys = [],
     stamp = '',
     dirty = true,
     pageVersion = 0,
@@ -243,7 +251,144 @@ function createVirtualGrid() {
     offsetX: 0,
     gap: FOLDER_GAP,
     active: false,
+    retain(key = committedKey, scroll = $('#viewport').scrollTop) {
+      if (!this.active || key == null || key !== committedKey || !loaded.size) return false;
+      const m = measure(),
+        anchor = this.total ? anchorAt(m, 0) : null,
+        center = anchor ? Math.floor(anchor.index / PAGE) : 0,
+        pages = new Set(
+          [...loaded]
+            .sort((a, b) => Math.abs(a - center) - Math.abs(b - center))
+            .slice(0, NAVIGATION_PAGES)
+        ),
+        cards = new Map([...this.cards].filter(([index]) => this.items.has(index)));
+      // Oversized windows use the ordinary cold path rather than retain a partial
+      // screen or let a very small density grow the navigation memory budget.
+      if (
+        cards.size > NAVIGATION_CARDS ||
+        [...cards.keys()].some((index) => !pages.has(Math.floor(index / PAGE)))
+      )
+        return false;
+      navigationCache.delete(key);
+      navigationCache.set(key, {
+        args: { ...this.args },
+        scroll: Math.max(0, Number(scroll) || 0),
+        anchor,
+        cards,
+        items: new Map([...this.items].filter(([index]) => pages.has(Math.floor(index / PAGE)))),
+        positions: new Map([...positions].filter(([index]) => pages.has(Math.floor(index / PAGE)))),
+        heights: new Map([...heights].filter(([page]) => pages.has(page))),
+        loaded: pages,
+        total: this.total,
+        folders: this.folders,
+        stamp,
+        dirty,
+        firstMedia,
+        lastPage,
+        mediaTop,
+        folderBottom,
+        cover,
+        detail,
+        folderInfo,
+        mediaCols,
+        extent,
+        retainedExtent,
+        width: this.width,
+        cols: this.cols,
+        rowHeight: this.rowHeight,
+        offsetX: this.offsetX,
+        gap: this.gap
+      });
+      let count = [...navigationCache.values()].reduce((sum, view) => sum + view.cards.size, 0);
+      for (const [oldKey, view] of navigationCache) {
+        if (navigationCache.size <= NAVIGATION_VIEWS && count <= NAVIGATION_CARDS) break;
+        count -= view.cards.size;
+        navigationCache.delete(oldKey);
+      }
+      // IPC may finish after abort: both the route generation and active state
+      // must reject that reply, including a refreshGrowing already in flight.
+      this.version++;
+      this.growing = null;
+      this.active = false;
+      for (const request of this.loading.values()) request.controller.abort();
+      this.loading.clear();
+      return true;
+    },
+    restore(key, version) {
+      const saved = navigationCache.get(key);
+      if (!saved || version !== S.loadVersion) return null;
+      // Remove the target before retaining the departing view so eviction cannot
+      // discard the requested entry or count its cards as inactive twice.
+      navigationCache.delete(key);
+      this.retain();
+      this.reset();
+      committedKey = key;
+      pageVersion = version;
+      this.args = { ...saved.args };
+      this.total = saved.total;
+      this.folders = saved.folders;
+      for (const [index, n] of saved.items) this.items.set(index, n);
+      for (const [index, b] of saved.cards) this.cards.set(index, b);
+      for (const [index, p] of saved.positions) positions.set(index, p);
+      for (const [page, metric] of saved.heights) heights.set(page, metric);
+      for (const page of saved.loaded) loaded.add(page);
+      ({
+        stamp,
+        dirty,
+        firstMedia,
+        lastPage,
+        mediaTop,
+        folderBottom,
+        cover,
+        detail,
+        folderInfo,
+        mediaCols,
+        extent,
+        retainedExtent
+      } = saved);
+      keys = [...heights.keys()].sort((a, b) => a - b);
+      restoredGeometry = true;
+      for (const name of ['width', 'cols', 'rowHeight', 'offsetX', 'gap']) this[name] = saved[name];
+      const el = $('#virtual-grid'),
+        vp = $('#viewport');
+      el.hidden = false;
+      el.style.height = Math.max(extent, retainedExtent) + 'px';
+      vp.scrollTop = saved.scroll;
+      for (const b of this.cards.values()) el.append(b);
+      this.active = true;
+      // draw measures the current width/settings and checks the current DPR's
+      // thumbnail tier. Reuse the pixel anchor when changed geometry requires it.
+      const m = measure(),
+        changed = signature(m) !== stamp;
+      draw(changed ? saved.anchor : null, m);
+      return vp.scrollTop;
+    },
+    invalidateNavigationCache() {
+      navigationCache.clear();
+      committedKey = null;
+      navigationEpoch++;
+      validatedNavigationEpoch = -1;
+    },
+    commitNavigationKey(key, version) {
+      // The host also checks its full route key, current query args and viewer.
+      // A real successful refresh must postdate the latest invalidation; matching
+      // only the route generation cannot reject changed events during its IO.
+      if (
+        key == null ||
+        !this.active ||
+        pageVersion !== version ||
+        version !== S.loadVersion ||
+        !loaded.size ||
+        validatedNavigationEpoch !== navigationEpoch
+      )
+        return false;
+      committedKey = key;
+      return true;
+    },
     reset() {
+      committedKey = null;
+      validatedNavigationEpoch = -1;
+      restoredGeometry = false;
       this.version++;
       this.growing = null;
       for (const request of this.loading.values()) request.controller.abort();
@@ -273,8 +418,11 @@ function createVirtualGrid() {
       this.loading.clear();
       $('#virtual-grid').hidden = true;
     },
-    async load(args, version) {
+    async load(args, version, key = null) {
+      if (key !== committedKey) this.retain();
+      if (key != null) navigationCache.delete(key);
       this.reset();
+      committedKey = key;
       this.args = { ...args };
       pageVersion = version;
       this.active = true;
@@ -362,6 +510,7 @@ function createVirtualGrid() {
       if (this.growing) return this.growing;
       const version = this.version,
         navigation = pageVersion,
+        epoch = navigationEpoch,
         args = { ...this.args },
         current = () => this.active && version === this.version && navigation === S.loadVersion;
       const task = (async () => {
@@ -472,6 +621,7 @@ function createVirtualGrid() {
                 );
         dirty = true;
         draw(total ? anchor : null, latest);
+        if (epoch === navigationEpoch) validatedNavigationEpoch = epoch;
         return total;
       })();
       this.growing = task;
@@ -738,6 +888,7 @@ function createVirtualGrid() {
   }
   function rebuild() {
     if (!dirty) return;
+    restoredGeometry = false;
     dirty = false;
     positions.clear();
     firstMedia = Math.floor(grid.folders / PAGE);
@@ -818,6 +969,14 @@ function createVirtualGrid() {
         : Math.max(0, folderBottom - grid.gap);
   }
   function pageAt(top) {
+    // A compact navigation snapshot preserves exact visible-page frontiers but
+    // drops older summaries. Prefer its at-most-seven real intervals: estimates
+    // before that window may no longer be monotonic with the retained positions.
+    if (restoredGeometry)
+      for (const page of keys) {
+        const metric = heights.get(page);
+        if (Math.min(...metric.start) <= top && Math.max(...metric.end) > top) return page;
+      }
     let lo = firstMedia,
       hi = lastPage;
     while (lo < hi) {

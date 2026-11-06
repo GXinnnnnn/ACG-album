@@ -125,6 +125,7 @@ async function prepareCacheSettings(content, { alive, dialog }) {
       const key = viewKey(),
         result = await api('cleanCache', { mode });
       S.rev = Date.now();
+      grid.invalidateNavigationCache?.();
       if (key === viewKey()) await loadPage(true);
       return result;
     });

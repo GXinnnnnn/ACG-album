@@ -27,7 +27,7 @@ function githubAssetUrl(value, repository, tag, name) {
 function releaseAssets(release, repository, version) {
   if (!validRepository(repository) || !/^\d+\.\d+\.\d+$/.test(version)) return [];
   const assets = Array.isArray(release.assets) ? release.assets.slice(0, 100) : [];
-  return EDITIONS.flatMap((edition) => {
+  const editions = EDITIONS.flatMap((edition) => {
     const label = edition[0].toUpperCase() + edition.slice(1);
     const name = `ACG-album-Setup-${version}-${label}.exe`;
     // Duplicate names and unsupported platform/architecture assets are never guessed.
@@ -63,6 +63,50 @@ function releaseAssets(release, repository, version) {
       }
     ];
   });
+  const base = `ACG-album-Runtime-${version}-win32-x64`;
+  const manifests = assets.filter((row) => row?.name === base + '.manifest.json');
+  const payloads = assets.filter((row) => row?.name === base + '.zip');
+  if (manifests.length === 1 && payloads.length === 1) {
+    const metadata = manifests[0],
+      payload = payloads[0];
+    const url = githubAssetUrl(
+      metadata.browser_download_url,
+      repository,
+      release.tag_name,
+      metadata.name
+    );
+    const payloadUrl = githubAssetUrl(
+      payload.browser_download_url,
+      repository,
+      release.tag_name,
+      payload.name
+    );
+    if (
+      url &&
+      payloadUrl &&
+      Number.isSafeInteger(metadata.size) &&
+      metadata.size > 0 &&
+      metadata.size <= 256 * 1024 &&
+      Number.isSafeInteger(payload.size) &&
+      payload.size > 0 &&
+      payload.size <= MAX_INSTALLER_BYTES
+    )
+      editions.push({
+        kind: 'runtime-manifest',
+        url,
+        size: metadata.size,
+        tag: release.tag_name,
+        payload: {
+          name: payload.name,
+          size: payload.size,
+          url: payloadUrl,
+          sha256: /^sha256:[a-f\d]{64}$/i.test(payload.digest || '')
+            ? payload.digest.slice(7).toLowerCase()
+            : ''
+        }
+      });
+  }
+  return editions;
 }
 
 async function readLimited(response, limit = MAX_METADATA_BYTES) {

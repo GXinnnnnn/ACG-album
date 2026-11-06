@@ -98,7 +98,60 @@ function createBrowseDate(db) {
   const marker = db
     .prepare('SELECT value FROM settings WHERE key=?')
     .get('browseContentDateVersion');
-  let ready = marker?.value === JSON.stringify(CONTENT_DATE_VERSION);
+  const indexNames = ['nodes_parent_content_date', 'nodes_global_content_date'];
+  const indexesCompleted = () =>
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN (?,?)")
+      .all(...indexNames).length;
+  let ready =
+    marker?.value === JSON.stringify(CONTENT_DATE_VERSION) &&
+    indexesCompleted() === indexNames.length;
+  const cursorKey = 'browseContentDateCursor';
+  let cursor;
+  try {
+    cursor = JSON.parse(db.prepare('SELECT value FROM settings WHERE key=?').get(cursorKey)?.value);
+  } catch {
+    cursor = null;
+  }
+  if (
+    cursor?.version !== CONTENT_DATE_VERSION ||
+    !Number.isSafeInteger(cursor.maxRowid) ||
+    !(cursor.after === null || Number.isSafeInteger(cursor.after)) ||
+    !Number.isSafeInteger(cursor.processed) ||
+    cursor.processed < 0 ||
+    !Number.isSafeInteger(cursor.total) ||
+    cursor.total < cursor.processed
+  )
+    cursor = null;
+  let state = {
+    revision: 0,
+    active: false,
+    ready,
+    stage: ready ? 'ready' : 'pending',
+    processed: ready ? 0 : cursor?.processed || 0,
+    total: ready ? null : (cursor?.total ?? null),
+    indexesCompleted: indexesCompleted(),
+    indexesTotal: indexNames.length,
+    blocking: false
+  };
+  let migrationTask = null;
+  const saveCursor = () =>
+    db
+      .prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)')
+      .run(cursorKey, JSON.stringify(cursor));
+  const commitReady = () => {
+    db.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(
+      'browseContentDateVersion',
+      JSON.stringify(CONTENT_DATE_VERSION)
+    );
+    db.prepare('DELETE FROM settings WHERE key=?').run(cursorKey);
+  };
+  const createIndex = (index) =>
+    db.exec(
+      index === indexNames[0]
+        ? `CREATE INDEX IF NOT EXISTS ${index} ON nodes(parent,missing,kind,content_date,sortkey,id)`
+        : `CREATE INDEX IF NOT EXISTS ${index} ON nodes(missing,kind,content_date,sortkey,id)`
+    );
   // Preview v1 cached min(birth,mtime) for folders and installed these same
   // trigger names. Replace only stale definitions, without scanning node rows.
   db.exec('SAVEPOINT browse_date_schema');
@@ -137,23 +190,157 @@ function createBrowseDate(db) {
   }
   return {
     ready: () => ready,
+    status: () => ({ ...state }),
     migrate() {
       if (ready) return;
+      if (migrationTask) throw new Error('Content-date migration is already running.');
       db.exec('BEGIN');
       try {
-        db.exec(`UPDATE nodes SET content_date=${contentDateSql('nodes')};
-          CREATE INDEX IF NOT EXISTS nodes_parent_content_date ON nodes(parent,missing,kind,content_date,sortkey,id);
-          CREATE INDEX IF NOT EXISTS nodes_global_content_date ON nodes(missing,kind,content_date,sortkey,id);`);
-        db.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(
-          'browseContentDateVersion',
-          JSON.stringify(CONTENT_DATE_VERSION)
-        );
+        db.exec(`UPDATE nodes SET content_date=${contentDateSql('nodes')}`);
+        for (const index of indexNames) createIndex(index);
+        commitReady();
         db.exec('COMMIT');
         ready = true;
+        cursor = null;
+        state = {
+          ...state,
+          revision: state.revision + 1,
+          active: false,
+          ready: true,
+          stage: 'ready',
+          indexesCompleted: 2,
+          blocking: false
+        };
       } catch (error) {
         db.exec('ROLLBACK');
         throw error;
       }
+    },
+    migrateAsync({
+      batchSize = 512,
+      onProgress = () => {},
+      shouldStop = () => false,
+      yieldNow = () => new Promise((resolve) => setImmediate(resolve))
+    } = {}) {
+      if (migrationTask) return migrationTask;
+      if (ready) return Promise.resolve(true);
+      if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 4096)
+        return Promise.reject(new Error('Content-date batch size must be between 1 and 4096.'));
+      const publish = (stage, extra = {}) => {
+        state = {
+          revision: state.revision + 1,
+          active: true,
+          ready: false,
+          stage,
+          processed: cursor?.processed || 0,
+          total: cursor?.total ?? null,
+          indexesCompleted: indexesCompleted(),
+          indexesTotal: indexNames.length,
+          blocking: false,
+          ...extra
+        };
+        onProgress({ ...state });
+      };
+      const paused = () => {
+        if (!shouldStop()) return false;
+        publish('paused', { active: false });
+        return true;
+      };
+      // Schedule the first work too: subscribers can receive the phase before a
+      // synchronous native SQLite call begins, and repeated calls share one task.
+      migrationTask = (async () => {
+        await yieldNow();
+        try {
+          if (paused()) return false;
+          if (!cursor) {
+            publish('counting', { blocking: true });
+            await yieldNow();
+            if (paused()) return false;
+            // COUNT(*) and each native SQLite statement cannot yield internally.
+            // This snapshot bounds the work; later inserts/updates use triggers.
+            cursor = {
+              version: CONTENT_DATE_VERSION,
+              after: null,
+              processed: 0,
+              total: db.prepare('SELECT COUNT(*) AS n FROM nodes').get().n,
+              maxRowid:
+                db.prepare('SELECT rowid FROM nodes ORDER BY rowid DESC LIMIT 1').get()?.rowid ?? 0
+            };
+            saveCursor();
+          }
+          publish('backfill');
+          await yieldNow();
+          while (!paused()) {
+            const rows =
+              cursor.after === null
+                ? db
+                    .prepare('SELECT rowid FROM nodes WHERE rowid<=? ORDER BY rowid LIMIT ?')
+                    .all(cursor.maxRowid, batchSize)
+                : db
+                    .prepare(
+                      'SELECT rowid FROM nodes WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT ?'
+                    )
+                    .all(cursor.after, cursor.maxRowid, batchSize);
+            if (!rows.length) break;
+            const previous = cursor;
+            db.exec('BEGIN');
+            try {
+              db.prepare(
+                `UPDATE nodes SET content_date=${contentDateSql('nodes')} WHERE rowid>=? AND rowid<=?`
+              ).run(rows[0].rowid, rows.at(-1).rowid);
+              cursor = {
+                ...cursor,
+                after: rows.at(-1).rowid,
+                processed: cursor.processed + rows.length
+              };
+              saveCursor();
+              db.exec('COMMIT');
+            } catch (error) {
+              db.exec('ROLLBACK');
+              cursor = previous;
+              throw error;
+            }
+            publish('backfill');
+            await yieldNow();
+          }
+          if (shouldStop()) return false;
+          for (const index of indexNames) {
+            if (paused()) return false;
+            publish('index', { index, blocking: true });
+            await yieldNow();
+            if (paused()) return false;
+            // Separate atomic index builds survive interruption independently.
+            // DatabaseSync CREATE INDEX is indivisible; no row percentage applies.
+            createIndex(index);
+            publish('index', { index });
+            await yieldNow();
+          }
+          if (paused()) return false;
+          publish('finalizing', { blocking: true });
+          await yieldNow();
+          if (paused()) return false;
+          db.exec('BEGIN');
+          try {
+            if (indexesCompleted() !== indexNames.length)
+              throw new Error('Content-date indexes are incomplete.');
+            commitReady();
+            db.exec('COMMIT');
+          } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+          }
+          ready = true;
+          publish('ready', { active: false, ready: true });
+          cursor = null;
+          return true;
+        } catch (error) {
+          publish('error', { active: false, error: error.message });
+          throw error;
+        }
+      })().finally(() => {
+        migrationTask = null;
+      });
+      return migrationTask;
     }
   };
 }

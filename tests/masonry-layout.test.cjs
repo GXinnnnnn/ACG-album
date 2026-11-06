@@ -56,7 +56,7 @@ function element(id, document) {
   };
   return node;
 }
-async function fixture(folders, media, width = 1180, density = 222, dpr = 1) {
+async function fixture(folders, media, width = 1180, density = 222, dpr = 1, key = null) {
   const viewport = { scrollTop: 0, clientHeight: 800, getBoundingClientRect: () => ({ top: 0 }) };
   const document = { activeElement: null, createElement: () => element(null, document) };
   const wall = {
@@ -139,7 +139,7 @@ async function fixture(folders, media, width = 1180, density = 222, dpr = 1) {
   vm.runInContext(thumbSource, context);
   vm.runInContext(source, context);
   const grid = context.createVirtualGrid();
-  await grid.load({}, 1);
+  await grid.load({}, 1, key);
   async function settle() {
     for (let i = 0; i < 12 && grid.loading.size; i++)
       await Promise.all([...grid.loading.values()].map((request) => request.promise));
@@ -1416,4 +1416,302 @@ test('window-edge viewport keeps absolute first-screen positions and virtualizes
       old.grid.reset();
       edge.grid.reset();
     }
+});
+
+test('navigation restores real deep-page folder and media DOM synchronously without src writes', async () => {
+  for (const folders of [1800, 0]) {
+    const f = await fixture(folders, folders ? 0 : 1800, 1180, 222, 1, 'parent'),
+      { grid, viewport, context } = f;
+    viewport.scrollTop = grid.getPosition(990).top + 17;
+    grid.render();
+    await f.settle();
+    const scroll = viewport.scrollTop,
+      parent = new Map(grid.cards),
+      sources = new Map([...parent].map(([i, b]) => [i, b.querySelector('img').writes.length]));
+    for (const b of parent.values()) b.loadedMarker = true;
+    assert.ok([...parent.keys()].every((index) => index >= 180));
+    context.S.loadVersion = 2;
+    await grid.load({ parent: 'child' }, 2, 'child');
+    viewport.scrollTop = 0;
+    grid.render();
+    await f.settle();
+    const calls = f.calls.length,
+      created = f.created.length;
+    context.S.loadVersion = 3;
+    assert.equal(grid.restore('parent', 3), scroll);
+    assert.equal(viewport.scrollTop, scroll);
+    assert.equal(grid.args.parent, undefined);
+    assert.equal(f.calls.length, calls, 'Restoration must not wait for another list request');
+    assert.equal(f.created.length, created, 'No replacement image/card is created');
+    for (const [index, b] of parent) {
+      assert.equal(grid.cards.get(index), b);
+      assert.ok(f.wall.children.includes(b));
+      assert.equal(b.loadedMarker, true);
+      assert.equal(b.querySelector('img').writes.length, sources.get(index));
+    }
+    await grid.refreshGrowing();
+    await f.settle();
+    for (const [index, b] of parent) assert.equal(grid.cards.get(index), b);
+    grid.reset();
+  }
+});
+
+test('navigation retains the deep visible media window after many historical page metrics', async () => {
+  const f = await fixture(0, 9000, 1180, 222, 1, 'parent'),
+    { grid, viewport, context } = f;
+  context.api = async (_, args) => ({
+    total: 9000,
+    folders: 0,
+    items: Array.from({ length: 180 }, (_, i) => ({
+      id: 'image-' + (args.offset + i),
+      kind: 'image',
+      width: 1000,
+      height: 100
+    }))
+  });
+  await grid.refreshGrowing();
+  for (let page = 1; page < 25; page++) {
+    viewport.scrollTop = grid.getPosition(page * 180).top + 17;
+    grid.render();
+    await f.settle();
+  }
+  const scroll = viewport.scrollTop,
+    parent = new Map(grid.cards);
+  assert.ok(parent.size > 0);
+  context.S.loadVersion = 2;
+  await grid.load({ parent: 'child' }, 2, 'child');
+  viewport.scrollTop = 0;
+  grid.render();
+  await f.settle();
+  context.S.loadVersion = 3;
+  assert.equal(grid.restore('parent', 3), scroll);
+  for (const [index, b] of parent) assert.equal(grid.cards.get(index), b);
+  assert.ok(grid.cards.size <= 180);
+  grid.render();
+  for (const [index, b] of parent) assert.equal(grid.cards.get(index), b);
+  await f.settle();
+  const anchor = grid.captureAnchor(),
+    card = grid.cards.get(anchor.index);
+  await grid.refreshGrowing();
+  await f.settle();
+  assert.equal(grid.cards.get(anchor.index), card);
+  assert.equal(grid.getPosition(anchor.index).top - viewport.scrollTop, anchor.offset);
+  grid.reset();
+});
+
+test('navigation restore remeasures density, width and DPR while preserving the saved reading anchor', async () => {
+  const f = await fixture(1800, 0, 1180, 222, 1, 'parent'),
+    { grid, viewport, context } = f;
+  viewport.scrollTop = grid.getPosition(990).top + 17;
+  grid.render();
+  await f.settle();
+  const anchor = grid.captureAnchor(),
+    b = grid.cards.get(anchor.index),
+    image = b.querySelector('img'),
+    writes = image.writes.length;
+  assert.equal(grid.retain('wrong-route', viewport.scrollTop), false);
+  assert.equal(grid.retain('parent', viewport.scrollTop), true);
+  context.S.loadVersion = 2;
+  await grid.load({ parent: 'child' }, 2, 'child');
+  await f.settle();
+  f.wall.clientWidth = 900;
+  f.settings.density = 300;
+  context.window.devicePixelRatio = 2;
+  context.S.loadVersion = 3;
+  assert.notEqual(grid.restore('parent', 3), null);
+  assert.equal(grid.width, 300);
+  assert.equal(grid.cols, 2);
+  assert.equal(grid.cards.get(anchor.index), b);
+  assert.equal(grid.getPosition(anchor.index).top - viewport.scrollTop, anchor.offset);
+  assert.match(image.src, /size=1024/);
+  assert.equal(
+    image.writes.length,
+    writes + 1,
+    'Only the changed thumbnail size tier is requested'
+  );
+  await f.settle();
+  grid.reset();
+});
+
+test('navigation generations reject aborted page replies and old refreshes after a restore', async () => {
+  const f = await fixture(600, 0, 1180, 222, 1, 'parent'),
+    { grid, context } = f,
+    api = context.api,
+    parent = new Map(grid.cards);
+  let resolvePage, resolveRefresh;
+  context.api = () => new Promise((resolve) => (resolvePage = resolve));
+  const pendingPage = grid.fetchPage(0, true);
+  context.api = () => new Promise((resolve) => (resolveRefresh = resolve));
+  const pendingRefresh = grid.refreshGrowing();
+  context.S.loadVersion = 2;
+  context.api = api;
+  await grid.load({ parent: 'child' }, 2, 'child');
+  await f.settle();
+  context.S.loadVersion = 3;
+  assert.notEqual(grid.restore('parent', 3), null);
+  resolvePage({ total: 1, folders: 1, items: [{ id: 'obsolete-page', kind: 'folder' }] });
+  resolveRefresh({ total: 1, folders: 1, items: [{ id: 'obsolete-refresh', kind: 'folder' }] });
+  await Promise.all([pendingPage, pendingRefresh]);
+  assert.equal(grid.total, 600);
+  for (const [index, b] of parent) assert.equal(grid.cards.get(index), b);
+  assert.equal(grid.items.get(0).id, 'folder-0');
+  assert.equal(
+    grid.commitNavigationKey('parent', 3),
+    false,
+    'An old-route refresh cannot validate the restored route'
+  );
+  const calls = f.calls.length;
+  await grid.fetchPage(0, true);
+  assert.equal(
+    f.calls.length,
+    calls + 1,
+    'Restored pageVersion admits current-generation requests'
+  );
+  grid.reset();
+});
+
+test('navigation snapshots evict beyond two inactive views and invalidation disables stale retention', async () => {
+  const f = await fixture(6000, 0, 1180, 222, 1, 'A'),
+    { grid, context, viewport } = f;
+  for (const [i, key] of ['B', 'C', 'D'].entries()) {
+    context.S.loadVersion = i + 2;
+    await grid.load({ parent: key }, i + 2, key);
+    viewport.scrollTop = grid.getPosition(1800 + i * 720).top;
+    grid.render();
+    await f.settle();
+  }
+  context.S.loadVersion = 5;
+  assert.equal(grid.restore('A', 5), null, 'Least recent third inactive view was evicted');
+  assert.notEqual(grid.restore('B', 5), null);
+  assert.ok(grid.items.size <= 7 * 180);
+  assert.ok(grid.cards.size <= 180);
+  assert.equal(grid.restore('C', 4), null, 'Stale navigation version cannot consume a snapshot');
+  grid.invalidateNavigationCache();
+  assert.equal(
+    grid.retain('B'),
+    false,
+    'Invalidated active data cannot be saved under its old key'
+  );
+  assert.equal(grid.restore('C', 5), null);
+  context.S.loadVersion = 6;
+  await grid.load({ parent: 'new' }, 6, 'new');
+  assert.equal(grid.restore('B', 6), null);
+  grid.reset();
+});
+
+test('a successful real refresh can recommit an invalidated view and restore its original DOM on first back', async () => {
+  const f = await fixture(600, 0, 1180, 222, 1, 'parent'),
+    { grid, context, viewport } = f;
+  viewport.scrollTop = 2600;
+  grid.render();
+  await f.settle();
+  const originals = new Map(grid.cards),
+    scroll = viewport.scrollTop,
+    writes = new Map(
+      [...originals].map(([index, b]) => [index, b.querySelector('img').writes.length])
+    );
+  grid.invalidateNavigationCache();
+  assert.equal(grid.retain('parent'), false);
+  assert.equal(
+    grid.commitNavigationKey('parent', 1),
+    false,
+    'Unvalidated active data stays uncacheable'
+  );
+  const calls = f.calls.length;
+  await grid.refreshGrowing();
+  assert.ok(f.calls.length > calls, 'Even unchanged list data requires real successful validation');
+  assert.equal(grid.commitNavigationKey(null, 1), false);
+  assert.equal(grid.commitNavigationKey('parent', 0), false);
+  context.S.loadVersion = 2;
+  assert.equal(
+    grid.commitNavigationKey('parent', 1),
+    false,
+    'Current route generation is required'
+  );
+  context.S.loadVersion = 1;
+  assert.equal(grid.commitNavigationKey('parent', 1), true);
+  assert.equal(grid.retain('parent'), true);
+  assert.equal(grid.commitNavigationKey('parent', 1), false, 'Retaining deactivates the old view');
+  context.S.loadVersion = 2;
+  await grid.load({ parent: 'child' }, 2, 'child');
+  await f.settle();
+  assert.equal(
+    grid.commitNavigationKey('child', 2),
+    false,
+    'A new cold page cannot inherit the old validation stamp'
+  );
+  context.S.loadVersion = 3;
+  assert.equal(grid.restore('parent', 3), scroll);
+  for (const [index, b] of originals) {
+    assert.equal(grid.cards.get(index), b);
+    assert.equal(b.querySelector('img').writes.length, writes.get(index));
+  }
+  grid.reset();
+});
+
+test('invalidation during refresh and failed refresh cannot validate a key, while a later fresh pass can', async () => {
+  const f = await fixture(600, 0, 1180, 222, 1, 'parent'),
+    { grid, context } = f,
+    api = context.api;
+  grid.invalidateNavigationCache();
+  let resolve;
+  context.api = () => new Promise((done) => (resolve = done));
+  const pending = grid.refreshGrowing();
+  assert.equal(typeof resolve, 'function');
+  grid.invalidateNavigationCache();
+  context.api = api;
+  resolve(await api('list', { offset: 0, limit: 180 }));
+  await pending;
+  assert.equal(
+    grid.commitNavigationKey('parent', 1),
+    false,
+    'A newer changed event invalidates in-flight validation'
+  );
+  assert.equal(grid.retain('parent'), false);
+  await grid.refreshGrowing();
+  assert.equal(
+    grid.commitNavigationKey('parent', 1),
+    true,
+    'The next uninterrupted real refresh recovers retention'
+  );
+  grid.invalidateNavigationCache();
+  context.api = async () => {
+    throw Error('fixture list validation failed');
+  };
+  await assert.rejects(grid.refreshGrowing(), /fixture list validation failed/);
+  assert.equal(
+    grid.commitNavigationKey('parent', 1),
+    false,
+    'Failed IO cannot validate the active view'
+  );
+  assert.equal(grid.retain('parent'), false);
+  context.api = api;
+  await grid.refreshGrowing();
+  assert.equal(grid.commitNavigationKey('parent', 1), true);
+  assert.equal(grid.retain('parent'), true);
+  grid.reset();
+});
+
+test('navigation enforces a shared 180-card budget and falls back for oversized windows', async () => {
+  const f = await fixture(1000, 0, 2200, 100, 1, 'A'),
+    { grid, context } = f,
+    count = grid.cards.size;
+  assert.ok(count > 90 && count <= 180, `fixture has ${count} cards`);
+  context.S.loadVersion = 2;
+  await grid.load({ parent: 'B' }, 2, 'B');
+  await f.settle();
+  context.S.loadVersion = 3;
+  await grid.load({ parent: 'C' }, 3, 'C');
+  await f.settle();
+  assert.equal(grid.restore('A', 3), null, 'Two large inactive windows exceed the shared budget');
+  assert.notEqual(grid.restore('B', 3), null);
+  grid.invalidateNavigationCache();
+  context.S.loadVersion = 4;
+  f.viewport.clientHeight = 2400;
+  await grid.load({}, 4, 'large');
+  await f.settle();
+  assert.ok(grid.cards.size > 180);
+  assert.equal(grid.retain('large'), false);
+  assert.equal(grid.restore('large', 4), null);
+  grid.reset();
 });

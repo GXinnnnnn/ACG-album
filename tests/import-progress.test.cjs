@@ -24,6 +24,7 @@ function harness({ reducedMotion = false } = {}) {
   const requests = [];
   const cancellations = [];
   const animations = [];
+  const dateActions = { invalidations: 0, refreshes: 0 };
   let timerId = 0,
     mutations = 0,
     created = 0;
@@ -144,6 +145,15 @@ function harness({ reducedMotion = false } = {}) {
       }
     },
     scanActive: false,
+    S: { sort: 'contentDate' },
+    grid: {
+      invalidateNavigationCache() {
+        dateActions.invalidations++;
+      }
+    },
+    scheduleGrowingRefresh() {
+      dateActions.refreshes++;
+    },
     pendingImport: null,
     progressHideTimer: null,
     updateRefreshBusy() {},
@@ -168,6 +178,8 @@ function harness({ reducedMotion = false } = {}) {
     requests,
     cancellations,
     animations,
+    dateActions,
+    date: (value) => context.showDateMigration(value),
     scan: (value) => context.showProgress(value),
     online: (value) => context.showOnlineStatus(value),
     get: (selector) => elements.get(selector),
@@ -522,6 +534,60 @@ test('cancel rejection restores retry while queued paused work remains cancellab
   assert.equal(h.get('#cancel-import').hidden, true);
 });
 
+test('date cache progress counts only committed rows, keeps index work indeterminate and rejects stale init snapshots', () => {
+  const h = harness(),
+    track = h.get('#progress-bar').parentElement;
+  h.date({ revision: 1, active: true, ready: false, stage: 'counting', processed: 0, total: null });
+  assert.equal(h.get('#progress-title').textContent, '正在准备日期排序');
+  assert.equal(track.getAttribute('aria-valuenow'), null);
+  h.date({
+    revision: 2,
+    active: true,
+    ready: false,
+    stage: 'backfill',
+    processed: 512,
+    total: 1000
+  });
+  assert.equal(track.getAttribute('aria-valuenow'), '51');
+  assert.match(h.get('#progress-detail').textContent, /512.*1000/);
+  h.date({
+    revision: 3,
+    active: true,
+    ready: false,
+    stage: 'index',
+    processed: 1000,
+    total: 1000,
+    indexesCompleted: 1,
+    indexesTotal: 2
+  });
+  assert.equal(
+    track.getAttribute('aria-valuenow'),
+    null,
+    'backfill completion is not overall completion'
+  );
+  assert.match(h.get('#progress-percent').textContent, /1\/2/);
+  h.date({ revision: 4, active: false, ready: true, stage: 'ready' });
+  assert.equal(track.getAttribute('aria-valuenow'), '100');
+  assert.deepEqual(h.dateActions, { invalidations: 1, refreshes: 1 });
+  h.date({ revision: 1, active: true, ready: false, stage: 'backfill', processed: 1, total: 1000 });
+  assert.equal(h.get('#progress-title').textContent, '日期缓存已准备好');
+  assert.deepEqual(h.dateActions, { invalidations: 1, refreshes: 1 });
+});
+test('date progress yields to real scans and matching, and readiness never replaces an explicit name sort', () => {
+  const h = harness();
+  h.context.S.sort = 'name';
+  h.scan({ active: true, images: 4, folders: 1 });
+  const scanningTitle = h.get('#progress-title').textContent;
+  h.date({ revision: 1, active: true, stage: 'backfill', processed: 10, total: 100 });
+  assert.equal(h.get('#progress-title').textContent, scanningTitle);
+  h.context.scanActive = false;
+  h.online({ active: true, completed: 2, remaining: 3 });
+  h.date({ revision: 2, active: true, stage: 'index', indexesCompleted: 0, indexesTotal: 2 });
+  assert.equal(h.get('#progress-title').textContent, '正在检索作品简介');
+  h.date({ revision: 3, active: false, ready: true, stage: 'ready' });
+  assert.deepEqual(h.dateActions, { invalidations: 1, refreshes: 0 });
+  assert.equal(h.context.S.sort, 'name');
+});
 test('picker cancellation releases busy and isolated bind or removal changes cannot invent a batch', () => {
   const h = harness();
   h.context.pendingImport = { sawProgress: false };

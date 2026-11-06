@@ -13,6 +13,7 @@ const {
   fetchAsset
 } = require('../src/update-release.cjs');
 const { createUpdater } = require('../src/update-service.cjs');
+const { makeRuntimeOwnership, OWNERSHIP_PATH } = require('../src/runtime-update.cjs');
 const { installationPlan, helperScript, launchInstaller } = require('../src/update-install.cjs');
 const payload = Buffer.from('MZ test fixture only; never execute');
 const digest = crypto.createHash('sha256').update(payload).digest('hex');
@@ -50,6 +51,22 @@ async function fixture(t, options = {}) {
   for (const directory of [path.dirname(paths.exe), paths.userData, paths.data])
     await fs.mkdir(directory, { recursive: true });
   await fs.writeFile(paths.exe, 'do not run');
+  await fs.mkdir(path.join(path.dirname(paths.exe), 'resources'));
+  await fs.writeFile(
+    path.join(path.dirname(paths.exe), OWNERSHIP_PATH),
+    JSON.stringify(
+      makeRuntimeOwnership({
+        version: '1.2.1',
+        files: [
+          {
+            path: 'ACG-album.exe',
+            bytes: 10,
+            sha256: crypto.createHash('sha256').update('do not run').digest('hex')
+          }
+        ]
+      })
+    )
+  );
   await fs.writeFile(path.join(paths.data, 'library.sqlite'), 'roots/token/profile sentinel');
   const events = [],
     launches = [];
@@ -87,6 +104,136 @@ async function fixture(t, options = {}) {
     quits: () => quits
   };
 }
+
+test('cancellation on verifying never publishes ready or keeps an installable file and permits retry', async (t) => {
+  let service,
+    cancelOnce = true;
+  const events = [];
+  const fixtureResult = await fixture(t, {
+    notify: (event) => {
+      events.push(event);
+      if (cancelOnce && event.phase === 'verifying') {
+        cancelOnce = false;
+        service.cancel();
+      }
+    }
+  });
+  service = fixtureResult.service;
+  await assert.rejects(service.download({ edition: 'standard' }), { code: 'UPDATE_CANCELLED' });
+  assert.equal(service.snapshot().phase, 'cancelled');
+  assert.equal(
+    events.some((event) => event.phase === 'ready'),
+    false
+  );
+  assert.equal(
+    (await fs.readdir(fixtureResult.root)).some((name) => name.startsWith('ACG-album-update-')),
+    false
+  );
+  await assert.rejects(
+    service.install({ confirm: true, repository, version, edition: 'standard' }),
+    /先完成下载/
+  );
+  assert.equal((await service.download({ edition: 'standard' })).phase, 'ready');
+});
+
+for (const point of ['write', 'reader-cancel', 'close', 'rename']) {
+  test(`cancel after awaited ${point} cannot commit a ready download and permits retry`, async (t) => {
+    let service,
+      armed = true;
+    const cancel = () => {
+      if (armed) {
+        armed = false;
+        service.cancel();
+      }
+    };
+    const fixtureResult = await fixture(t, {
+      fetch: async () => {
+        const response = new Response(payload);
+        if (point === 'reader-cancel') {
+          const getReader = response.body.getReader.bind(response.body);
+          response.body.getReader = () => {
+            const reader = getReader();
+            return {
+              read: reader.read.bind(reader),
+              releaseLock: reader.releaseLock.bind(reader),
+              cancel: async () => {
+                await reader.cancel();
+                cancel();
+              }
+            };
+          };
+        }
+        return response;
+      }
+    });
+    service = fixtureResult.service;
+    const originalOpen = fs.open,
+      originalRename = fs.rename;
+    try {
+      fs.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        if (path.basename(args[0]) !== 'installer.part') return handle;
+        return {
+          writeFile: async (bytes) => {
+            await handle.writeFile(bytes);
+            if (point === 'write') cancel();
+          },
+          close: async () => {
+            await handle.close();
+            if (point === 'close') cancel();
+          }
+        };
+      };
+      fs.rename = async (...args) => {
+        await originalRename(...args);
+        if (point === 'rename') cancel();
+      };
+      await assert.rejects(service.download({ edition: 'standard' }), { code: 'UPDATE_CANCELLED' });
+      assert.equal(service.snapshot().phase, 'cancelled');
+      assert.equal(
+        fixtureResult.events.some((event) => event.phase === 'ready'),
+        false
+      );
+      assert.equal(
+        (await fs.readdir(fixtureResult.root)).some((name) => name.startsWith('ACG-album-update-')),
+        false
+      );
+      await assert.rejects(
+        service.install({ confirm: true, repository, version, edition: 'standard' }),
+        /先完成下载/
+      );
+      assert.equal((await service.download({ edition: 'standard' })).phase, 'ready');
+    } finally {
+      fs.open = originalOpen;
+      fs.rename = originalRename;
+    }
+  });
+}
+
+test('unknown edition from info and empty IPC edition cannot start an implicit Standard download', async (t) => {
+  let networkCalls = 0;
+  const h = await fixture(t, {
+    fetch: async () => {
+      networkCalls++;
+      return new Response(payload);
+    }
+  });
+  const index = path.join(path.dirname(h.paths.exe), 'resources', 'local-index');
+  await fs.mkdir(index);
+  await fs.writeFile(path.join(index, 'manifest.json'), '{broken');
+  assert.equal((await h.service.info()).currentEdition, null);
+  const originalEntries = await fs.readdir(h.root);
+  for (const edition of [null, undefined, '', 'STANDARD', 'unsupported'])
+    await assert.rejects(h.service.download({ edition }), /版型|选择/);
+  await assert.rejects(h.service.download(), /版型|选择/);
+  assert.equal(networkCalls, 0);
+  assert.deepEqual(await fs.readdir(h.root), originalEntries);
+  assert.equal(h.service.snapshot().phase, 'idle');
+  assert.equal(h.launches.length, 0);
+  const result = await h.service.download({ edition: 'full', mode: 'full' });
+  assert.equal(result.edition, 'full');
+  assert.equal(networkCalls, 1);
+});
 
 test('actual latest assets select all three editions and retain supported release tag formats', () => {
   for (const tag of ['v1.2.0', 'release/1.2.0', 'release-1.2.0', '1.2.0+build.7']) {
