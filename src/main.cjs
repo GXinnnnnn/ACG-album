@@ -19,6 +19,7 @@ const { rangedFileResponse } = require('./file-response.cjs');
 const { writeBitmap } = require('./clipboard.cjs');
 const { normalizeAccessToken } = require('./bangumi-access.cjs');
 const { registerApplicationHandlers, openExternal } = require('./application.cjs');
+const { createWallpaperService, registerWallpaperHandlers } = require('./wallpaper.cjs');
 const { APP_NAME, resolveDataDirectory, resolveUserDataDirectory } = require('./profile-path.cjs');
 const profile = resolveUserDataDirectory({
   appData: app.getPath('appData'),
@@ -45,7 +46,8 @@ let win,
   worker,
   seq = 0,
   dataDir,
-  tokenPath;
+  tokenPath,
+  wallpapers;
 const pending = new Map();
 let closing = false;
 let importReserved = false;
@@ -62,8 +64,30 @@ const log = (...args) => {
 function call(method, args = {}) {
   return new Promise((resolve, reject) => {
     const request = ++seq;
-    pending.set(request, { resolve, reject });
-    worker.postMessage({ request, method, args });
+    // Bound the read-only availability check. Mutations keep their actual worker result.
+    const timer =
+      method === 'rootStatus'
+        ? setTimeout(() => {
+            if (!pending.delete(request)) return;
+            reject(
+              Object.assign(new Error('目录检查超时；已缓存相册仍可浏览，请稍后重新连接。'), {
+                code: 'ROOT_CHECK_TIMEOUT'
+              })
+            );
+          }, 8000)
+        : null;
+    const finish = (fn) => (value) => {
+      clearTimeout(timer);
+      fn(value);
+    };
+    pending.set(request, { resolve: finish(resolve), reject: finish(reject) });
+    try {
+      worker.postMessage({ request, method, args });
+    } catch (error) {
+      pending.delete(request);
+      clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 function bootWorker() {
@@ -187,6 +211,7 @@ function createWindow() {
 }
 function handlers() {
   registerApplicationHandlers({ call, getWindow: () => win });
+  registerWallpaperHandlers({ ipcMain, dialog, getWindow: () => win, service: wallpapers });
   const methods = [
     'mediaInfo',
     'prepareImagePreview',
@@ -219,6 +244,8 @@ function handlers() {
     'dimensions',
     'cancel',
     'removeRoot',
+    'rootStatus',
+    'retryRoot',
     'settings'
   ];
   for (const method of methods)
@@ -286,6 +313,18 @@ function handlers() {
       importReserved = false;
     }
   });
+  for (const method of ['relinkRoot', 'relinkFolder'])
+    ipcMain.handle('library:' + method, async (_, args = {}) => {
+      const node = await call('get', { id: args.id });
+      if (!node || node.kind !== 'folder' || (method === 'relinkRoot' && node.parent))
+        throw new Error('请选择已导入的文件夹。');
+      const selected = await dialog.showOpenDialog(win, {
+        title: `重新匹配「${node.name}」的文件夹（保留关联与手动设置）`,
+        properties: ['openDirectory', 'dontAddToRecent']
+      });
+      if (selected.canceled || !selected.filePaths?.length) return null;
+      return call(method, { id: node.id, path: selected.filePaths[0] });
+    });
   ipcMain.handle('library:refresh', async (_, args) => {
     const n = await call('get', args);
     if (!n) throw new Error('分类不存在');
@@ -402,6 +441,8 @@ async function imageProtocol(request) {
   try {
     const u = new URL(request.url),
       id = u.pathname.slice(1);
+    if (u.hostname === 'wallpaper' || u.hostname === 'wallpaper-thumb')
+      return wallpapers.response(request);
     if (!/^[a-f0-9]{24}$/.test(id)) return new Response('', { status: 400 });
     let result;
     if (u.hostname === 'thumb')
@@ -493,6 +534,7 @@ if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
         dataDir: process.env.ACG_DATA_DIR
       });
       fs.mkdirSync(dataDir, { recursive: true });
+      wallpapers = createWallpaperService({ dataDir });
       tokenPath = path.join(dataDir, 'bangumi-token.enc');
       const ready = bootWorker();
       protocol.handle('acg-image', imageProtocol);

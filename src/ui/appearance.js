@@ -2,52 +2,73 @@
 (function () {
   const spec = window.albumAppearanceSpec,
     labels = {
-      liquidTransparency: '液态透明度',
-      frostTransparency: '磨砂透明度',
+      liquidFloatingTransparency: '悬浮组件透明度',
+      liquidDialogTransparency: '弹窗透明度',
+      frostFloatingTransparency: '悬浮组件透明度',
+      frostDialogTransparency: '弹窗透明度',
       cardRadius: '全局卡片圆角',
       density: '卡片尺寸'
     },
     ids = {
-      liquidTransparency: 'liquid-transparency',
-      frostTransparency: 'frost-transparency',
+      liquidFloatingTransparency: 'liquid-floating-transparency',
+      liquidDialogTransparency: 'liquid-dialog-transparency',
+      frostFloatingTransparency: 'frost-floating-transparency',
+      frostDialogTransparency: 'frost-dialog-transparency',
       cardRadius: 'card-radius',
       density: 'density'
     };
   let previous = {};
   function apply(settings) {
-    const next = spec.normalize(settings),
-      root = document.documentElement;
-    for (const [key, token, value] of [
-      ['liquidTransparency', '--liquid-opacity', 1 - next.liquidTransparency / 100],
-      ['frostTransparency', '--frost-opacity', 1 - next.frostTransparency / 100],
-      ['cardRadius', '--user-card-radius', next.cardRadius + 'px']
-    ])
-      if (previous[key] !== next[key]) root.style.setProperty(token, String(value));
+    const next = { ...spec.normalize(settings), liquidGlass: settings?.liquidGlass !== false },
+      root = document.documentElement,
+      mode = next.liquidGlass ? 'liquid' : 'frost',
+      tokens = {
+        '--liquid-floating-opacity': 1 - next.liquidFloatingTransparency / 100,
+        '--liquid-dialog-opacity': 1 - next.liquidDialogTransparency / 100,
+        '--frost-floating-opacity': 1 - next.frostFloatingTransparency / 100,
+        '--frost-dialog-opacity': 1 - next.frostDialogTransparency / 100,
+        '--floating-opacity': 1 - next[mode + 'FloatingTransparency'] / 100,
+        '--dialog-opacity': 1 - next[mode + 'DialogTransparency'] / 100,
+        '--user-card-radius': next.cardRadius + 'px'
+      };
+    let materialChanged = previous.liquidGlass !== next.liquidGlass;
+    for (const [token, value] of Object.entries(tokens)) {
+      if (previous[token] === value) continue;
+      root.style.setProperty(token, String(value));
+      if (token !== '--user-card-radius') materialChanged = true;
+    }
+    for (const group of ['Floating', 'Dialog'])
+      root.dataset[group.toLowerCase() + 'Transparent'] =
+        next[mode + group + 'Transparency'] === 100 ? 'on' : 'off';
     if (previous.textShadow !== next.textShadow)
       root.dataset.textShadow = next.textShadow ? 'on' : 'off';
-    const materialChanged =
-      previous.liquidTransparency !== next.liquidTransparency ||
-      previous.frostTransparency !== next.frostTransparency;
-    previous = next;
+    previous = { ...next, ...tokens };
     if (materialChanged)
       window.dispatchEvent(
         new CustomEvent('album-appearance-change', {
           detail: {
-            liquidTransparency: next.liquidTransparency,
-            frostTransparency: next.frostTransparency
+            mode,
+            floatingTransparency: next[mode + 'FloatingTransparency'],
+            dialogTransparency: next[mode + 'DialogTransparency']
           }
         })
       );
   }
   function rangeMarkup(key, prefix = 'appearance') {
     const range = spec.ranges[key],
-      id = `${prefix}-${ids[key]}`;
-    return `<div class="setting-row appearance-range-row"><div><label for="${id}"><strong>${labels[key]}</strong></label><p id="${id}-help">${range.min}–${range.max}${key.includes('Transparency') ? '%' : ' px'} · 默认 ${range.default}${key.includes('Transparency') ? '%' : ' px'}${key.includes('Transparency') ? '；0% 不透明，90% 更通透' : ''}</p></div><div class="appearance-range-control"><input id="${id}" data-appearance-key="${key}" type="range" min="${range.min}" max="${range.max}" step="1" value="${range.default}" aria-describedby="${id}-help ${id}-value"><output id="${id}-value" for="${id}"></output><button type="button" class="subtle-button appearance-reset" data-appearance-reset="${key}" title="恢复默认值" aria-label="恢复默认值">恢复默认</button></div></div>`;
+      id = `${prefix}-${ids[key]}`,
+      mode = key.startsWith('liquid') ? 'liquid' : key.startsWith('frost') ? 'frost' : '';
+    return `<div class="setting-row appearance-range-row"${mode ? ` data-appearance-mode="${mode}"${mode === 'frost' ? ' hidden' : ''}` : ''}><div><label for="${id}"><strong>${labels[key]}</strong></label><p id="${id}-help">${key.includes('Transparency') ? '0% 不透明，100% 完全透明' : key === 'cardRadius' ? '调整卡片边角的圆润程度。' : '拖动调整卡片大小。'}</p></div><div class="appearance-range-control"><input id="${id}" data-appearance-key="${key}" type="range" min="${range.min}" max="${range.max}" step="1" value="${range.default}" aria-describedby="${id}-help ${id}-value"><output id="${id}-value" for="${id}"></output><button type="button" class="subtle-button appearance-reset" data-appearance-reset="${key}" title="恢复默认值" aria-label="恢复默认值">恢复默认</button></div></div>`;
   }
-  function markup() {
-    return `<div class="setting-row"><div><label for="appearance-text-shadow"><strong>全局字体阴影</strong></label><p id="appearance-text-shadow-help">为文字添加柔和阴影，关闭时也移除重叠区域的旧阴影。</p></div><input id="appearance-text-shadow" data-appearance-key="textShadow" type="checkbox" class="switch" aria-describedby="appearance-text-shadow-help"></div>${Object.keys(
-      spec.ranges
+  function markup(group = 'all') {
+    return `${group === 'glass' ? '' : `<div class="setting-row"><div><label for="appearance-text-shadow"><strong>全局字体阴影</strong></label><p id="appearance-text-shadow-help">为文字添加柔和阴影，关闭时也移除重叠区域的旧阴影。</p></div><input id="appearance-text-shadow" data-appearance-key="textShadow" type="checkbox" class="switch" aria-describedby="appearance-text-shadow-help"></div>`}${Object.keys(
+      labels
     )
+      .filter(
+        (key) =>
+          group === 'all' ||
+          (group === 'glass' ? key.includes('Transparency') : !key.includes('Transparency'))
+      )
       .map((key) => rangeMarkup(key))
       .join('')}`;
   }
@@ -69,9 +90,13 @@
       densityPreview = false,
       densityFinished = true;
     function sync(root = document) {
+      const values = spec.normalize(settings()),
+        mode = settings().liquidGlass !== false ? 'liquid' : 'frost';
+      for (const row of root.querySelectorAll('[data-appearance-mode]'))
+        row.hidden = row.dataset.appearanceMode !== mode;
       for (const input of root.querySelectorAll('[data-appearance-key]')) {
         const key = input.dataset.appearanceKey,
-          value = spec.normalize(settings())[key];
+          value = values[key];
         if (key === 'textShadow') input.checked = value;
         else {
           input.value = String(value);

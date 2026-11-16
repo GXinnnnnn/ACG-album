@@ -1692,6 +1692,68 @@ test('invalidation during refresh and failed refresh cannot validate a key, whil
   grid.reset();
 });
 
+test('responsive medium reflows an unchanged canvas while saved numeric densities keep their geometry', async () => {
+  const spec = require('../src/appearance-settings.cjs'),
+    displaySource = fs.readFileSync(path.join(__dirname, '../src/ui/display.js'), 'utf8');
+  for (const saved of [null, 191, 267.5]) {
+    const initial = saved ?? spec.cardPresets(1920)[1],
+      f = await fixture(0, 180, 1760, initial),
+      listeners = new Map(),
+      styles = new Map(),
+      root = {
+        clientWidth: 1920,
+        dataset: {},
+        style: { setProperty: (key, value) => styles.set(key, value) }
+      },
+      control = {
+        addEventListener() {},
+        setAttribute() {},
+        classList: { toggle() {} }
+      },
+      elements = {
+        '#virtual-grid': f.wall,
+        '#viewport': f.viewport,
+        '#details-toggle': control,
+        '#card-size-controls': control,
+        '#back-to-top': control
+      };
+    f.settings.densityConfigured = saved !== null;
+    f.document.documentElement = root;
+    f.viewport.addEventListener = () => {};
+    Object.assign(f.context, {
+      grid: f.grid,
+      $: (selector) => elements[selector] || null,
+      $$: () => []
+    });
+    Object.assign(f.context.window, {
+      albumAppearanceSpec: spec,
+      innerWidth: 1920,
+      addEventListener: (name, callback) => listeners.set(name, callback)
+    });
+    vm.runInContext(displaySource, f.context);
+    f.context.applyDisplaySettings();
+    f.context.initializeDisplayControls();
+    const first = f.grid.cards.get(0),
+      image = first.querySelector('img'),
+      requests = f.calls.length,
+      writes = image.writes.length;
+    // Density follows the window; canvas changes are independently observed by
+    // the host. A density-only transition must not wait for that width observer.
+    root.clientWidth = 2560;
+    listeners.get('resize')();
+    const expected = saved ?? spec.cardPresets(2560)[1];
+    assert.equal(f.settings.density, expected);
+    assert.equal(f.grid.width, expected, 'Applied medium and rendered width stay in sync');
+    assert.equal(f.grid.cols, Math.floor((f.wall.clientWidth + 8) / (expected + 8)));
+    assert.equal(f.grid.getPosition(0).left, 0);
+    assert.equal(f.grid.cards.get(0), first, 'Reflow preserves the decoded card');
+    assert.equal(image.writes.length, writes, 'Same thumbnail tier keeps its source');
+    assert.equal(f.calls.length, requests, 'Reflow does not reload pagination');
+    assert.equal(f.settings.densityConfigured, saved !== null);
+    if (saved === null) assert.equal(styles.get('--card-width'), expected + 'px');
+  }
+});
+
 test('navigation enforces a shared 180-card budget and falls back for oversized windows', async () => {
   const f = await fixture(1000, 0, 2200, 100, 1, 'A'),
     { grid, context } = f,

@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const defaults = {
-    eyebrow: 'YOUR PERSONAL COLLECTION',
+    eyebrow: '',
     title: '我的相册',
     description: '把散落的画面，整理成喜欢的世界。'
   };

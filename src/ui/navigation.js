@@ -633,6 +633,7 @@ function updateTreeElement(group, descriptor, firstIndex) {
     n.name,
     n.path,
     n.folders,
+    n.rootStatus?.status,
     descriptor.depth,
     open,
     selected
@@ -655,8 +656,12 @@ function updateTreeElement(group, descriptor, firstIndex) {
     link.innerHTML =
       svg('folder') +
       `<span class="category-name">${esc(n.name)}</span>` +
-      (!descriptor.depth ? `<span class="category-total">${fmt(n.folders)}</span>` : '');
-    link.title = n.path;
+      (!descriptor.depth
+        ? `<span class="category-total">${n.rootStatus?.status === 'offline' ? '离线' : fmt(n.folders)}</span>`
+        : '');
+    row.classList.toggle('source-offline', n.rootStatus?.status === 'offline');
+    link.title =
+      n.path + (n.rootStatus?.status === 'offline' ? ' · 来源离线，右键可重新连接或重新匹配' : '');
   }
   const active = $('#category-nav').contains(document.activeElement)
     ? document.activeElement.closest('.tree-node')

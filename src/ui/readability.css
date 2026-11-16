@@ -47,7 +47,7 @@ body {
   ) {
   color: var(--muted);
   font-family: var(--secondary-font-family, inherit);
-  font-weight: 550;
+  font-weight: 400;
 }
 /* Neutral floating icons use slightly softer ink than text. :where keeps the
    override below component state rules; only color changes, never SVG geometry. */
@@ -113,12 +113,12 @@ body {
 :root .about-qr-card > span {
   color: #454251;
   font-family: var(--secondary-font-family, inherit);
-  font-weight: 550;
+  font-weight: 400;
 }
 :root :is(.viewer-top span, .viewer-bottom, #viewer-loading) {
   color: #d4cfe0;
   font-family: var(--secondary-font-family, inherit);
-  font-weight: 550;
+  font-weight: 400;
 }
 /* Optical shells never reserve an empty strip beside their glass. Overflow
    remains owned by the existing modal/menu or its nested scroll region. Keep

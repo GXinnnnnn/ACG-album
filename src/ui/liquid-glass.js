@@ -1,5 +1,6 @@
 'use strict';
-/* CSS samples the real DOM backdrop. WebGL refracts a deliberately incomplete,
+/* A narrow native SVG trial refracts the real DOM backdrop on small controls.
+   Other surfaces retain WebGL, which refracts a deliberately incomplete,
    low-resolution scene proxy (theme + decoded pictures, not text/controls).
    No capturePage, DOM screenshot, fetch, continuous RAF or per-card GL context. */
 ((scope, factory) => {
@@ -8,7 +9,9 @@
   else scope.albumLiquidGlass = kit.mount(scope);
 })(typeof window === 'undefined' ? null : window, () => {
   const surfaces =
-    '.sidebar-shell,.topbar > .brand,.topbar > .navigation,.topbar > .search-wrap,.topbar > .header-actions,.toolbar-right,.back-to-top,.context-menu,.album-select-list,.progress-panel,.toast,.modal:not(.viewer)';
+    '.sidebar-shell,.topbar > .brand,.topbar > .navigation,.topbar > .search-wrap,.topbar > .header-actions,.toolbar-right,.back-to-top,.context-menu,.album-select-list,.progress-panel,.toast,.modal:not(.viewer),#media-editor';
+  const nativeSurfaces = '.toolbar-right,.context-menu,.album-select-list';
+  const nativePixelLimit = 600000;
   const vertex = `#version 300 es
   precision highp float;
   out vec2 uv;
@@ -45,45 +48,49 @@
     vec2 normal = normalize(gradient + vec2(0.00001));
     float bevel = 1.0 - smoothstep(0.0, material.x, -d);
     float shoulder = 1.0 - smoothstep(0.0, material.y, -d);
-    float fresnel = pow(bevel, 2.4);
+    // A broad lobe follows the light; the unlit rim dissolves into the body.
+    // No isotropic bright alpha ring, even on high-contrast image backdrops.
+    float facing = smoothstep(-0.45, 0.9, dot(normal, normalize(light + vec2(0.0001))));
+    float fresnel = pow(bevel, 1.8) * mix(0.12, 1.0, facing);
     vec2 lens = p / max(size * 0.5, vec2(1.0));
     vec3 bodyNormal = normalize(vec3(lens * 0.22, 1.0));
     float sheen = pow(max(dot(bodyNormal, normalize(vec3(light * 0.35, 1.0))), 0.0), 10.0);
     vec2 base = (origin + uv * size) / viewport;
-    vec2 bend = (normal * (10.0 * bevel + 3.0 * shoulder) + lens * 2.5) * strength / viewport;
-    vec2 aberration = normal * 1.3 * bevel / viewport;
+    vec2 bend = (normal * (6.0 * bevel + 1.8 * shoulder) + lens * 1.1) * strength / viewport;
+    vec2 aberration = normal * 0.45 * bevel * strength / viewport;
     vec3 refracted = vec3(texture(scene, clamp(base + bend + aberration, 0.0, 1.0)).r,
                           texture(scene, clamp(base + bend, 0.0, 1.0)).g,
                           texture(scene, clamp(base + bend - aberration, 0.0, 1.0)).b);
-    float specular = pow(max(dot(normal, normalize(light + vec2(0.0001))), 0.0), 5.0) * fresnel;
+    float specular = pow(max(dot(normal, normalize(light + vec2(0.0001))), 0.0), 3.5) * fresnel;
     vec3 tint = mix(vec3(0.90,0.92,1.0), vec3(0.24,0.25,0.34), dark);
-    vec3 optical = mix(refracted, tint, 0.22) + specular * mix(0.55,0.35,dark) + sheen * 0.035;
-    // A nonzero body floor keeps the whole surface optical, not just its rim.
-    // Wide shoulders blend the stronger lens edge into this frosted interior.
-    float alpha = mask * (material.z + shoulder * 0.08 + fresnel * 0.32 + specular * 0.22 + sheen * material.w) * opacity / 0.82;
+    vec3 optical = mix(refracted, tint, 0.32) + specular * mix(0.18,0.10,dark) + sheen * 0.015;
+    // The frosted body remains readable; a wider, low-alpha shoulder supplies
+    // depth while the lit edge stays subtle in both light and dark themes.
+    // Clear glass has no optical film; opaque tint must not reveal the scene proxy.
+    float alpha = mask * (material.z + shoulder * 0.035 + fresnel * mix(0.10,0.07,dark) + specular * 0.06 + sheen * material.w) * min(opacity / 0.35, (1.0 - opacity) / 0.65);
     color = vec4(optical, alpha);
   }`;
   function materialProfile(width, height) {
     const halfSpan = Math.max(1, Math.min(width, height) * 0.5);
     return {
-      edgeWidth: Math.min(14, halfSpan * 0.7),
-      shoulderWidth: Math.min(180, Math.max(24, halfSpan * 0.9)),
-      bodyAlpha: 0.14,
-      sheenAlpha: 0.06
+      edgeWidth: Math.min(18, halfSpan * 0.7),
+      shoulderWidth: Math.min(180, Math.max(24, halfSpan * 0.95)),
+      bodyAlpha: 0.11,
+      sheenAlpha: 0.035
     };
   }
   function materialSettings(style) {
     const read = (name, fallback) => {
       const value = parseFloat(style?.getPropertyValue?.(name));
-      return Number.isFinite(value) ? Math.min(1, Math.max(0.1, value)) : fallback;
+      return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
     };
     return {
-      liquidOpacity: read('--liquid-opacity', 0.82),
-      frostOpacity: read('--frost-opacity', 0.92)
+      floatingOpacity: read('--floating-opacity', 0.35),
+      dialogOpacity: read('--dialog-opacity', 0.35)
     };
   }
   function appearanceKey(root) {
-    return ['--liquid-opacity', '--frost-opacity']
+    return ['--floating-opacity', '--dialog-opacity']
       .map((name) => root.style?.getPropertyValue?.(name) || '')
       .join('|');
   }
@@ -312,7 +319,7 @@
         gl.uniform1f(uniforms.radius, options.radius);
         gl.uniform1f(uniforms.dark, Number(options.dark));
         gl.uniform1f(uniforms.strength, options.strength);
-        gl.uniform1f(uniforms.opacity, options.liquidOpacity ?? 0.82);
+        gl.uniform1f(uniforms.opacity, options.materialOpacity ?? 0.35);
         const material = materialProfile(rect.width, rect.height);
         gl.uniform4f(
           uniforms.material,
@@ -461,7 +468,19 @@
   function mount(win) {
     const doc = win.document,
       root = doc.documentElement,
-      reduced = win.matchMedia('(prefers-reduced-motion: reduce)');
+      reduced = win.matchMedia('(prefers-reduced-motion: reduce)'),
+      reducedTransparency = win.matchMedia('(prefers-reduced-transparency: reduce)'),
+      forcedColors = win.matchMedia('(forced-colors: active)');
+    // Observe media changes through their events. Repeated .matches reads from
+    // diagnostics/enabled() can consume Chromium's pending change notification.
+    let reducedTransparencyActive = reducedTransparency.matches,
+      forcedColorsActive = forcedColors.matches;
+    const opaqueMaterial = () => reducedTransparencyActive || forcedColorsActive;
+    const lensKit = win.albumGlassworkLens;
+    const nativeSupported = !!lensKit?.isLensSupported(win);
+    const nativeHosts = new Map();
+    let surfaceRows = [],
+      nativeRows = [];
     const hosts = new Map(),
       legibilityHosts = new Set(),
       listeners = [];
@@ -486,6 +505,7 @@
       frames: 0,
       sceneBuilds: 0,
       sampledImages: 0,
+      sampledWallpaper: 0,
       skippedImages: 0,
       securityChecks: 0,
       frameCpuMs: [],
@@ -504,7 +524,11 @@
     };
     const readable = () => !destroyed && !suspended && !doc.hidden && !inactive;
     const enabled = () =>
-      readable() && root.dataset.liquidGlass !== 'off' && (!engine || engine.ready());
+      readable() &&
+      !opaqueMaterial() &&
+      root.dataset.liquidGlass !== 'off' &&
+      root.dataset.motion !== 'low' &&
+      (!engine || engine.ready() || nativeSupported);
     const queue = scheduler(win, paint, enabled);
     // Off/fallback still needs text contrast, without creating or polling GL.
     const legibilityQueue = scheduler(win, refreshLegibility, readable);
@@ -512,7 +536,91 @@
       node.addEventListener(type, fn, options);
       listeners.push(() => node.removeEventListener(type, fn, options));
     };
+    function nativeStats() {
+      const states = [...nativeHosts.values()].map((lens) => lens.stats());
+      return {
+        supported: nativeSupported,
+        hosts: nativeHosts.size,
+        ready: states.filter((state) => state.applied).length,
+        pending: states.filter((state) => state.state === 'pending').length,
+        failures: states.filter((state) => state.state === 'css-fallback').length,
+        outputCssPixels: nativeRows.reduce((sum, row) => sum + row.rect.width * row.rect.height, 0),
+        maxOutputCssPixels: nativePixelLimit,
+        sampleMode: 'real-background-backdrop',
+        states
+      };
+    }
+    function rendererStatus() {
+      if (destroyed) return;
+      if (
+        !readable() ||
+        opaqueMaterial() ||
+        root.dataset.liquidGlass === 'off' ||
+        root.dataset.motion === 'low'
+      ) {
+        root.dataset.liquidRenderer = opaqueMaterial() ? 'css-accessible' : 'css-static';
+        return;
+      }
+      const native = nativeStats();
+      root.dataset.liquidRenderer = native.ready
+        ? engine?.ready() && hosts.size
+          ? 'native-svg+webgl2-proxy'
+          : 'native-svg-backdrop'
+        : engine?.stats().status || (native.pending ? 'native-svg-pending' : 'css-fallback');
+    }
+    function dropNative() {
+      for (const [host, lens] of nativeHosts) {
+        resizeObserver?.unobserve(host);
+        lens.destroy();
+        host.removeAttribute('data-glasswork-native');
+        host.removeAttribute('data-liquid-glass-host');
+        host.removeAttribute('data-liquid-static');
+      }
+      nativeHosts.clear();
+      nativeRows = [];
+      layoutDirty = true;
+    }
+    function syncNative(rows) {
+      const active = new Set(rows.map((row) => row.host));
+      for (const [host, lens] of nativeHosts) {
+        if (!host.isConnected || !active.has(host)) {
+          resizeObserver.unobserve(host);
+          lens.destroy();
+          host.removeAttribute('data-glasswork-native');
+          host.removeAttribute('data-liquid-glass-host');
+          host.removeAttribute('data-liquid-static');
+          nativeHosts.delete(host);
+        }
+      }
+      for (const row of rows) {
+        let lens = nativeHosts.get(row.host);
+        if (!lens) {
+          lens = lensKit.createLens(row.host, {
+            win,
+            onChange: rendererStatus,
+            isEnabled: enabled
+          });
+          nativeHosts.set(row.host, lens);
+          row.host.dataset.glassworkNative = '';
+          row.host.dataset.liquidGlassHost = '';
+          if (row.isStatic) row.host.dataset.liquidStatic = '';
+          resizeObserver.observe(row.host);
+        }
+        // createLens catches asynchronous map/decode errors and leaves CSS material.
+        lens.update({
+          width: row.rect.width,
+          height: row.rect.height,
+          radius: row.radius,
+          // Updating edge only changes the SVG scale, reusing the decoded map.
+          edge:
+            (lensKit.LENS_DEFAULTS?.edge ?? 0.4) *
+            Math.min(1, material.floatingOpacity / 0.35, (1 - material.floatingOpacity) / 0.65)
+        });
+      }
+    }
     function removeCanvases() {
+      dropNative();
+      surfaceRows = [];
       for (const [host, canvas] of hosts) {
         resizeObserver?.unobserve(host);
         canvas.remove();
@@ -528,11 +636,21 @@
       if (sceneChanged) {
         dirty = true;
         layoutDirty = true;
+        // Invalidate fit intent at the event, before the next scheduled measurement.
+        for (const lens of nativeHosts.values()) lens.cancelPending();
       }
       metrics.lastReason = reason;
       if (!enabled()) {
         queue.cancel();
-        if (root.dataset.liquidGlass === 'off') removeCanvases();
+        if (
+          !readable() ||
+          root.dataset.liquidGlass === 'off' ||
+          root.dataset.motion === 'low' ||
+          opaqueMaterial()
+        )
+          removeCanvases();
+        rendererStatus();
+        if (opaqueMaterial()) root.dataset.liquidRenderer = 'css-accessible';
         if (!readable()) legibilityQueue.cancel();
         else if (sceneChanged) legibilityQueue.request();
         return;
@@ -552,15 +670,15 @@
       if (key === materialKey) return;
       materialKey = key;
       // apply() writes canonical numeric tokens before emitting this event.
-      // Frost is CSS-only; it must not upload the scene or redraw the GPU layer.
+      // Both host materials share this renderer; numeric changes reuse its scene.
       const next = materialSettings(root.style);
-      const liquidChanged = next.liquidOpacity !== material.liquidOpacity;
-      const changed = liquidChanged || next.frostOpacity !== material.frostOpacity;
+      const changed =
+        next.floatingOpacity !== material.floatingOpacity ||
+        next.dialogOpacity !== material.dialogOpacity;
       material = next;
       if (!changed) return;
       metrics.materialChanges++;
       materialStyleDirty = true;
-      if (!liquidChanged) return;
       materialDirty = true;
       if (enabled()) invalidate('appearance', false);
     }
@@ -576,7 +694,7 @@
     function measureSurfaces() {
       const rows = [],
         viewerOpen = !!doc.querySelector('.viewer[open]');
-      // The media viewer has its own static frosted rim. Its open dialog also
+      // The media viewer has its own CSS material rim. Its open dialog also
       // occludes the library, so only a separate top-layer dialog can need GL.
       // All geometry/style reads precede canvas attachment/size writes.
       for (const host of doc.querySelectorAll(surfaces)) {
@@ -604,6 +722,7 @@
           rect,
           radius: Math.min(rawRadius, rect.width / 2, rect.height / 2),
           dark: root.dataset.theme === 'dark',
+          dialog: host.matches('.modal:not(.viewer),#media-editor'),
           isStatic: style.position === 'static'
         });
         if (rows.length >= 16) break;
@@ -611,7 +730,23 @@
       return rows;
     }
     function discover() {
-      const rows = measureSurfaces();
+      surfaceRows = measureSurfaces();
+      let nativePixels = 0;
+      nativeRows = [];
+      const rows = [];
+      for (const row of surfaceRows) {
+        const pixels = row.rect.width * row.rect.height;
+        const eligible =
+          nativeSupported &&
+          row.host.matches(nativeSurfaces) &&
+          lensKit.lensGeometry({ width: row.rect.width, height: row.rect.height }).enabled &&
+          nativePixels + pixels <= nativePixelLimit;
+        if (eligible) {
+          nativeRows.push(row);
+          nativePixels += pixels;
+        } else rows.push(row);
+      }
+      // Remove the previous GL layer before assigning a native backdrop to a host.
       const active = new Set(rows.map((row) => row.host));
       for (const [host, canvas] of hosts)
         if (!host.isConnected || !active.has(host)) {
@@ -621,6 +756,7 @@
           host.removeAttribute('data-liquid-static');
           hosts.delete(host);
         }
+      syncNative(nativeRows);
       for (const row of rows)
         if (!hosts.has(row.host)) {
           const canvas = createCanvas();
@@ -700,6 +836,43 @@
       syncMaterial();
       applyLegibility(measureSurfaces(), collectPictures());
     }
+    function sampleWallpaper(ctx, scale) {
+      if (root.dataset.wallpaper !== 'on' || opaqueMaterial()) return 0;
+      const img = doc.querySelector('#app-wallpaper > img');
+      if (!img?.complete || !img.naturalWidth || !img.naturalHeight || !img.getClientRects().length)
+        return 0;
+      const picture = safePicture(img);
+      if (!picture) return 0;
+      const rect = img.getBoundingClientRect(),
+        shade = doc.querySelector('#app-wallpaper > .wallpaper-shade'),
+        style = shade && win.getComputedStyle(shade);
+      ctx.save();
+      try {
+        // Use the existing safe 128px source and 640px scene budget. Wallpaper
+        // geometry already includes its cover crop; its shade never includes UI.
+        const blur = /blur\(([\d.]+)px\)/.exec(style?.backdropFilter || '');
+        const blurAmount = blur ? Math.max(0, Math.min(40, Number(blur[1]))) : 0;
+        ctx.filter = blurAmount > 0 ? `blur(${blurAmount * scale}px)` : 'none';
+        ctx.drawImage(
+          picture,
+          rect.left * scale,
+          rect.top * scale,
+          rect.width * scale,
+          rect.height * scale
+        );
+        ctx.filter = 'none';
+        if (style) {
+          ctx.fillStyle = style.backgroundColor;
+          ctx.fillRect(0, 0, scene.width, scene.height);
+        }
+        return 1;
+      } catch {
+        metrics.skippedImages++;
+        return 0;
+      } finally {
+        ctx.restore();
+      }
+    }
     function buildScene() {
       const scale = Math.min(1, 640 / Math.max(win.innerWidth, win.innerHeight));
       scene ||= doc.createElement('canvas');
@@ -711,9 +884,10 @@
       ctx.fillStyle = root.dataset.theme === 'dark' ? '#15151f' : '#e8e9f1';
       ctx.fillRect(0, 0, scene.width, scene.height);
       const pictures = collectPictures();
-      applyLegibility(visible, pictures);
-      let sampled = 0;
-      for (const { img, rect, clip, fit, position } of pictures.slice(0, 24)) {
+      applyLegibility(surfaceRows, pictures);
+      let sampled = sampleWallpaper(ctx, scale);
+      metrics.sampledWallpaper = sampled;
+      for (const { img, rect, clip, fit, position } of pictures.slice(0, 24 - sampled)) {
         const picture = safePicture(img);
         if (!picture) continue;
         const ratio =
@@ -763,7 +937,7 @@
         (status) => {
           root.dataset.liquidRenderer = status;
           if (status !== 'webgl2') {
-            queue.cancel();
+            if (!nativeSupported) queue.cancel();
             for (const canvas of hosts.values()) canvas.hidden = true;
           } else {
             dirty = true;
@@ -786,12 +960,6 @@
         drawBatchMs: 0,
         totalMs: 0
       };
-      ensureEngine();
-      phase.ensureMs = win.performance.now() - start;
-      if (!engine.ready()) {
-        refreshLegibility();
-        return;
-      }
       syncMaterial();
       const fullDraw =
         materialDirty ||
@@ -803,6 +971,15 @@
         visible = discover();
         phase.discoverMs = win.performance.now() - discoverAt;
         layoutDirty = false;
+      } else if (materialDirty && nativeRows.length) syncNative(nativeRows);
+      if (visible.length) ensureEngine();
+      phase.ensureMs = win.performance.now() - start - phase.discoverMs;
+      if (!visible.length || !engine?.ready()) {
+        refreshLegibility();
+        dirty = false;
+        materialDirty = false;
+        rendererStatus();
+        return;
       }
       if (dirty) {
         const sceneAt = win.performance.now(),
@@ -831,10 +1008,13 @@
             {
               radius: row.radius,
               dark: row.dark,
-              light: row.host === hotHost ? pointer : [-0.65, 0.8],
+              light:
+                !reduced.matches && root.dataset.motion !== 'low' && row.host === hotHost
+                  ? pointer
+                  : [-0.65, 0.8],
               dpr: win.devicePixelRatio || 1,
               strength: reduced.matches || root.dataset.motion === 'low' ? 0.45 : 1,
-              liquidOpacity: material.liquidOpacity
+              materialOpacity: row.dialog ? material.dialogOpacity : material.floatingOpacity
             }
           );
           canvas.hidden = false;
@@ -853,13 +1033,18 @@
       metrics.frames++;
       metrics.frameCpuMs.push(phase.totalMs);
       if (metrics.frameCpuMs.length > 120) metrics.frameCpuMs.shift();
-      root.dataset.liquidRenderer = 'webgl2';
+      rendererStatus();
     }
     const resizeObserver = new win.ResizeObserver(() => invalidate('surface-resize'));
     const observer = new win.MutationObserver((records) => {
       let changed = false;
       for (const record of records) {
-        if (record.target?.classList?.contains('liquid-glass-canvas')) continue;
+        if (
+          record.target?.classList?.contains('liquid-glass-canvas') ||
+          record.target?.closest?.('[data-glasswork-lens-defs]')
+        )
+          continue;
+        if (record.target === root && record.attributeName === 'data-theme') dropNative();
         // Numeric readouts are opaque foreground, never part of the image proxy.
         // Host ResizeObserver still covers a genuine geometry change.
         if (
@@ -878,13 +1063,16 @@
           )
             changed = true;
         } else if (
-          record.target?.parentElement?.closest('.modal:not(.viewer)') ||
-          record.target?.closest?.('.modal:not(.viewer)')
+          record.target?.parentElement?.closest('.modal:not(.viewer),#media-editor') ||
+          record.target?.closest?.('.modal:not(.viewer),#media-editor')
         ) {
           changed = true;
         } else if (
           [...(record.addedNodes || []), ...(record.removedNodes || [])].some(
-            (node) => node.nodeType === 1 && !node.classList?.contains('liquid-glass-canvas')
+            (node) =>
+              node.nodeType === 1 &&
+              !node.classList?.contains('liquid-glass-canvas') &&
+              !node.hasAttribute?.('data-glasswork-lens-defs')
           )
         )
           changed = true;
@@ -928,12 +1116,28 @@
       inactive = true;
       queue.cancel();
       legibilityQueue.cancel();
+      removeCanvases();
+      rendererStatus();
     });
     on(win, 'focus', () => {
       inactive = false;
       invalidate('focus');
     });
-    on(reduced, 'change', () => invalidate('reduced-motion', false));
+    on(reduced, 'change', () => {
+      hotHost = null;
+      uniformDirtyHosts.clear();
+      invalidate('reduced-motion', false);
+    });
+    on(reducedTransparency, 'change', (event) => {
+      reducedTransparencyActive =
+        typeof event.matches === 'boolean' ? event.matches : reducedTransparency.matches;
+      invalidate('reduced-transparency');
+    });
+    on(forcedColors, 'change', (event) => {
+      forcedColorsActive =
+        typeof event.matches === 'boolean' ? event.matches : forcedColors.matches;
+      invalidate('forced-colors');
+    });
     on(
       doc,
       'pointermove',
@@ -1015,6 +1219,8 @@
           !destroyed &&
           !doc.hidden &&
           !inactive &&
+          root.dataset.motion !== 'low' &&
+          !opaqueMaterial() &&
           root.dataset.liquidGlass !== 'off'
         ) {
           const wasSuspended = suspended;
@@ -1024,7 +1230,11 @@
             paint();
           } finally {
             suspended = wasSuspended;
-            if (suspended) queue.cancel();
+            if (suspended) {
+              queue.cancel();
+              dropNative();
+              rendererStatus();
+            }
           }
         } else invalidate('api');
       },
@@ -1033,6 +1243,8 @@
         if (suspended) {
           queue.cancel();
           legibilityQueue.cancel();
+          removeCanvases();
+          rendererStatus();
         } else invalidate('resume');
       },
       stats() {
@@ -1041,18 +1253,33 @@
           material: { ...material, key: materialKey },
           frameCpuMs: [...metrics.frameCpuMs],
           renderedSurfaces: rendered,
-          visibleSurfaces: visible.length,
-          hosts: hosts.size,
+          visibleSurfaces: surfaceRows.length,
+          hosts: hosts.size + nativeHosts.size,
+          native: nativeStats(),
+          sampleMode: nativeStats().ready
+            ? engine?.ready() && hosts.size
+              ? 'mixed-real-background-backdrop-and-proxy'
+              : 'real-background-backdrop'
+            : engine?.ready() && hosts.size
+              ? metrics.sampleMode
+              : 'css-only-no-optical-sampling',
+          proxyHosts: hosts.size,
+          sampleModes: {
+            realBackgroundBackdrop: nativeStats().ready,
+            themeAndDecodedImagesProxy: engine?.ready() ? hosts.size : 0
+          },
           pending: queue.pending() + legibilityQueue.pending(),
           legibilityPending: legibilityQueue.pending(),
           suspended,
           hidden: doc.hidden,
           inactive,
+          reducedMotion: reduced.matches,
+          opaqueMaterial: opaqueMaterial(),
           sceneWidth: scene?.width || 0,
           sceneHeight: scene?.height || 0,
           gpu: engine?.stats() || { status: 'uninitialized' },
           sampleDescription:
-            'CSS blur uses real DOM; WebGL scene proxy contains theme colors and at most 24 decoded images, excludes DOM text/controls; per-source 1px security check.'
+            'Native SVG uses real DOM backdrop on bounded toolbar/menu/select hosts; CSS blur uses real DOM; WebGL scene proxy contains theme colors and at most 24 decoded images including wallpaper, excludes DOM text/controls; per-source 1px security check.'
         };
       },
       destroy
@@ -1072,6 +1299,8 @@
     mount,
     vertex,
     fragment,
-    surfaces
+    surfaces,
+    nativeSurfaces,
+    nativePixelLimit
   };
 });

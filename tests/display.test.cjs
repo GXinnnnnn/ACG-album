@@ -231,6 +231,7 @@ function summaryReader(f, response) {
     summaryDetailsDirty: false,
     renderSummaryStats() {},
     updateSidebar() {},
+    renderSourceStatus() {},
     api: () => response.promise
   });
   vm.runInContext(app.slice(start, end), f.context);
@@ -255,7 +256,11 @@ test('an unconfigured profile follows medium across initial widths and native wi
         assert.equal(f.buttons[1].attributes['aria-pressed'], 'true');
         assert.equal(f.settings.densityConfigured, false);
       }
-      assert.deepEqual(f.events, [], 'responsive defaults never become saved user preferences');
+      assert.ok(f.events.some((event) => event.type === 'layout'));
+      assert.ok(
+        f.events.every((event) => event.type === 'layout'),
+        'responsive defaults reflow without becoming saved user preferences'
+      );
     }
   }
 });

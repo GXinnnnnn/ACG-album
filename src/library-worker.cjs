@@ -31,6 +31,7 @@ const { lookupLearnedTitleBindings } = require('./learned-title-bindings.cjs');
 const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('./repository.cjs');
 const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
 const appearanceSettings = require('./appearance-settings.cjs');
+const wallpaperSettings = require('./wallpaper-settings.cjs');
 const { createBrowseDate, normalizeBrowseSortPreferences } = require('./browse-date.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
@@ -160,6 +161,7 @@ if (!q('PRAGMA table_info(nodes)').some((c) => c.name === 'album_kind'))
 const defaults = {
   theme: 'light',
   ...appearanceSettings.defaults,
+  ...wallpaperSettings.defaults,
   ratio: 'poster',
   autoMatch: true,
   metadataOnboardingSeen: false,
@@ -207,6 +209,7 @@ const cacheReadMethods = new Set([
   'ancestors',
   'syncStatus',
   'filesystemSync',
+  'rootStatus',
   'localIndexStatus',
   'getRootMatchPolicy',
   'searchLocalIndex',
@@ -374,12 +377,22 @@ function migrateReviewPolicies() {
     )
   );
 }
-const media = require('./media.cjs').createMedia({ db, home, getNode, send });
+const media = require('./media.cjs').createMedia({
+  db,
+  home,
+  getNode: (id) => {
+    const node = getNode(id);
+    return node && !rootAvailability.isOffline(node.root) ? node : null;
+  },
+  send
+});
 const browseDate = createBrowseDate(db);
 const summary = require('./library-summary.cjs').createLibrarySummary({
   databasePath: path.join(home, 'library.sqlite')
 });
-media.setVisibility((alias) => rootRemoval?.visibleSql(alias) || '1');
+media.setVisibility(
+  (alias) => `(${rootRemoval?.visibleSql(alias) || '1'}) AND ${onlineRootSql(alias)}`
+);
 const maintenance = require('./sqlite-checkpoint.cjs').createSqliteCheckpoint(
   path.join(home, 'library.sqlite')
 );
@@ -390,10 +403,62 @@ rootRemoval = require('./root-removal.cjs').createRootRemoval(db, {
     send('error', { message: '分类后台清理未完成，将在下次启动继续：' + error.message })
 });
 const indexing = require('./indexing.cjs').createIndexing(db, maintenance);
-const { readScanStat, createScanIdentity } = require('./scan-identity.cjs');
+const { readScanStat: rawScanStat, createScanIdentity } = require('./scan-identity.cjs');
+async function boundedFs(promise) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              Object.assign(new Error('磁盘读取超时，已暂停该分类。'), { code: 'ROOT_TIMEOUT' })
+            ),
+          2000
+        );
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const readScanStat = (file) => boundedFs(rawScanStat(file));
+async function scanDirectory(file, options) {
+  let timedOut = false;
+  const opening = fsp.opendir(file, options).then((handle) => {
+    if (timedOut) {
+      handle.close().catch(() => {});
+      return null;
+    }
+    return handle;
+  });
+  let handle;
+  try {
+    handle = await boundedFs(opening);
+  } catch (error) {
+    timedOut = true;
+    throw error;
+  }
+  return {
+    async *[Symbol.asyncIterator]() {
+      try {
+        while (true) {
+          const entry = await boundedFs(handle.read());
+          if (!entry) return;
+          yield entry;
+        }
+      } finally {
+        handle.close().catch(() => {});
+      }
+    }
+  };
+}
 const scanIdentity = createScanIdentity(db);
 const { createScanJournal, snapshotOf } = require('./scan-journal.cjs');
 const scanJournal = createScanJournal(db);
+const rootAvailability = require('./root-availability.cjs').createRootAvailability(db);
+const onlineRootSql = (alias) => rootAvailability.onlineSql(alias);
 const fsRename = require('./fs-rename.cjs').createFsRename({
   journalDir: path.join(home, 'rename-journal')
 });
@@ -411,14 +476,20 @@ let maintenanceComplete = false,
 let maintenanceState = { state: 'pending' };
 let libraryRevision = 0;
 function nextScanJob() {
-  return one("SELECT * FROM scan_jobs ORDER BY (state='running') DESC,id LIMIT 1");
+  return one(
+    `SELECT * FROM scan_jobs j WHERE j.state NOT IN('offline','blocked') AND ${onlineRootSql('j')} ORDER BY (state='running') DESC,id LIMIT 1`
+  );
 }
 function matchingHasWork() {
   return !!(
     onlineRunning ||
     onlineQueue.size ||
-    one(`SELECT 1 FROM match_pending p WHERE ${rootRemoval.visibleSql('p')} LIMIT 1`) ||
-    one(`SELECT 1 FROM match_frontier p WHERE ${rootRemoval.visibleSql('p')} LIMIT 1`)
+    one(
+      `SELECT 1 FROM match_pending p WHERE ${rootRemoval.visibleSql('p')} AND ${onlineRootSql('p')} LIMIT 1`
+    ) ||
+    one(
+      `SELECT 1 FROM match_frontier p WHERE ${rootRemoval.visibleSql('p')} AND ${onlineRootSql('p')} LIMIT 1`
+    )
   );
 }
 function taskSnapshot() {
@@ -433,6 +504,9 @@ function taskSnapshot() {
       path: job?.path || null,
       reason: job?.reason || ''
     },
+    blockedScans: q(
+      "SELECT id,root,path,state,reason FROM scan_jobs WHERE state IN('offline','blocked') ORDER BY started,id LIMIT 64"
+    ),
     matching: {
       hasWork: matchingHasWork(),
       active: onlineRunning,
@@ -627,6 +701,7 @@ function hydrate(n) {
       : null;
   return {
     ...n,
+    rootStatus: rootAvailability.state(getNode(n.root) || { id: n.root, path: n.path }),
     review_eligible: reviewEligible(n, reviewPolicy || null),
     effective_album_kind: albumKind(n),
     effective_search_type: searchType(n),
@@ -1003,6 +1078,13 @@ async function scan(rootPath, options = {}) {
     throw new Error('已有导入或改名任务正在运行，请等待完成或先取消。');
   running = true;
   cancelled = false;
+  progress = {
+    active: true,
+    root: idFor(path.resolve(rootPath)),
+    name: path.basename(rootPath),
+    phase: '检查目录',
+    started: Date.now()
+  };
   if (options.resumeJobId) {
     const job = scanJournal.setJob(options.resumeJobId);
     if (job.path !== path.resolve(rootPath)) {
@@ -1056,6 +1138,7 @@ async function scan(rootPath, options = {}) {
       return scanContents(rootPath, options);
     })();
     const result = await scanTask;
+    if (result.errors) await probeRootAvailability({ id: idFor(path.resolve(rootPath)) });
     const job = scanJournal.load();
     if (job && job.path === path.resolve(rootPath) && (cancelled || stopping)) {
       if (stopping) scanJournal.pause({ reason: '程序关闭，等待继续' });
@@ -1073,7 +1156,27 @@ async function scan(rootPath, options = {}) {
     }
     return result;
   } catch (error) {
+    const root = getNode(idFor(path.resolve(rootPath))) || {
+      id: idFor(path.resolve(rootPath)),
+      path: path.resolve(rootPath)
+    };
+    if (!stopping && error.code !== 'ACG_SCAN_INTERRUPTED') {
+      if (error.code === 'ROOT_TIMEOUT') markRootOffline(root, error);
+      else {
+        const checked = await rootAvailability.inspect(root);
+        if (!checked.available) markRootOffline(root, checked.error);
+      }
+    }
     const job = scanJournal.load();
+    if (rootAvailability.isOffline(root.id)) {
+      if (job && job.path === root.path)
+        run(
+          "UPDATE scan_jobs SET state='offline',reason=? WHERE id=?",
+          '分类离线，等待显式重试',
+          job.id
+        );
+      return { root: root.id, offline: true, errors: progress.errors || 1 };
+    }
     if (job && job.path === path.resolve(rootPath)) {
       if (stopping) scanJournal.pause({ reason: '程序关闭，等待继续' });
       else if (cancelled) {
@@ -1113,15 +1216,20 @@ async function scanContents(rootPath, options = {}) {
   const matchOptions = importOptions(options);
   if (stopping) throw new Error('媒体服务已停止。');
   rootPath = path.resolve(rootPath);
+  if (rootAvailability.isOffline(idFor(rootPath)))
+    throw Object.assign(new Error('分类离线，请连接磁盘后显式重试。'), { code: 'ROOT_OFFLINE' });
   for (let ancestor = rootPath; ; ancestor = path.dirname(ancestor)) {
-    const ancestorStat = await fsp.lstat(ancestor);
+    const ancestorStat = await boundedFs(fsp.lstat(ancestor));
     if (ancestorStat.isSymbolicLink())
       throw new Error('不能通过符号链接或目录联接导入相册，请选择原始目录。');
     if (path.dirname(ancestor) === ancestor) break;
   }
   const stat = await readScanStat(rootPath);
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('请选择一个文件夹。');
-  const dataRelative = path.relative(await fsp.realpath(home), await fsp.realpath(rootPath));
+  const dataRelative = path.relative(
+    await boundedFs(fsp.realpath(home)),
+    await boundedFs(fsp.realpath(rootPath))
+  );
   if (
     !dataRelative ||
     (!path.isAbsolute(dataRelative) &&
@@ -1190,6 +1298,8 @@ async function scanContents(rootPath, options = {}) {
     Object.assign(new Error('导入任务已暂停。'), { code: 'ACG_SCAN_INTERRUPTED' });
   const checkpoint = async (changed = false) => {
     if (cancelled || stopping) throw scanInterrupted();
+    if (rootAvailability.isOffline(id))
+      throw Object.assign(new Error('分类离线，扫描已暂停。'), { code: 'ROOT_OFFLINE' });
     if (changed) libraryRevision++;
     if (Date.now() - lastJobCheckpoint >= 250) {
       scanJournal.checkpoint({
@@ -1205,6 +1315,8 @@ async function scanContents(rootPath, options = {}) {
     emitProgress();
     await yieldNow();
     if (cancelled || stopping) throw scanInterrupted();
+    if (rootAvailability.isOffline(id))
+      throw Object.assign(new Error('分类离线。'), { code: 'ROOT_OFFLINE' });
   };
   function nodeFor(p, parent, depth, kind) {
     const name = path.basename(p);
@@ -1246,7 +1358,7 @@ async function scanContents(rootPath, options = {}) {
         const chain =
           node.id === folder.id ? ancestors : [...ancestors, { node, stat: directoryStat }];
         opened++;
-        for await (const entry of await fsp.opendir(node.path, { bufferSize: 32 })) {
+        for await (const entry of await scanDirectory(node.path, { bufferSize: 32 })) {
           if (cancelled || stopping || entries++ >= 128) break;
           if (entry.isSymbolicLink()) continue;
           const p = path.join(node.path, entry.name);
@@ -1310,7 +1422,7 @@ async function scanContents(rootPath, options = {}) {
         }
       } catch (error) {
         if (
-          error.code === 'ACG_SCAN_INTERRUPTED' ||
+          ['ACG_SCAN_INTERRUPTED', 'ROOT_OFFLINE', 'ROOT_TIMEOUT'].includes(error.code) ||
           !error.code ||
           error.code.startsWith('ERR_') ||
           error.code.startsWith('SQLITE_')
@@ -1366,7 +1478,7 @@ async function scanContents(rootPath, options = {}) {
           db.exec('ROLLBACK');
           throw error;
         }
-        directory = await fsp.opendir(folder.path, { bufferSize: 128 });
+        directory = await scanDirectory(folder.path, { bufferSize: 128 });
         progress.folders++;
         progress.current = folder.path;
         const commit = async (entries) => {
@@ -1515,12 +1627,17 @@ async function scanContents(rootPath, options = {}) {
       }
     } catch (e) {
       if (
-        e.code === 'ACG_SCAN_INTERRUPTED' ||
+        ['ACG_SCAN_INTERRUPTED', 'ROOT_OFFLINE', 'ROOT_TIMEOUT'].includes(e.code) ||
         !e.code ||
         e.code.startsWith('ERR_') ||
         e.code.startsWith('SQLITE_')
       )
         throw e;
+      const checked = await rootAvailability.inspect({ id, path: rootPath });
+      if (!checked.available) {
+        markRootOffline(getNode(id) || { id, path: rootPath }, checked.error);
+        throw Object.assign(new Error('分类离线，保留现有索引。'), { code: 'ROOT_OFFLINE' });
+      }
       // Read errors leave existing children intact, just like cancellation.
       progress.errors++;
       run('UPDATE nodes SET scan_error=? WHERE id=?', e.message, folder.id);
@@ -1528,6 +1645,11 @@ async function scanContents(rootPath, options = {}) {
     touched.set(folder.id, folder.depth);
     if (!complete) return;
     if (frame.phase === 'prune') {
+      const checked = await rootAvailability.inspect({ id, path: rootPath });
+      if (!checked.available) {
+        markRootOffline(getNode(id) || { id, path: rootPath }, checked.error);
+        throw Object.assign(new Error('分类离线，保留现有索引。'), { code: 'ROOT_OFFLINE' });
+      }
       await indexing.prune(folder.id, frame.stamp, checkpoint);
       frame = scanJournal.checkpointDirectory(folder.id, { phase: 'children' });
     }
@@ -1689,8 +1811,16 @@ async function scanContents(rootPath, options = {}) {
       }
     }
     const targetNode = target && getNode(idFor(target));
-    const startNode =
-      targetNode?.root === id && fs.existsSync(targetNode.path) ? targetNode : getNode(id);
+    let targetExists = false;
+    if (targetNode?.root === id) {
+      try {
+        await readScanStat(targetNode.path);
+        targetExists = true;
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+      }
+    }
+    const startNode = targetExists ? targetNode : getNode(id);
     if (startNode.id !== id) progress.name = path.basename(rootPath) + ' / ' + startNode.name;
     await visit(startNode);
     // Recompute only the visited unfinished ancestry, not every library folder.
@@ -2404,6 +2534,7 @@ function pendingStamp(folder) {
 }
 function invalidateRoot(root, { preserve = false } = {}) {
   rootGenerations.set(root, (rootGenerations.get(root) || 0) + 1);
+  abortRootResources(root);
   if (!preserve) {
     run('DELETE FROM match_frontier WHERE root=?', root);
     run('DELETE FROM match_pending WHERE root=?', root);
@@ -2522,6 +2653,7 @@ function matchGuard(folder, job, explicit) {
   return () => {
     if (
       stopping ||
+      rootAvailability.isOffline(folder.root) ||
       onlineEpoch !== job.epoch ||
       accessGeneration !== job.access ||
       (rootGenerations.get(folder.root) || 0) !== job.generation
@@ -2950,6 +3082,7 @@ function beginOnlineBatch() {
   }
 }
 function enqueueRoot(root) {
+  if (rootAvailability.isOffline(root)) return;
   localPauseSweep = null;
   beginOnlineBatch();
   run("INSERT OR IGNORE INTO match_frontier VALUES(?,'')", root);
@@ -2958,7 +3091,7 @@ function enqueueMatch(ids) {
   localPauseSweep = null;
   for (const id of ids) {
     const folder = getNode(id);
-    if (eligibleMatch(folder)) {
+    if (folder && !rootAvailability.isOffline(folder.root) && eligibleMatch(folder)) {
       beginOnlineBatch();
       run('DELETE FROM match_batch_done WHERE id=?', id);
       run(
@@ -2977,7 +3110,7 @@ async function fillOnlineQueue() {
   while (!onlineQueue.size && !running && !stopping) {
     // The active task stays on disk until a terminal result is acknowledged.
     const pending = q(
-      'SELECT p.id,p.stamp FROM match_pending p WHERE p.id>? AND NOT EXISTS (SELECT 1 FROM match_deferred d WHERE d.id=p.id) ORDER BY p.id LIMIT 64',
+      `SELECT p.id,p.stamp FROM match_pending p WHERE p.id>? AND ${onlineRootSql('p')} AND NOT EXISTS (SELECT 1 FROM match_deferred d WHERE d.id=p.id) ORDER BY p.id LIMIT 64`,
       pendingAfter
     );
     const ready = [];
@@ -3001,7 +3134,9 @@ async function fillOnlineQueue() {
       await yieldNow();
       continue;
     }
-    const frontier = one('SELECT * FROM match_frontier ORDER BY root LIMIT 1');
+    const frontier = one(
+      `SELECT * FROM match_frontier p WHERE ${onlineRootSql('p')} ORDER BY root LIMIT 1`
+    );
     if (!frontier) return;
     pendingAfter = '';
     const root = getNode(frontier.root);
@@ -3079,7 +3214,9 @@ function onlineStatus(extra = {}, { lightweight = false } = {}) {
       countsKnown: !hasWork,
       hasWork,
       buffered: onlineQueue.size,
-      discovering: !!one('SELECT root FROM match_frontier LIMIT 1'),
+      discovering: !!one(
+        `SELECT root FROM match_frontier p WHERE ${rootRemoval.visibleSql('p')} AND ${onlineRootSql('p')} LIMIT 1`
+      ),
       paused: state?.reason || '',
       retryAt: state?.retry_at || 0,
       ...extra
@@ -3087,7 +3224,7 @@ function onlineStatus(extra = {}, { lightweight = false } = {}) {
   }
   const remaining = one(
     `SELECT COUNT(*) total FROM match_pending p JOIN nodes n ON n.id=p.id
-      WHERE ${rootRemoval.visibleSql('p')} AND n.missing=0 AND ${reviewScopeSql('n')}`
+      WHERE ${rootRemoval.visibleSql('p')} AND ${onlineRootSql('p')} AND n.missing=0 AND ${reviewScopeSql('n')}`
   ).total;
   return {
     pending: remaining,
@@ -3096,7 +3233,9 @@ function onlineStatus(extra = {}, { lightweight = false } = {}) {
     // While discovering this is the known workload, not a final denominator.
     total: onlineCompleted + remaining,
     buffered: onlineQueue.size,
-    discovering: !!one('SELECT root FROM match_frontier LIMIT 1'),
+    discovering: !!one(
+      `SELECT root FROM match_frontier p WHERE ${rootRemoval.visibleSql('p')} AND ${onlineRootSql('p')} LIMIT 1`
+    ),
     paused: state?.reason || '',
     retryAt: state?.retry_at || 0,
     ...extra
@@ -3134,7 +3273,8 @@ function startOnline() {
     stopping ||
     running ||
     onlineRunning ||
-    onlineScheduled
+    onlineScheduled ||
+    !matchingHasWork()
   )
     return;
   const paused = onlinePause();
@@ -3165,14 +3305,7 @@ function startOnline() {
         publishTasks();
         send('online', onlineStatus({ active: false }));
         if (cancelled) emitProgress(true, true);
-        if (
-          !stopping &&
-          !running &&
-          (onlineQueue.size ||
-            one('SELECT id FROM match_pending LIMIT 1') ||
-            one('SELECT root FROM match_frontier LIMIT 1'))
-        )
-          startOnline();
+        if (!stopping && !running && matchingHasWork()) startOnline();
       });
   });
 }
@@ -3285,15 +3418,72 @@ async function pumpOnline() {
   if (onlinePause()) localPauseSweep = localPauseKey(onlinePause());
 }
 const thumbJobs = new Map();
+const rootResourceControllers = new Map();
+function abortRootResources(root) {
+  for (const controller of rootResourceControllers.get(root) || []) controller.abort();
+}
+async function withRootResource(root, action) {
+  const generation = rootGenerations.get(root) || 0;
+  const controller = new AbortController(),
+    controllers = rootResourceControllers.get(root) || new Set();
+  controllers.add(controller);
+  rootResourceControllers.set(root, controllers);
+  let timer, onAbort;
+  const check = () => {
+    if (
+      stopping ||
+      controller.signal.aborted ||
+      rootAvailability.isOffline(root) ||
+      generation !== (rootGenerations.get(root) || 0)
+    )
+      throw Object.assign(new Error('分类离线或资源任务已失效。'), { code: 'ROOT_OFFLINE' });
+  };
+  try {
+    check();
+    return await Promise.race([
+      Promise.resolve().then(() => action(check, controller.signal)),
+      new Promise((_, reject) => {
+        onAbort = () =>
+          reject(Object.assign(new Error('分类资源任务已暂停。'), { code: 'ROOT_OFFLINE' }));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        timer = setTimeout(() => {
+          reject(
+            Object.assign(new Error('资源读取超时，稍后可重试。'), { code: 'RESOURCE_TIMEOUT' })
+          );
+          controller.abort();
+        }, 8000);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+    controllers.delete(controller);
+    if (!controllers.size) rootResourceControllers.delete(root);
+  }
+}
 let activeThumbs = 0;
 const thumbWait = [];
-async function thumbSlot(key, priority) {
+async function thumbSlot(key, priority, signal) {
+  if (signal.aborted) throw Object.assign(new Error('资源任务已暂停。'), { code: 'ROOT_OFFLINE' });
   if (activeThumbs < 4) {
     activeThumbs++;
     return;
   }
-  await new Promise((resolve) => {
-    const item = { resolve, key, priority };
+  await new Promise((resolve, reject) => {
+    const cancel = () => {
+      const index = thumbWait.indexOf(item);
+      if (index >= 0) thumbWait.splice(index, 1);
+      reject(Object.assign(new Error('资源任务已暂停。'), { code: 'ROOT_OFFLINE' }));
+    };
+    const item = {
+      key,
+      priority,
+      resolve: () => {
+        signal.removeEventListener('abort', cancel);
+        resolve();
+      }
+    };
+    signal.addEventListener('abort', cancel, { once: true });
     if (priority) {
       const i = thumbWait.findIndex((t) => !t.priority);
       thumbWait.splice(i < 0 ? thumbWait.length : i, 0, item);
@@ -3330,6 +3520,7 @@ async function sourceFor(id) {
 async function thumb(id, size = 1024, priority = false) {
   size = [512, 768, 1024].includes(Number(size)) ? Number(size) : 1024;
   const source = await sourceFor(id);
+  const identityPath = getNode(source.node.id)?.path;
   if (source.node.kind === 'video') {
     const dest = path.join(cacheHome, 'thumbnails', thumbnailKey(source.node, 512) + '.webp');
     return fs.existsSync(dest) ? { path: dest } : { placeholder: true };
@@ -3338,10 +3529,13 @@ async function thumb(id, size = 1024, priority = false) {
     return { icon: true, path: source.file };
   const key = thumbnailKey(source.node, size);
   const dest = path.join(cacheHome, 'thumbnails', key + '.webp');
+  const cachedHint = one('SELECT path FROM thumbs WHERE key=?', key);
+  if (cachedHint && fs.existsSync(cachedHint.path)) return { path: cachedHint.path };
   if (fs.existsSync(dest)) {
     run('UPDATE thumbs SET last_used=? WHERE key=?', Date.now(), key);
     return { path: dest };
   }
+  if (rootAvailability.isOffline(source.node.root)) return { placeholder: true, offline: true };
   if (thumbJobs.has(key)) {
     if (priority) {
       const i = thumbWait.findIndex((t) => t.key === key);
@@ -3353,11 +3547,19 @@ async function thumb(id, size = 1024, priority = false) {
     }
     return thumbJobs.get(key);
   }
-  const job = (async () => {
-    await thumbSlot(key, priority);
-    try {
-      const writeThumbnail = (input) =>
-        sharp(input, { limitInputPixels: 160000000, page: 0 })
+  let acquired = false;
+  const temp = dest + '.' + require('node:crypto').randomUUID() + '.tmp';
+  const job = withRootResource(source.node.root, async (check, signal) => {
+    await thumbSlot(key, priority, signal);
+    acquired = true;
+    check();
+    const writeThumbnail = async (input) => {
+      const decoder = sharp(input, { limitInputPixels: 160000000, page: 0 });
+      decoder.timeout?.({ seconds: 8 });
+      const abort = () => decoder.destroy?.();
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        return await decoder
           .rotate()
           .resize({
             width: size,
@@ -3365,24 +3567,34 @@ async function thumb(id, size = 1024, priority = false) {
             fit: 'inside',
             withoutEnlargement: true
           })
-          // Fast encoding keeps cover quality/alpha while reducing first-view queue time.
           .webp({ quality: 86, alphaQuality: 100, effort: 1 })
-          .toFile(dest + '.tmp');
+          .toFile(temp);
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    };
+    try {
       try {
         await writeThumbnail(source.file);
-      } catch {
-        // BMP/HEIC and other browser-incompatible stills share the viewer's
-        // bounded decoder, rather than silently losing folder/media covers.
+      } catch (error) {
+        check();
         const preview = await imagePreview.preview({
           id: source.node.id,
           file: source.file,
           size: Math.ceil((size * 1400) / 1024),
           force: true
         });
+        check();
         await writeThumbnail(preview.path);
       }
-      await fsp.rename(dest + '.tmp', dest);
+      check();
+      const current = getNode(source.node.id);
+      if (!current || current.path !== identityPath)
+        throw Object.assign(new Error('资源路径已变化。'), { code: 'ROOT_OFFLINE' });
+      await fsp.rename(temp, dest);
+      check();
       const stat = await fsp.stat(dest);
+      check();
       run(
         'INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)',
         key,
@@ -3393,10 +3605,28 @@ async function thumb(id, size = 1024, priority = false) {
       );
       return { path: dest };
     } finally {
-      releaseThumb();
-      thumbJobs.delete(key);
+      fsp.rm(temp, { force: true }).catch(() => {});
     }
-  })();
+  })
+    .catch(async (error) => {
+      if (
+        error.code !== 'ROOT_OFFLINE' &&
+        !stopping &&
+        !rootAvailability.isOffline(source.node.root) &&
+        getNode(source.node.root)
+      )
+        await probeRootAvailability({ id: source.node.root });
+      if (
+        ['ROOT_OFFLINE', 'RESOURCE_TIMEOUT'].includes(error.code) ||
+        rootAvailability.isOffline(source.node.root)
+      )
+        return { placeholder: true, offline: rootAvailability.isOffline(source.node.root) };
+      throw error;
+    })
+    .finally(() => {
+      if (acquired) releaseThumb();
+      thumbJobs.delete(key);
+    });
   thumbJobs.set(key, job);
   return job;
 }
@@ -3405,23 +3635,36 @@ function storeVideoThumb({ id, bytes, width, height }) {
   const job = videoSaveTail.then(async () => {
     const n = getNode(id);
     if (!n || n.kind !== 'video' || n.missing) throw new Error('视频不存在。');
-    const buffer = Buffer.from(bytes || []);
-    if (!buffer.length || buffer.length > 2000000) throw new Error('缩略图数据超出限制。');
-    const m = await sharp(buffer, { limitInputPixels: 2000000 }).metadata();
-    if (m.format !== 'webp' || m.width > 1024 || m.height > 1024)
-      throw new Error('缩略图格式或尺寸无效。');
-    const key = thumbnailKey(n, 512),
-      dest = path.join(cacheHome, 'thumbnails', key + '.webp'),
-      temp = dest + '.tmp';
-    await sharp(buffer)
-      .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 82 })
-      .toFile(temp);
-    await fsp.rename(temp, dest);
-    const st = await fsp.stat(dest);
-    run('INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)', key, dest, n.path, Date.now(), st.size);
-    media.setVideoInfo({ id, width, height });
-    return { path: dest };
+    return withRootResource(n.root, async (check) => {
+      const buffer = Buffer.from(bytes || []);
+      if (!buffer.length || buffer.length > 2000000) throw new Error('缩略图数据超出限制。');
+      const m = await sharp(buffer, { limitInputPixels: 2000000 }).metadata();
+      if (m.format !== 'webp' || m.width > 1024 || m.height > 1024)
+        throw new Error('缩略图格式或尺寸无效。');
+      const key = thumbnailKey(n, 512),
+        dest = path.join(cacheHome, 'thumbnails', key + '.webp'),
+        temp = dest + '.' + require('node:crypto').randomUUID() + '.tmp';
+      check();
+      await sharp(buffer)
+        .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 82 })
+        .toFile(temp);
+      check();
+      await fsp.rename(temp, dest);
+      check();
+      const st = await fsp.stat(dest);
+      check();
+      run(
+        'INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)',
+        key,
+        dest,
+        n.path,
+        Date.now(),
+        st.size
+      );
+      media.setVideoInfo({ id, width, height });
+      return { path: dest };
+    });
   });
   videoSaveTail = job.catch(() => {});
   return job;
@@ -3777,7 +4020,7 @@ function armWatchTimer(delay = watchPending.nextDelay()) {
   watchTimer.unref();
 }
 function queueWatch(root, filename, eventType = 'rename') {
-  if (!filesystemSyncEnabled() || !getNode(root.id)) return;
+  if (!filesystemSyncEnabled() || !getNode(root.id) || rootAvailability.isOffline(root.id)) return;
   const target = watchTarget(root.path, filename, eventType, (p) => getNode(idFor(p)));
   if (!target || [home, cacheHome].some((directory) => withinDirectory(directory, target))) return;
   const count = (watchEventCounts.get(root.id) || 0) + 1;
@@ -3806,6 +4049,7 @@ async function safeDirectoryStat(rootPath, target, memo = new Map()) {
 }
 function reportWatchError(root, error) {
   send('watch', { root: root.id, error: error.message, unavailable: true });
+  if (!rootAvailability.isOffline(root.id)) probeRootAvailability({ id: root.id }).catch(() => {});
 }
 function releaseFailedExternalScan() {
   const job = scanJournal.load();
@@ -3831,13 +4075,21 @@ async function drainWatchBatch() {
   const entry = watchPending.take();
   if (!entry) return;
   const root = getNode(entry.rootId);
-  if (!root || root.parent || root.missing || root.path !== entry.rootPath) return;
+  if (
+    !root ||
+    root.parent ||
+    root.missing ||
+    root.path !== entry.rootPath ||
+    rootAvailability.isOffline(root.id)
+  )
+    return;
   const deepSync = deepWatchRoots.delete(root.id);
   watchEventCounts.delete(root.id);
   try {
     // An absent drive or root must retain all cached associations. Never start
     // a deletion scan until the registered root itself has been validated.
-    await safeDirectoryStat(root.path, root.path);
+    const checked = await probeRootAvailability({ id: root.id });
+    if (checked.status === 'offline') return;
     for (let target of entry.targets) {
       if (stopping || !filesystemSyncEnabled()) return;
       while (target !== root.path) {
@@ -3869,10 +4121,13 @@ async function drainWatchBatch() {
     }
     send('watch', { root: root.id, synchronized: true });
   } catch (error) {
-    if (stopping) return;
+    if (stopping || rootAvailability.isOffline(root.id)) return;
+    const checked = await probeRootAvailability({ id: root.id });
+    if (checked.status === 'offline') return;
     releaseFailedExternalScan();
     if (deepSync) deepWatchRoots.add(root.id);
-    watchPending.requeue(entry);
+    if (entry.attempts >= 2) markRootOffline(root, error);
+    else watchPending.requeue(entry);
     reportWatchError(root, error);
   }
 }
@@ -3914,6 +4169,7 @@ function requestFilesystemSync({ reason = 'focus', id } = {}) {
       node?.kind === 'folder' &&
       !node.missing &&
       root &&
+      !rootAvailability.isOffline(root.id) &&
       Date.now() - (browseSyncTimes.get(id) || 0) >= 5000
     ) {
       browseSyncTimes.set(id, Date.now());
@@ -3931,7 +4187,7 @@ function requestFilesystemSync({ reason = 'focus', id } = {}) {
 }
 async function probeKnownDirectories() {
   send('watch', { checking: true });
-  const liveRoots = roots();
+  const liveRoots = roots().filter((root) => !rootAvailability.isOffline(root.id));
   for (const [id, cursor] of directoryProbeCursors)
     if (!liveRoots.some((root) => root.id === id && root.path === cursor.path))
       directoryProbeCursors.delete(id);
@@ -3947,13 +4203,14 @@ async function probeKnownDirectories() {
     }
     if (cursor.complete) continue;
     try {
-      await safeDirectoryStat(root.path, root.path);
+      const checked = await probeRootAvailability({ id: root.id });
+      if (checked.status === 'offline') continue;
     } catch (error) {
       reportWatchError(root, error);
       cursor.complete = true;
       continue;
     }
-    while (canSynchronizeFilesystem()) {
+    while (canSynchronizeFilesystem() && !rootAvailability.isOffline(root.id)) {
       const page = q(
         "SELECT id,parent,path,mtime,fs_identity FROM nodes WHERE root=? AND kind='folder' AND missing=0 AND id>? ORDER BY id LIMIT 64",
         root.id,
@@ -3971,8 +4228,10 @@ async function probeKnownDirectories() {
         }
         await Promise.all(
           page.slice(offset, offset + 4).map(async (folder) => {
+            if (rootAvailability.isOffline(root.id)) return;
             try {
               const stat = await safeDirectoryStat(root.path, folder.path, memo);
+              if (rootAvailability.isOffline(root.id)) return;
               if (folder.mtime !== stat.mtimeMs || folder.fs_identity !== stat.fsIdentity)
                 watchPending.add(
                   root.id,
@@ -4022,8 +4281,11 @@ function runDirectoryProbe() {
       if (directoryProbeWanted) scheduleDirectoryProbe(1000);
     });
 }
-function reconcileWatches() {
-  const live = maintenanceComplete && filesystemSyncEnabled() && !renameReserved ? roots() : [];
+async function reconcileWatches() {
+  const live =
+    maintenanceComplete && filesystemSyncEnabled() && !renameReserved
+      ? roots().filter((root) => !rootAvailability.isOffline(root.id))
+      : [];
   for (const [id, watcher] of watchers)
     if (!live.some((root) => root.id === id)) {
       watcher.close();
@@ -4047,7 +4309,9 @@ function reconcileWatches() {
     if (!watchers.has(root.id)) {
       try {
         const retrying = watchFailures.has(root.id);
-        if (fs.lstatSync(root.path).isSymbolicLink()) throw new Error('相册目录已成为目录联接。');
+        const status = await probeRootAvailability({ id: root.id });
+        if (status.status === 'offline' || renameReserved || stopping || watchers.has(root.id))
+          continue;
         const watcher = fs.watch(root.path, { recursive: true }, (eventType, filename) =>
           queueWatch(root, filename, eventType)
         );
@@ -4085,6 +4349,194 @@ function reconcileWatches() {
     directoryProbeInterval.unref();
   }
 }
+function registeredRoot(id) {
+  const node = getNode(id),
+    root = node && getNode(node.root);
+  if (!root || root.parent !== null || root.kind !== 'folder') throw new Error('分类不存在。');
+  return root;
+}
+function markRootOffline(root, error) {
+  const previous = rootAvailability.isOffline(root.id);
+  const status = rootAvailability.record(root, 'offline', error);
+  if (!previous) invalidateRoot(root.id, { preserve: true });
+  watchers.get(root.id)?.close();
+  watchers.delete(root.id);
+  watchPending.delete(root.id);
+  watchFailures.delete(root.id);
+  deepWatchRoots.delete(root.id);
+  watchEventCounts.delete(root.id);
+  directoryProbeCursors.delete(root.id);
+  run(
+    "UPDATE scan_jobs SET state='offline',reason=? WHERE root=?",
+    '分类离线，等待显式重试',
+    root.id
+  );
+  scanReserved = !!nextScanJob();
+  if (!previous) {
+    send('root-status', status);
+    send('online', onlineStatus({ active: !!onlineRunning }));
+    publishTasks();
+  }
+  return status;
+}
+async function probeRootAvailability({ id, retry = false }) {
+  const root = registeredRoot(id),
+    generation = rootGenerations.get(root.id) || 0;
+  if (rootAvailability.isOffline(root.id) && !retry) return rootAvailability.state(root);
+  const checked = await rootAvailability.inspect(root);
+  const current = getNode(root.id);
+  if (!current || current.path !== root.path || (rootGenerations.get(root.id) || 0) !== generation)
+    return current
+      ? rootAvailability.state(current)
+      : { id: root.id, path: root.path, status: 'offline', stale: true };
+  if (!checked.available) return markRootOffline(root, checked.error);
+  const wasOffline = rootAvailability.isOffline(root.id);
+  const status = rootAvailability.record(root, 'online');
+  if (wasOffline) send('root-status', status);
+  return status;
+}
+async function rootStatusRpc({ id, probe = false } = {}) {
+  const selected = id ? [registeredRoot(id)] : roots();
+  const statuses = probe
+    ? await Promise.all(selected.map((root) => probeRootAvailability({ id: root.id })))
+    : selected.map((root) => rootAvailability.state(root));
+  return { roots: statuses, ...(id ? { root: statuses[0] } : {}) };
+}
+async function retryRoot({ id }) {
+  const root = registeredRoot(id);
+  if (running || renameReserved || cacheChanging)
+    throw new Error('请先等待当前导入或资料修改完成，再重试分类。');
+  const status = await probeRootAvailability({ id: root.id, retry: true });
+  if (status.status !== 'online')
+    return { accepted: false, root: status, taskSnapshot: taskSnapshot() };
+  run(
+    "UPDATE scan_jobs SET state='paused',reason='' WHERE root=? AND state IN('offline','blocked')",
+    root.id
+  );
+  scanReserved = !!nextScanJob();
+  // Resume durable frames via the normal startup lane; avoid overlapping scans.
+  if (scanReserved) startupResume();
+  else if (filesystemSyncEnabled()) {
+    watchPending.add(root.id, root.path, root.path);
+    deepWatchRoots.add(root.id);
+    reconcileWatches();
+    armWatchTimer();
+  }
+  media.start().catch((error) => send('error', { message: error.message }));
+  startOnline();
+  return { accepted: true, root: status, taskSnapshot: taskSnapshot() };
+}
+async function relinkRoot(args) {
+  return relinkNode(args, false);
+}
+async function relinkFolder(args) {
+  return relinkNode(args, true);
+}
+async function relinkNode({ id, path: selectedPath }, folderRelocation) {
+  const source = folderRelocation ? getNode(id) : registeredRoot(id);
+  if (!source || source.kind !== 'folder' || (folderRelocation && !source.parent))
+    throw new Error('子相册不存在。');
+  const owner = registeredRoot(source.root);
+  if (
+    running ||
+    scanReserved ||
+    renameReserved ||
+    cacheChanging ||
+    activeRequests - resourceRequests.size > 1
+  )
+    throw new Error('请先等待当前导入或资料修改完成，再重新关联分类。');
+  if (
+    typeof selectedPath !== 'string' ||
+    !path.isAbsolute(selectedPath) ||
+    selectedPath.includes('\0')
+  )
+    throw new Error('请选择有效的绝对目录路径。');
+  const destination = path.resolve(selectedPath);
+  renameReserved = true;
+  publishTasks();
+  let plan;
+  renameTask = (async () => {
+    if (folderRelocation) {
+      const ownerStatus = await probeRootAvailability({ id: owner.id });
+      if (ownerStatus.status !== 'online')
+        throw Object.assign(new Error('所属分类离线，请先恢复分类。'), { code: 'ROOT_OFFLINE' });
+      if (
+        !withinDirectory(owner.path, destination) ||
+        destination.toLowerCase() === owner.path.toLowerCase()
+      )
+        throw new Error('子相册目标必须位于原分类之下。');
+      const old = await rootAvailability.inspect(source);
+      if (old.available) throw new Error('原子相册仍可访问，请选择需要恢复的失联子相册。');
+    } else if (!rootAvailability.isOffline(source.id)) {
+      const oldStatus = await probeRootAvailability({ id: source.id });
+      if (oldStatus.status !== 'offline')
+        throw new Error('原分类仍可访问，请确认需要重新关联的离线分类。');
+    }
+    const candidate = { id: idFor(destination), path: destination };
+    const checked = await rootAvailability.inspect(candidate);
+    if (!checked.available) throw checked.error;
+    const dataPath = await boundedFs(fsp.realpath(home)),
+      targetPath = await boundedFs(fsp.realpath(destination));
+    if (withinDirectory(dataPath, targetPath) || withinDirectory(targetPath, dataPath))
+      throw new Error('不能将程序资料目录关联为相册。');
+    await boundedFs(cacheDirectory.validateCacheLocation(cacheHome, [destination]));
+    for (const root of roots())
+      if (
+        root.id !== owner.id &&
+        (withinDirectory(root.path, destination) || withinDirectory(destination, root.path))
+      )
+        throw Object.assign(new Error('目标目录与已导入分类冲突或重叠。'), {
+          code: 'RENAME_CONFLICT'
+        });
+    invalidateRoot(source.root, { preserve: true });
+    await boundedFs(
+      Promise.allSettled([...resourceRequests].filter((lease) => lease.root === source.root))
+    );
+    if (stopping) throw new Error('程序正在关闭。');
+    plan = await renameIdentity.prepare(
+      {
+        id: source.id,
+        newPath: destination,
+        operationId: 'relink_' + require('node:crypto').randomUUID(),
+        rootRelocation: !folderRelocation,
+        folderRelocation
+      },
+      async () => {
+        await yieldNow();
+        if (stopping) throw new Error('程序正在关闭。');
+      }
+    );
+    // Revalidate after preparation yields; no filesystem mutation is performed.
+    const finalCheck = await rootAvailability.inspect(candidate);
+    if (!finalCheck.available) throw finalCheck.error;
+    const result = renameIdentity.commit(plan);
+    libraryRevision++;
+    const current = getNode(result.id);
+    result.relinked = true;
+    result.node = hydrate(current);
+    result.rootStatus = rootAvailability.record(getNode(result.root), 'online');
+    result.node.rootStatus = result.rootStatus;
+    invalidateRoot(result.root, { preserve: true });
+    send('root-status', result.rootStatus);
+    send('changed', { root: result.root, revision: libraryRevision, rename: result });
+    return result;
+  })();
+  try {
+    return await renameTask;
+  } finally {
+    if (plan) renameIdentity.dispose(plan);
+    renameTask = null;
+    renameReserved = false;
+    scanReserved = !!nextScanJob();
+    publishTasks();
+    if (!stopping) {
+      if (scanReserved) startupResume();
+      reconcileWatches();
+      startOnline();
+    }
+  }
+}
+
 const methods = {
   getRootMatchPolicy,
   setRootMatchPolicy,
@@ -4093,7 +4545,7 @@ const methods = {
   statistics: () => summary.request('statistics'),
   init: async ({ lightweight = false } = {}) => ({
     localIndex: lightweight ? null : localIndex.status(),
-    roots: roots(),
+    roots: roots().map((root) => ({ ...root, rootStatus: rootAvailability.state(root) })),
     settings: {
       ...defaults,
       ...Object.fromEntries(
@@ -4104,6 +4556,11 @@ const methods = {
       ...appearanceSettings.normalize(
         Object.fromEntries(
           Object.keys(appearanceSettings.defaults).map((key) => [key, setting(key)])
+        )
+      ),
+      ...wallpaperSettings.normalize(
+        Object.fromEntries(
+          Object.keys(wallpaperSettings.defaults).map((key) => [key, setting(key)])
         )
       ),
       githubRepository: effectiveRepository(setting('githubRepository')),
@@ -4131,6 +4588,10 @@ const methods = {
   },
   startupResume,
   filesystemSync: requestFilesystemSync,
+  rootStatus: rootStatusRpc,
+  retryRoot,
+  relinkRoot,
+  relinkFolder,
   rename: renameNode,
   ancestors: ({ id }) =>
     getNode(id)
@@ -4141,6 +4602,12 @@ const methods = {
       : [],
   scan: ({ path: p, ...options }) => scan(p, options),
   cancel: () => {
+    // A stale cancel from the just-offlined scan must not discard another
+    // root's durable matching work. Offline scans already stop at checkpoints.
+    if (progress.root && rootAvailability.isOffline(progress.root) && !nextScanJob()) {
+      publishTasks();
+      return true;
+    }
     cancelled = true;
     stopScanHeartbeat();
     scanRemovalController?.abort();
@@ -4173,13 +4640,27 @@ const methods = {
     if (!n || !['image', 'video'].includes(n.kind) || n.missing) throw new Error('媒体不存在。');
     let mime;
     if (n.kind === 'image') {
-      const handle = await fsp.open(n.path, 'r');
+      let expired = false;
+      const opening = fsp.open(n.path, 'r').then((handle) => {
+        if (expired) {
+          handle.close().catch(() => {});
+          return null;
+        }
+        return handle;
+      });
+      let handle;
+      try {
+        handle = await boundedFs(opening);
+      } catch (error) {
+        expired = true;
+        throw error;
+      }
       try {
         const prefix = Buffer.alloc(4096);
-        const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+        const { bytesRead } = await boundedFs(handle.read(prefix, 0, prefix.length, 0));
         mime = sniffImage(prefix.subarray(0, bytesRead))?.mime;
       } finally {
-        await handle.close();
+        handle.close().catch(() => {});
       }
     }
     return { path: n.path, mime };
@@ -4285,6 +4766,8 @@ const methods = {
     if (!Object.hasOwn(defaults, key) && key !== 'collapsed') throw new Error('不支持的设置');
     if (Object.hasOwn(appearanceSettings.defaults, key) && !appearanceSettings.valid(key, value))
       throw new Error('外观设置值无效。');
+    if (Object.hasOwn(wallpaperSettings.defaults, key) && !wallpaperSettings.valid(key, value))
+      throw new Error('壁纸设置值无效。');
     if (key === 'nickname') {
       value = String(value).trim();
       if (!value || value.length > 24) throw new Error('显示名称应为 1–24 个字符。');
@@ -4470,6 +4953,7 @@ const methods = {
     if (cacheTask) await cacheTask.catch(() => {});
     stopping = true;
     cancelled = true;
+    for (const root of rootResourceControllers.keys()) abortRootResources(root);
     scanRemovalController?.abort();
     stopScanHeartbeat();
     clearOnline({ preserve: true });
@@ -4543,12 +5027,14 @@ async function resumeDurableScans() {
         target: job.target || undefined,
         resumeJobId: job.id
       });
+      if (result.offline || rootAvailability.isOffline(job.root)) continue;
       if (!stopping && JSON.parse(job.options).externalSync && result.errors) {
         deepWatchRoots.add(job.root);
         throw new Error('部分目录暂时无法读取，后台将自动重试。');
       }
     } catch (error) {
       if (one('SELECT 1 FROM scan_jobs WHERE id=?', job.id)) scanJournal.setJob(job.id);
+      if (rootAvailability.isOffline(job.root)) continue;
       if (!stopping && JSON.parse(job.options).externalSync) {
         releaseFailedExternalScan();
         const root = getNode(job.root);
@@ -4559,9 +5045,10 @@ async function resumeDurableScans() {
         }
         continue;
       }
+      if (rootAvailability.isOffline(job.root)) continue;
       if (scanJournal.load()) scanJournal.block({ reason: error.message });
       send('error', { message: '导入任务已保留，恢复前需要处理：' + error.message });
-      break;
+      continue;
     }
   }
   scanReserved = !!nextScanJob();
@@ -4610,6 +5097,8 @@ function startupResume() {
             }
           });
           rootRemoval.start();
+          for (const root of roots())
+            if (!rootAvailability.isOffline(root.id)) await probeRootAvailability({ id: root.id });
           await resumeDurableScans();
           if (stopping) return resolve(false);
           maintenanceComplete = true;
@@ -4670,11 +5159,27 @@ parentPort.on('message', async ({ request, method, args }) => {
       resourceLease = new Promise((resolve) => {
         releaseResource = resolve;
       });
+      resourceLease.root = getNode(args?.id)?.root;
       resourceRequests.add(resourceLease);
+    }
+    if (resourceMethods.has(method) && method !== 'thumb') {
+      const node = getNode(args?.id);
+      if (node) {
+        const root = getNode(node.root);
+        if (root && !rootAvailability.isOffline(root.id))
+          await probeRootAvailability({ id: root.id });
+        if (rootAvailability.isOffline(node.root))
+          throw Object.assign(new Error('分类离线，请连接磁盘后重试。'), { code: 'ROOT_OFFLINE' });
+      }
     }
     const result = await methods[method](args || {});
     parentPort.postMessage({ request, result });
   } catch (e) {
+    if (e.code === 'ROOT_TIMEOUT' && resourceMethods.has(method)) {
+      const node = getNode(args?.id),
+        root = node && getNode(node.root);
+      if (root) markRootOffline(root, e);
+    }
     parentPort.postMessage({ request, error: e.message, code: e.code, stack: e.stack });
   } finally {
     if (tracked) activeRequests--;

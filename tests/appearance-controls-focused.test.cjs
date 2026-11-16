@@ -77,6 +77,10 @@ test('appearance defaults/ranges reject invalid data and include all legacy pres
     textShadow: false,
     liquidTransparency: 18,
     frostTransparency: 8,
+    liquidFloatingTransparency: 50,
+    liquidDialogTransparency: 45,
+    frostFloatingTransparency: 50,
+    frostDialogTransparency: 40,
     cardRadius: 16,
     density: 166
   });
@@ -85,36 +89,108 @@ test('appearance defaults/ranges reject invalid data and include all legacy pres
     assert.equal(spec.normalize({ density: width }).density, width, 'Never migrate a saved width');
   }
   assert.equal(spec.normalize({}).density, 166);
+  assert.equal(spec.normalize({}).liquidDialogTransparency, 45);
+  for (const key of [
+    'liquidFloatingTransparency',
+    'frostFloatingTransparency',
+    'liquidDialogTransparency'
+  ])
+    for (const value of [0, 40, 45, 50, 65, 100])
+      assert.equal(
+        spec.normalize({ [key]: value })[key],
+        value,
+        'Existing saved transparency remains explicit'
+      );
   for (const [key, range] of Object.entries(spec.ranges)) {
     for (const value of [NaN, Infinity, null, '18', range.min - 1, range.max + 1])
       assert.equal(spec.valid(key, value), false);
     assert.equal(spec.normalize({ [key]: -Infinity })[key], range.default);
   }
   assert.equal(spec.valid('textShadow', 'false'), false);
+  assert.equal(spec.normalize({ textShadow: true }).textShadow, true);
+  for (const key of ['liquidTransparency', 'frostTransparency']) {
+    assert.equal(spec.ranges[key].max, 100);
+    assert.equal(spec.normalize({ [key]: 100 })[key], 100);
+  }
 });
 
-test('public apply writes only changed tokens and emits material events only for opacity changes', () => {
-  const h = harness();
-  h.window.albumAppearance.apply(spec.defaults);
+test('all appearance range hints are concise while native bounds and reset actions remain available', () => {
+  const markup = harness().window.albumAppearance.markup();
+  const hints = [...markup.matchAll(/<p id="[^"]+-help">([^<]*)<\/p>/g)].map((match) => match[1]);
+  assert.equal(hints.length, 7);
+  assert(hints.every((text) => !/默认|\d+[–～]\d+/.test(text)));
+  assert.equal(hints.filter((text) => text === '0% 不透明，100% 完全透明').length, 4);
+  assert.match(markup, /type="range" min="0" max="100"/);
+  assert.match(markup, /data-appearance-reset="liquidDialogTransparency"/);
+});
+
+test('apply preserves mode defaults, routes full-range group opacity, and writes only changed tokens', () => {
+  const h = harness(),
+    apply = (values) => h.window.albumAppearance.apply(values),
+    token = (name) => h.writes.findLast(([key]) => key === name)[1];
+  apply(spec.defaults);
   assert.equal(h.events.length, 1);
-  assert.equal(h.writes.length, 3);
-  for (let i = 0; i < 100; i++) h.window.albumAppearance.apply(spec.defaults);
+  assert.equal(h.writes.length, 7);
+  for (let i = 0; i < 100; i++) apply(spec.defaults);
   assert.equal(h.events.length, 1);
-  assert.equal(h.writes.length, 3);
-  h.window.albumAppearance.apply({ ...spec.defaults, cardRadius: 0, textShadow: true });
+  assert.equal(h.writes.length, 7);
+  apply({ ...spec.defaults, cardRadius: 0, textShadow: true });
   assert.equal(h.events.length, 1);
-  assert.equal(h.writes.length, 4);
+  assert.equal(h.writes.length, 8);
   assert.equal(h.root.dataset.textShadow, 'on');
-  h.window.albumAppearance.apply({
+  const values = {
     ...spec.defaults,
-    liquidTransparency: 90,
-    frostTransparency: 0
-  });
-  assert.equal(h.events.length, 2);
-  assert.ok(
-    Math.abs(Number(h.writes.findLast(([key]) => key === '--liquid-opacity')[1]) - 0.1) < 1e-10
+    liquidFloatingTransparency: 100,
+    liquidDialogTransparency: 0,
+    frostFloatingTransparency: 23,
+    frostDialogTransparency: 91
+  };
+  apply(values);
+  assert.equal(token('--floating-opacity'), '0');
+  assert.equal(token('--dialog-opacity'), '1');
+  assert.equal(h.root.dataset.floatingTransparent, 'on');
+  assert.equal(h.root.dataset.dialogTransparent, 'off');
+  apply({ ...values, liquidGlass: false });
+  assert.ok(Math.abs(Number(token('--floating-opacity')) - 0.77) < 1e-12);
+  assert.ok(Math.abs(Number(token('--dialog-opacity')) - 0.09) < 1e-12);
+  assert.equal(h.root.dataset.floatingTransparent, 'off');
+  apply(values);
+  assert.equal(token('--floating-opacity'), '0');
+  assert.equal(token('--dialog-opacity'), '1');
+  apply({ ...spec.defaults, liquidTransparency: 100, frostTransparency: 100 });
+  assert.equal(
+    token('--floating-opacity'),
+    '0.5',
+    'Deprecated keys cannot migrate the new defaults'
   );
-  assert.equal(h.writes.findLast(([key]) => key === '--frost-opacity')[1], '1');
+  assert.equal(token('--dialog-opacity'), '0.55');
+});
+
+test('only the current mode exposes its two controls and switching preserves all four values', () => {
+  const h = harness(),
+    rows = ['liquid', 'liquid', 'frost', 'frost'].map((mode) => ({
+      dataset: { appearanceMode: mode },
+      hidden: false
+    })),
+    root = { querySelectorAll: (selector) => (selector === '[data-appearance-mode]' ? rows : []) };
+  h.controller.sync(root);
+  assert.deepEqual(
+    rows.map((row) => row.hidden),
+    [false, false, true, true]
+  );
+  h.settings.liquidGlass = false;
+  h.controller.sync(root);
+  assert.deepEqual(
+    rows.map((row) => row.hidden),
+    [true, true, false, false]
+  );
+  h.settings.liquidGlass = true;
+  h.controller.sync(root);
+  assert.deepEqual(
+    rows.map((row) => row.hidden),
+    [false, false, true, true]
+  );
+  for (const [key, value] of Object.entries(spec.defaults)) assert.equal(h.settings[key], value);
 });
 
 test('one frame previews the latest input; debounce coalesces IPC, finish commits density only once', async () => {
@@ -277,16 +353,20 @@ test('a density summary started while saving cannot overwrite the choice after t
 test('range labels, readouts and reset contracts are present for both panels', () => {
   const h = harness(),
     html = h.window.albumAppearance.markup();
-  for (const key of Object.keys(spec.ranges)) {
+  for (const key of Object.keys(spec.ranges).filter(
+    (key) => !['liquidTransparency', 'frostTransparency'].includes(key)
+  )) {
     assert.match(html, new RegExp(`data-appearance-key="${key}"`));
     assert.match(
       html,
       new RegExp(`data-appearance-reset="${key}" title="恢复默认值" aria-label="恢复默认值"`)
     );
   }
+  assert.doesNotMatch(html, /data-appearance-key="(?:liquidTransparency|frostTransparency)"/);
+  assert.match(html, /data-appearance-mode="frost" hidden/);
   assert.match(html, /label for="appearance-card-radius"/);
   assert.match(html, /aria-describedby="appearance-density-help appearance-density-value"/);
-  assert.match(html, /0% 不透明，90% 更通透/);
+  assert.match(html, /0% 不透明，100% 完全透明/);
   assert.match(h.window.albumAppearance.rangeMarkup('density', 'display'), /id="display-density"/);
 });
 
@@ -480,7 +560,7 @@ test('unchanged viewport still restores the anchor and failed refresh releases i
   assert.equal(h.listeners.size, 0);
 });
 
-test('worker persists five appearance keys across restart and rejects malformed settings', async (t) => {
+test('worker persists independent material groups and legacy appearance keys across restart and rejects malformed settings', async (t) => {
   const { Worker } = require('node:worker_threads');
   const os = require('node:os');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'acg-appearance-focused-'));
@@ -522,8 +602,12 @@ test('worker persists five appearance keys across restart and rejects malformed 
   for (const [key, value] of Object.entries(spec.defaults)) assert.equal(initial[key], value);
   const changed = {
     textShadow: true,
-    liquidTransparency: 90,
+    liquidTransparency: 100,
     frostTransparency: 0,
+    liquidFloatingTransparency: 0,
+    liquidDialogTransparency: 100,
+    frostFloatingTransparency: 100,
+    frostDialogTransparency: 0,
     cardRadius: 0,
     density: 360
   };
@@ -532,7 +616,11 @@ test('worker persists five appearance keys across restart and rejects malformed 
     ['textShadow', 1],
     ['density', 119],
     ['cardRadius', -1],
-    ['liquidTransparency', 91],
+    ['liquidFloatingTransparency', 101],
+    ['liquidDialogTransparency', -1],
+    ['frostFloatingTransparency', NaN],
+    ['frostDialogTransparency', '40'],
+    ['liquidTransparency', 101],
     ['frostTransparency', '8']
   ])
     await assert.rejects(call('settings', { key, value }), /外观设置值无效/);

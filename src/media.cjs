@@ -361,7 +361,7 @@ function createMedia({ db, home, getNode, send = () => {} }) {
           await yieldNow();
           if (stopped) break;
           await ensure(id, true).catch((e) => {
-            if (!stopped)
+            if (!stopped && getNode(id))
               run(
                 "UPDATE media SET status='error',error=? WHERE id=? AND status='pending'",
                 String(e.message).slice(0, 500),

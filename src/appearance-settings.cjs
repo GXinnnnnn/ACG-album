@@ -2,8 +2,13 @@
 // Pure settings contract, shared by the worker and classic renderer scripts.
 (function (root) {
   const ranges = Object.freeze({
-    liquidTransparency: { min: 0, max: 90, default: 18 },
-    frostTransparency: { min: 0, max: 90, default: 8 },
+    // Deprecated keys remain readable, but never override the independent defaults.
+    liquidTransparency: { min: 0, max: 100, default: 18 },
+    frostTransparency: { min: 0, max: 100, default: 8 },
+    liquidFloatingTransparency: { min: 0, max: 100, default: 50 },
+    liquidDialogTransparency: { min: 0, max: 100, default: 45 },
+    frostFloatingTransparency: { min: 0, max: 100, default: 50 },
+    frostDialogTransparency: { min: 0, max: 100, default: 40 },
     cardRadius: { min: 0, max: 36, default: 16 },
     density: { min: 120, max: 360, default: 166 }
   });

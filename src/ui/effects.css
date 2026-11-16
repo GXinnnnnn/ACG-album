@@ -1,49 +1,16 @@
 @charset "UTF-8";
-/* Only these small floating surfaces sample the backdrop. Static material is
-   unchanged when disabled or when backdrop-filter is unavailable. */
+/* Motion and elevation tokens. Global liquid/frost surfaces live in liquid-glass.css. */
 :root {
   --liquid-tint: rgba(247, 244, 255, 0.58);
-  --liquid-edge: rgba(255, 255, 255, 0.9);
-  --liquid-shade: rgba(87, 68, 119, 0.18);
+  --liquid-edge: rgba(255, 255, 255, 0.24);
+  --liquid-shade: rgba(87, 68, 119, 0.11);
   --effect-duration: 220ms;
 }
 :root[data-theme='dark'] {
   --liquid-tint: rgba(30, 26, 46, 0.68);
-  --liquid-edge: rgba(237, 225, 255, 0.3);
-  --liquid-shade: rgba(3, 2, 12, 0.3);
+  --liquid-edge: rgba(237, 225, 255, 0.1);
+  --liquid-shade: rgba(3, 2, 12, 0.25);
 }
-/* The legacy menu blur must also obey the saved off switch. */
-:root[data-liquid-glass='off'] .context-menu {
-  backdrop-filter: none;
-}
-@supports (backdrop-filter: blur(1px)) {
-  :root[data-liquid-glass='on']
-    :is(
-      .sidebar-shell,
-      .topbar > .brand,
-      .topbar > .navigation,
-      .topbar > .search-wrap,
-      .topbar > .header-actions,
-      .toolbar-right,
-      .back-to-top,
-      .context-menu,
-      .album-select-list,
-      .progress-panel,
-      .toast,
-      .modal:not(.viewer)
-    ) {
-    background:
-      linear-gradient(125deg, rgba(255, 255, 255, 0.24), transparent 44%),
-      linear-gradient(175deg, rgba(255, 255, 255, 0.1), transparent 55%), var(--liquid-tint);
-    border-color: var(--liquid-edge);
-    box-shadow:
-      inset 0 1px 0 var(--liquid-edge),
-      inset 1px 0 0 rgba(255, 255, 255, 0.08),
-      0 8px 26px var(--liquid-shade);
-    backdrop-filter: blur(18px) saturate(1.35);
-  }
-}
-
 /* Cover and card share a silhouette. Inset overlays follow the cover's 1px
    border so their lower corners do not cut across its clipping curve. */
 :root .album-card {

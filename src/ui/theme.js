@@ -28,6 +28,7 @@ async function revealTheme(theme) {
   const simple = () => motion.matches || root.dataset.motion === 'low' || document.hidden;
   const persist = async () => {
     await saveSetting('theme', theme);
+    await window.albumWallpaper?.ready();
     // A view-transition snapshot must include optical edges in the new palette.
     window.albumLiquidGlass?.refresh({ immediate: true });
   };

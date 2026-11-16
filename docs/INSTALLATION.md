@@ -1,16 +1,16 @@
 # 安装与使用
 
-本文适用于 Windows x64。当前为 **1.2.1 · 2026-11-06 同版本修订**，将此前本机 1.2.2 开发成果并入现有 v1.2.1 发布，不新增版本；变化见 [1.2.1 说明](RELEASE_NOTES_1.2.1.md)，完整功能见 [README](../README.md)。本轮沿用下方三版原文件名替换附件，需按替换发布随附的新大小与 SHA-256 清单核对下载文件。同名旧文件不能代表本次修订，源码和成品的正式验收以待发布的 `VALIDATION_REPORT.md` 为准。
+本文适用于 Windows x64。当前正式版本为 **1.2.2 · 2026-11-16**，变化见 [1.2.2 说明](RELEASE_NOTES_1.2.2.md)，完整功能见 [README](../README.md)。从对应 Release 下载完整安装包，并按随附大小与 SHA-256 清单核对；本轮源码与成品的验证范围和结果以同一 Release 的 `VALIDATION_REPORT.md` 为准。
 
 ## 选择安装包
 
-打开 [1.2.1 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.1)，三种安装包选择一种即可：
+打开 [1.2.2 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.2)，三种安装包选择一种即可：
 
 | 版本     | 下载                                                                                                                                     | 随附内容                                                   |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Standard | [ACG-album-Setup-1.2.1-Standard.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Standard.exe) | 软件本体，不附带离线 Bangumi 索引，可联网匹配              |
-| Lite     | [ACG-album-Setup-1.2.1-Lite.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Lite.exe)         | 软件本体与精简名称、别名、类型及关联索引，日常使用推荐     |
-| Full     | [ACG-album-Setup-1.2.1-Full.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.1/ACG-album-Setup-1.2.1-Full.exe)         | 软件本体与完整离线资料，额外保留长简介、infobox 和原始记录 |
+| Standard | [ACG-album-Setup-1.2.2-Standard.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Standard.exe) | 软件本体，不附带离线 Bangumi 索引，可联网匹配              |
+| Lite     | [ACG-album-Setup-1.2.2-Lite.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Lite.exe)         | 软件本体与精简名称、别名、类型及关联索引，日常使用推荐     |
+| Full     | [ACG-album-Setup-1.2.2-Full.exe](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Full.exe)         | 软件本体与完整离线资料，额外保留长简介、infobox 和原始记录 |
 
 Lite 和 Full 的名称覆盖及匹配规则相同，Full 不会仅因资料更完整而提高识别准确度。所有版本都不附带封面图片；在线封面、当前详情和受限条目访问仍取决于网络及账号权限。数据库快照、来源与占用说明见 [本地检索数据说明](LOCAL_SEARCH_DATA.md)。最终安装包大小、随附索引和 SHA-256 以正式发布附件为准。
 
@@ -37,13 +37,13 @@ Standard、Lite、Full 使用同一应用身份与个人资料格式。退出相
 3. 原始图片、视频和目录另行备份。若缓存另存，希望保留已下载封面、简介与缩略图，也备份实际缓存目录。
 4. 保留原启动器的 `ACG_DATA_DIR` 等资料参数，避免升级后误用空目录。安装目标应是程序目录，不能用个人资料或原图目录作为安装目录。
 
-**本次为 1.2.1 同版本替换，已经安装同号版本时不会自动提示升版。请从上方 v1.2.1 发布页手动下载修订后的 Standard / Lite / Full 完整安装包，核对新校验清单，退出程序后覆盖安装。** 历史本机显示 1.2.2 的程序也需手动覆盖获取正式修订，不能依赖更高版本提示。
+**1.2.1 用户可更新到 1.2.2。此前本机已显示 1.2.2 的程序不会仅因同号发布自动提示升版，请从上方 v1.2.2 发布页手动核对完整安装包或受信任的本体清单，退出程序后更新。** 保留原资料路径及启动参数，勿把个人资料目录用作程序安装目录。
 
 应用内「检查更新」读取正式 Release。本体载荷、资源身份、平台、数据版本和读取兼容性均通过校验时，可以仅下载本体并保留原索引；缺少可信清单、资源变化或需要切换版型时提供完整安装包或 GitHub 手动下载入口。版型按实际随包索引识别，只有确认索引目录不存在才判为 Standard；清单损坏、未知协议或路径不可信时停止默认下载，需明确选择。
 
 由用户确认下载与安装，弹窗显示实际字节进度、失败说明和可点击的 GitHub 发布链接。自动安装还要求当前程序有可信的逐文件运行时所有权清单，完整安装器必须生成目标版本的新清单；安装与回滚按文件大小和 SHA-256 验证。缺少清单、存在未知文件或校验失败时停止自动安装，按发布页提示手动完整覆盖；旧安装器没有新协议清单时不能直接视为支持自动安装。失败恢复原程序与资源，保留原随包索引、个人资料和本机五份私有字体。普通 Standard 安装器不能当作保留 Full 资源的本体更新包。
 
-「本地资料检索 → 资料库补全 / 下载」继续提供 Lite / Full 入口。卸载默认保留应用数据。真实 Windows NSIS 覆盖安装、UAC 与系统重启全链路尚未在用户环境端到端实测；本轮正式验收以替换发布随附的报告为准。
+「本地资料检索 → 资料库补全 / 下载」继续提供 Lite / Full 入口。卸载默认保留应用数据。真实 Windows NSIS 覆盖安装、UAC 与系统重启全链路尚未在用户环境端到端实测；本轮正式验收以本次发布随附的报告为准。
 
 旧版本可能不识别新版数据库字段。需要回退时先保留当前完整备份，再使用与旧程序对应的资料副本；不要让旧程序反复写入唯一一份新版资料库。
 

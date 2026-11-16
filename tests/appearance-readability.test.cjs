@@ -87,7 +87,18 @@ function collect(nodes, env, result = []) {
     else if (n.type === 'css-atrule' && n.nodes) {
       if (n.name === 'supports' && n.raws.params === 'selector(::-webkit-scrollbar)' && env.webkit)
         collect(n.nodes, env, result);
-      if (n.name === 'media' && n.raws.params === '(forced-colors: active)' && env.forcedColors)
+      if (
+        n.name === 'supports' &&
+        env.materialSupports &&
+        ['(backdrop-filter: blur(1px))', '(mask-composite: exclude)'].includes(n.raws.params)
+      )
+        collect(n.nodes, env, result);
+      if (
+        n.name === 'media' &&
+        ((n.raws.params.includes('(forced-colors: active)') && env.forcedColors) ||
+          (n.raws.params.includes('(prefers-reduced-transparency: reduce)') &&
+            env.reducedTransparency))
+      )
         collect(n.nodes, env, result);
     }
   }
@@ -114,7 +125,7 @@ function style(el, env = {}, pseudo = '') {
           winners.set(d.prop, { rank, value: d.value.text });
       }
     }
-  const raw = (p) => winners.get(p)?.value;
+  const raw = (p) => (!el.parent ? env.tokens?.[p] : undefined) ?? winners.get(p)?.value;
   function value(p) {
     const own = raw(p);
     if (own === undefined || own === 'inherit' || own === 'currentColor')
@@ -305,4 +316,81 @@ test('readability icon selectors only change color, never SVG shape or dimension
       ['color']
     );
   }
+});
+
+test('material cascade maps every shell to its own full-range tint, including native controls and viewer rim', () => {
+  for (const theme of ['light', 'dark'])
+    for (const mode of ['on', 'off'])
+      for (const materialSupports of [false, true])
+        for (const [floating, dialog] of [
+          [0, 1],
+          [1, 0],
+          [0.35, 0.6]
+        ]) {
+          const { root, body } = fixture(theme);
+          root.attributes['data-liquid-glass'] = mode;
+          root.attributes['data-floating-transparent'] = floating === 0 ? 'on' : 'off';
+          root.attributes['data-dialog-transparent'] = dialog === 0 ? 'on' : 'off';
+          const env = {
+            materialSupports,
+            tokens: { '--floating-opacity': String(floating), '--dialog-opacity': String(dialog) }
+          };
+          const topbar = element('header', body, { class: 'topbar' });
+          const floatingHosts = [
+            ...['brand', 'navigation', 'search-wrap', 'header-actions'].map((name) =>
+              element('div', topbar, { class: name })
+            ),
+            ...[
+              'sidebar-shell',
+              'toolbar-right',
+              'back-to-top',
+              'context-menu',
+              'album-select-list',
+              'progress-panel',
+              'toast'
+            ].map((name) => element('div', body, { class: name }))
+          ];
+          // Exercise the higher-specificity native backdrop rule, too.
+          for (const host of floatingHosts) host.attributes['data-glasswork-native'] = '';
+          const modal = element('dialog', body, { class: 'modal' });
+          const editor = element('dialog', body, { id: 'media-editor' });
+          const viewer = element('dialog', body, { id: 'viewer', class: 'modal viewer' });
+          const tint = (alpha) =>
+            `rgba(${theme === 'light' ? '247, 244, 255' : '30, 26, 46'}, ${alpha})`;
+          for (const [host, alpha] of [
+            ...floatingHosts.map((host) => [host, floating]),
+            [modal, dialog],
+            [editor, dialog]
+          ]) {
+            const rendered = style(host, env);
+            const background = rendered.value('background');
+            if (alpha === 0) assert.equal(background, 'transparent');
+            else
+              assert.ok(
+                background.endsWith(tint(alpha)),
+                `${host.attributes.class || host.attributes.id}: ${background}`
+              );
+            if (alpha === 0) assert.equal(rendered.raw('backdrop-filter'), 'none');
+            assert.equal(rendered.raw('opacity'), undefined, 'No foreground/host opacity');
+          }
+          assert.equal(style(viewer, env).value('--viewer-frost'), tint(dialog));
+          for (const access of [{ reducedTransparency: true }, { forcedColors: true }]) {
+            const accessible = { ...env, ...access };
+            const solid = access.forcedColors
+              ? 'Canvas'
+              : style(root, accessible).value('--surface-solid');
+            for (const host of [...floatingHosts, modal, editor]) {
+              assert.equal(
+                style(host, accessible).value('background'),
+                solid,
+                `${theme}/${mode}/${materialSupports}/${host.attributes.class || host.attributes.id}/${JSON.stringify(access)}`
+              );
+              assert.equal(style(host, accessible).raw('backdrop-filter'), 'none');
+            }
+            if (materialSupports) {
+              assert.equal(style(viewer, accessible, '::before').value('background'), solid);
+              assert.equal(style(viewer, accessible, '::before').raw('backdrop-filter'), 'none');
+            }
+          }
+        }
 });

@@ -102,8 +102,7 @@
   font-display: swap;
 }
 :root {
-  font-family:
-    '方正兰亭圆_GBK_中', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  font-family: '方正兰亭圆_GBK', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
 }
 .font-picker .font-local-entry {
   display: block;

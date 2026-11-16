@@ -206,7 +206,11 @@ function initializeDisplayControls() {
   window.addEventListener(
     'resize',
     () => {
+      const density = S.settings.density;
       applyDisplaySettings();
+      // Auto Medium can change independently of the observed canvas width.
+      // Reflow its cards now; the grid preserves the current reading anchor.
+      if (S.settings.density !== density) grid.layout();
       updateScrollActions();
     },
     { passive: true }

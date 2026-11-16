@@ -1,5 +1,6 @@
 {
   "runtime": [
+    {"name":"Glasswork · Kubai087（枯白啃设计）","version":"4f0b674 · 本地适配","license":"MIT","url":"https://github.com/kubai087/glasswork","purpose":"液态玻璃的真实背景边缘折射与材质参考；本地适配有界 SVG 透镜、生命周期与无障碍降级，保留原作者版权及完整 MIT 许可。"},
     {"name":"Electron","version":"40.10.6","license":"MIT","url":"https://github.com/electron/electron","purpose":"桌面窗口、进程隔离与系统集成；保留内嵌组件各自许可。"},
     {"name":"Chromium","version":"144.0.7559.236","license":"BSD-3-Clause 及各内嵌组件许可","url":"https://github.com/chromium/chromium","purpose":"界面渲染、原生媒体播放与网络；完整条文见可执行文件旁 LICENSES.chromium.html。"},
     {"name":"Node.js","version":"24.15.0","license":"MIT 及各内嵌组件许可","url":"https://github.com/nodejs/node","purpose":"主进程与 worker 运行时；完整依赖条文见 Electron 许可汇编的 Node.js 项。"},

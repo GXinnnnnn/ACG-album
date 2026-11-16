@@ -149,7 +149,7 @@
 /* Preserve three tree rows at the supported minimum window height without moving rail controls. */
 @media (max-height: 820px) {
   #sidebar-shell .sidebar {
-    padding-top: 8px;
+    padding-top: 18px;
   }
   #sidebar-shell .nav-item,
   #sidebar-shell .import-button {
@@ -181,5 +181,14 @@
 @media (prefers-reduced-motion: reduce) {
   #sidebar-shell .sidebar-bottom::before {
     transition: none;
+  }
+}
+
+@media (max-height: 820px) {
+  #sidebar-shell .import-button::before {
+    width: 34px;
+    height: 34px;
+    left: 3px;
+    border-radius: 12px;
   }
 }

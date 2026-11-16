@@ -1,0 +1,445 @@
+/* One static application-owned wallpaper; never a scrolling or animated layer. */
+body {
+  isolation: isolate;
+  min-height: 100vh;
+}
+#app-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  background: var(--bg);
+}
+#app-wallpaper > img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+}
+#app-wallpaper > .wallpaper-shade {
+  position: absolute;
+  inset: 0;
+}
+:root[data-wallpaper='on'] .ambient {
+  display: none;
+}
+.wallpaper-settings {
+  min-width: 0;
+}
+.wallpaper-settings h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.wallpaper-gallery-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 16px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-solid);
+}
+.wallpaper-gallery-tabs button {
+  flex: 1;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--soft);
+  background: transparent;
+  cursor: pointer;
+}
+.wallpaper-gallery-tabs button[aria-selected='true'] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.wallpaper-gallery-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.wallpaper-settings .wallpaper-gallery-help {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+#wallpaper-restore {
+  min-height: 32px;
+  font-size: 12px;
+}
+#wallpaper-restore[hidden] {
+  display: none;
+}
+/* Deliberately fixed at three columns, including the upload tile. */
+.wallpaper-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.wallpaper-card,
+.wallpaper-upload {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-solid);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.wallpaper-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.wallpaper-card-select {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+.wallpaper-card-art {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: var(--bg);
+}
+.wallpaper-card-art img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  /* Size and offset are shared with the actual background's crop algorithm. */
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  pointer-events: none;
+}
+.wallpaper-card-name {
+  display: block;
+  min-height: 36px;
+  padding: 9px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.wallpaper-selected-mark {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--surface-solid);
+  font-size: 11px;
+  line-height: 16px;
+}
+.is-selected .wallpaper-selected-mark {
+  display: flex;
+}
+.wallpaper-selected-mark svg {
+  width: 14px;
+  height: 14px;
+}
+.wallpaper-card-actions {
+  position: absolute;
+  right: 7px;
+  /* Keep actions over the preview, leaving its title fully readable. */
+  bottom: 44px;
+  display: flex;
+  gap: 5px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.wallpaper-card:hover .wallpaper-card-actions,
+.wallpaper-card:focus-within .wallpaper-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.wallpaper-card-actions button,
+.wallpaper-editor-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-solid);
+  color: var(--text);
+  cursor: pointer;
+}
+.wallpaper-card-actions button:hover,
+.wallpaper-editor-close:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.wallpaper-card-actions svg,
+.wallpaper-editor-close svg {
+  width: 18px;
+  height: 18px;
+}
+.wallpaper-upload {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 130px;
+  padding: 14px 8px;
+  border-style: dashed;
+  color: var(--accent);
+  cursor: pointer;
+}
+.wallpaper-upload > svg {
+  width: 28px;
+  height: 28px;
+}
+.wallpaper-upload > strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.wallpaper-upload > span {
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+.wallpaper-upload:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.wallpaper-options,
+.wallpaper-crop-ranges {
+  overflow: hidden;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-solid);
+}
+.wallpaper-options > .setting-row:last-child,
+.wallpaper-crop-ranges > .setting-row:last-child {
+  border-bottom: 0;
+}
+.wallpaper-settings .wallpaper-range-row,
+.wallpaper-editor .wallpaper-range-row {
+  gap: 10px 16px;
+}
+.wallpaper-settings .wallpaper-range-row > div:first-child,
+.wallpaper-editor .wallpaper-range-row > div:first-child {
+  flex-basis: 135px;
+}
+.wallpaper-settings .appearance-range-control,
+.wallpaper-editor .appearance-range-control {
+  flex-basis: 260px;
+  grid-template-columns: minmax(70px, 1fr) 44px auto;
+}
+.wallpaper-settings .setting-row label,
+.wallpaper-editor .setting-row label {
+  margin-bottom: 0;
+}
+.wallpaper-status,
+#wallpaper-crop-status {
+  min-height: 1.5em;
+  margin: 12px 0 0;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.wallpaper-status:empty,
+#wallpaper-crop-status:empty {
+  display: none;
+}
+.wallpaper-editor.modal {
+  width: 720px;
+}
+.wallpaper-editor .modal-top {
+  align-items: center;
+  margin-bottom: 16px;
+}
+.wallpaper-editor .wallpaper-editor-theme {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+}
+.wallpaper-editor .modal-top h2 {
+  margin: 0;
+  font-size: 21px;
+}
+.wallpaper-editor-close {
+  flex-shrink: 0;
+}
+.wallpaper-crop-preview {
+  position: relative;
+  width: min(100%, calc(36vh * var(--wallpaper-preview-ratio, 1.6)));
+  aspect-ratio: var(--wallpaper-preview-ratio, 1.6);
+  max-height: 36vh;
+  margin-inline: auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+  cursor: grab;
+  touch-action: none;
+}
+.wallpaper-crop-preview.is-dragging {
+  cursor: grabbing;
+}
+.wallpaper-crop-preview img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
+}
+.wallpaper-editor #wallpaper-crop-help {
+  margin: 10px 0 16px;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.wallpaper-save-button {
+  min-height: 38px;
+  padding: 9px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 11px;
+  color: var(--surface-solid);
+  background: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wallpaper-settings button:focus-visible,
+.wallpaper-editor button:focus-visible,
+.wallpaper-crop-preview:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.wallpaper-card-select:focus-visible {
+  outline-offset: -3px !important;
+}
+.wallpaper-settings button:disabled,
+.wallpaper-editor button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.wallpaper-settings input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Match the selected gallery side without changing the application theme.
+   The dialog still inherits the app's current glass mode and opacity. */
+.wallpaper-editor[data-wallpaper-theme='light'] {
+  color-scheme: light;
+  --bg: #e8e9f1;
+  --surface-solid: #f5f5fa;
+  --text: #22232e;
+  --soft: #302d3a;
+  --muted: #3e3a49;
+  --line: #d5d4e1;
+  --accent: #b43d7b;
+  --accent-soft: #f7e6f0;
+  --glass-tint-rgb: 247, 244, 255;
+  --glass-highlight-rgb: 255, 255, 255;
+}
+.wallpaper-editor[data-wallpaper-theme='dark'] {
+  color-scheme: dark;
+  --bg: #15151f;
+  --surface-solid: #232330;
+  --text: #f4f2fa;
+  --soft: #e4e0ef;
+  --muted: #d1cbdf;
+  --line: #535064;
+  --accent: #f69ac4;
+  --accent-soft: #492f42;
+  --glass-tint-rgb: 30, 26, 46;
+  --glass-highlight-rgb: 237, 233, 255;
+}
+@media (hover: none) {
+  .wallpaper-card-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+@media (max-width: 620px) {
+  .wallpaper-grid {
+    gap: 8px;
+  }
+  .wallpaper-upload {
+    gap: 6px;
+    padding: 10px 5px;
+    min-height: 110px;
+  }
+  .wallpaper-upload > span {
+    font-size: 10px;
+  }
+  .wallpaper-card-name {
+    padding-inline: 7px;
+  }
+  .wallpaper-card-actions {
+    right: 4px;
+    gap: 4px;
+  }
+  .wallpaper-options,
+  .wallpaper-crop-ranges {
+    padding-inline: 12px;
+  }
+  .wallpaper-editor.modal {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 32px);
+    padding: 18px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wallpaper-card,
+  .wallpaper-upload,
+  .wallpaper-card-actions {
+    transition: none;
+  }
+  .wallpaper-editor.modal[open] {
+    animation: none;
+  }
+}
+@media (forced-colors: active), (prefers-reduced-transparency: reduce) {
+  #app-wallpaper {
+    display: none;
+  }
+}
+@media (forced-colors: active) {
+  .wallpaper-card-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .wallpaper-card.is-selected,
+  .wallpaper-gallery-tabs button[aria-selected='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

@@ -1,6 +1,8 @@
 'use strict';
 // Lead runs serially after explicitly scheduling GUI/GPU measurements.
 // node scripts/check-liquid-glass.cjs -- isolated generated profile and images.
+// ACG_CHECK_STAGE must be an absolute evidence parent; never scans artifacts.
+// Prepared only: native media checks below run only when Lead schedules this GUI.
 const { _electron, expect } = require('@playwright/test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -19,8 +21,16 @@ const report = {
   errors: [],
   samples: []
 };
+const selectedCheck = process.env.ACG_GLASS_CHECK_ONLY;
+assert.ok(!selectedCheck || selectedCheck === 'accessibility', 'Unknown glass check selection');
+if (selectedCheck) report.selectedChecks = selectedCheck;
 let app, page, worker, run;
 async function check(name, action) {
+  if (selectedCheck === 'accessibility' && !name.startsWith('native forced-colors')) {
+    (report.skippedChecks ||= []).push(name);
+    console.log('SKIP ' + name);
+    return;
+  }
   const details = await action();
   report.checks.push({ name, details, passed: true });
   console.log('PASS ' + name);
@@ -40,7 +50,7 @@ async function settle() {
 }
 const stats = () => page.evaluate(() => window.albumLiquidGlass.stats());
 async function opticalSamples(selector = '.liquid-glass-canvas') {
-  return page.evaluate((selector) => {
+  const sample = await page.evaluate((selector) => {
     return {
       contexts: window.__glassContexts.length,
       canvases: [...document.querySelectorAll(selector)].map((canvas) => {
@@ -67,6 +77,10 @@ async function opticalSamples(selector = '.liquid-glass-canvas') {
           parent: host.className,
           background,
           backgroundAlpha,
+          expectedBackgroundAlpha: Number.parseFloat(
+            style.getPropertyValue('--glass-material-opacity')
+          ),
+          materialTint: style.getPropertyValue('--glass-base-tint'),
           backdrop: style.backdropFilter,
           contentFilter: style.filter,
           hostOpacity: style.opacity,
@@ -78,6 +92,8 @@ async function opticalSamples(selector = '.liquid-glass-canvas') {
       })
     };
   }, selector);
+  report.samples.push(sample);
+  return sample;
 }
 function wholeSurface(sample) {
   assert.ok(sample.canvases.length > 0, 'Expected a rendered optical surface');
@@ -92,8 +108,12 @@ function wholeSurface(sample) {
       );
     }
     assert.ok(
-      canvas.backgroundAlpha > 0 && canvas.backgroundAlpha < 0.65,
-      'Full-face CSS material remains translucent'
+      canvas.backgroundAlpha > 0 &&
+        canvas.backgroundAlpha < 1 &&
+        canvas.expectedBackgroundAlpha > 0 &&
+        canvas.expectedBackgroundAlpha < 1 &&
+        Math.abs(canvas.backgroundAlpha - canvas.expectedBackgroundAlpha) < 0.005,
+      'Full-face CSS material must match the actual appearance opacity: ' + JSON.stringify(canvas)
     );
     assert.match(canvas.backdrop, /blur\(18px\)/, 'Real DOM blur remains active');
     assert.equal(canvas.contentFilter, 'none', 'The host and its text are not filtered');
@@ -130,15 +150,21 @@ async function windowDiagnostics() {
 }
 (async () => {
   try {
-    const artifacts = await fs.realpath(path.join(root, 'artifacts'));
-    run = path.join(
-      artifacts,
-      'liquid_glass',
-      new Date().toISOString().replace(/[^a-zA-Z0-9]/g, '_') + '_' + crypto.randomUUID()
+    const requestedStage =
+      process.env.ACG_CHECK_STAGE || 'C:\\ACG\\资料归档\\local-offline-glass-1.2.2-20261111';
+    assert.ok(
+      path.isAbsolute(requestedStage),
+      'ACG_CHECK_STAGE must be an absolute evidence parent'
     );
+    await fs.mkdir(requestedStage, { recursive: true });
+    const stage = await fs.realpath(requestedStage);
+    // Keep isolated cache filenames below native image decoder path limits on Windows.
+    run = path.join(stage, 'lg-' + crypto.randomUUID());
     await fs.mkdir(run, { recursive: true });
-    const profile = path.join(run, 'isolated_profile'),
-      collection = path.join(run, 'generated_collection');
+    const profile = path.join(run, 'p'),
+      collection = path.join(run, 'c');
+    report.paths = { stage, run, profile, collection, report: path.join(run, 'report.json') };
+    console.log('Run: ' + run);
     await fs.mkdir(collection);
     await fs.mkdir(profile);
     for (let i = 0; i < 30; i++) {
@@ -229,10 +255,16 @@ async function windowDiagnostics() {
     report.runtime = await app.evaluate(({ app }) => ({
       isPackaged: app.isPackaged,
       version: app.getVersion(),
-      userData: app.getPath('userData')
+      userData: app.getPath('userData'),
+      dataDir: process.env.ACG_DATA_DIR,
+      pid: process.pid,
+      executable: process.execPath,
+      creationTimeMs: Math.trunc(process.getCreationTime())
     }));
     assert.equal(report.runtime.isPackaged, !!executable);
     assert.equal(path.resolve(report.runtime.userData), path.resolve(profile, 'chromium-profile'));
+    assert.equal(path.resolve(report.runtime.dataDir), path.resolve(profile));
+    report.runtime.ownedProfileVerified = true;
     page.on('pageerror', (error) => report.errors.push(error.message));
     // Observe native contexts before reload; do not replace the renderer, shader,
     // timers, or draw calls. WEBGL_lose_context emits real browser loss events.
@@ -503,6 +535,108 @@ async function windowDiagnostics() {
         return { off, hidden, transitions };
       }
     );
+    await check(
+      'native forced-colors and supported reduced-transparency stop optical work and restore the shared context',
+      async () => {
+        async function cycle(query, enable, restore, optional = false) {
+          await settle();
+          const before = await stats();
+          const contexts = await page.evaluate(() => __glassContexts.length);
+          assert.ok(contexts > 0 && before.hosts > 0);
+          try {
+            await enable();
+            const nativeMatch = await page.evaluate((query) => matchMedia(query).matches, query);
+            if (!nativeMatch && optional)
+              return {
+                skipped: true,
+                reason:
+                  'Chromium accepted CDP but did not expose the requested native media preference.'
+              };
+            assert.equal(nativeMatch, true, 'Browser matchMedia must confirm native emulation');
+            await expect.poll(async () => (await stats()).opaqueMaterial).toBe(true);
+            await settle();
+            const opaque = await stats();
+            assert.equal(opaque.pending, 0);
+            assert.equal(opaque.hosts, 0);
+            assert.equal(await page.locator('.liquid-glass-canvas').count(), 0);
+            const surfaces = await page.evaluate(() =>
+              [...document.querySelectorAll('.topbar > .brand, #sidebar-shell')].map((host) => {
+                const style = getComputedStyle(host);
+                const background = style.backgroundColor;
+                const alpha =
+                  background.startsWith('rgba') || background.includes('/')
+                    ? Number(background.match(/(?:,|\/)\s*([\d.]+)\s*\)$/)?.[1])
+                    : 1;
+                return {
+                  host: host.className,
+                  background,
+                  alpha,
+                  backdrop: style.backdropFilter,
+                  image: style.backgroundImage
+                };
+              })
+            );
+            assert.ok(surfaces.length >= 2);
+            for (const surface of surfaces) {
+              assert.equal(surface.alpha, 1, 'Accessibility surface must be solid');
+              assert.equal(surface.backdrop, 'none');
+              assert.equal(surface.image, 'none');
+            }
+            await page.evaluate(() => {
+              window.albumLiquidGlass.refresh({ immediate: true });
+              document.querySelector('#viewport').scrollTop += 20;
+            });
+            await page.mouse.move(900, 80);
+            await page.waitForTimeout(350);
+            const stopped = await stats();
+            assert.equal(stopped.frames, opaque.frames);
+            assert.equal(stopped.gpu.draws, opaque.gpu.draws);
+            assert.equal(stopped.gpu.uploads, opaque.gpu.uploads);
+            assert.equal(stopped.pending, 0);
+            assert.equal(await page.locator('.liquid-glass-canvas').count(), 0);
+            await restore();
+            assert.equal(await page.evaluate((query) => matchMedia(query).matches, query), false);
+            await expect.poll(async () => (await stats()).opaqueMaterial).toBe(false);
+            await expect.poll(async () => (await stats()).hosts).toBeGreaterThan(0);
+            await settle();
+            const restored = await stats();
+            assert.equal(restored.gpu.status, 'webgl2');
+            assert.ok(restored.gpu.draws > stopped.gpu.draws);
+            assert.equal(await page.evaluate(() => __glassContexts.length), contexts);
+            return { query, nativeMatch, contexts, before, opaque, stopped, restored, surfaces };
+          } finally {
+            await restore();
+          }
+        }
+        const forcedColors = await cycle(
+          '(forced-colors: active)',
+          () => page.emulateMedia({ forcedColors: 'active' }),
+          () => page.emulateMedia({ forcedColors: 'none' })
+        );
+        const cdp = await page.context().newCDPSession(page);
+        let reducedTransparency;
+        try {
+          const preference = (value) =>
+            cdp.send('Emulation.setEmulatedMedia', {
+              features: [{ name: 'prefers-reduced-transparency', value }]
+            });
+          reducedTransparency = await cycle(
+            '(prefers-reduced-transparency: reduce)',
+            () => preference('reduce'),
+            () => preference('no-preference'),
+            true
+          );
+        } finally {
+          await cdp.detach();
+        }
+        return {
+          forcedColors,
+          reducedTransparency,
+          policy:
+            'Real Playwright/CDP browser media emulation, confirmed by native matchMedia; no media or renderer mocks.'
+        };
+      }
+    );
     assert.deepEqual(report.errors, []);
     report.passed = true;
     report.generatedScan = scanned;
@@ -512,15 +646,49 @@ async function windowDiagnostics() {
     process.exitCode = 1;
     console.error(error);
   } finally {
+    const cleanupFailure = (error) => {
+      report.passed = false;
+      report.errors.push('Cleanup: ' + (error.stack || String(error)));
+      process.exitCode = 1;
+      console.error(error);
+    };
     if (app) {
       report.windowDiagnostics ||= {};
       report.windowDiagnostics.final = await windowDiagnostics();
     }
-    if (worker) await worker.terminate();
-    if (app) await app.close();
+    if (worker) await worker.terminate().catch(cleanupFailure);
+    if (app) {
+      try {
+        // Close only this Playwright handle after its isolated profile and native
+        // main identity match. No name-based kill or new tree-termination path.
+        assert.equal(report.runtime?.ownedProfileVerified, true, 'Unverified app: skip close');
+        const current = await app.evaluate(({ app }) => ({
+          pid: process.pid,
+          executable: process.execPath,
+          creationTimeMs: Math.trunc(process.getCreationTime()),
+          userData: app.getPath('userData'),
+          dataDir: process.env.ACG_DATA_DIR
+        }));
+        for (const key of ['pid', 'executable', 'creationTimeMs', 'userData', 'dataDir'])
+          assert.equal(current[key], report.runtime[key], 'Owned app identity changed: ' + key);
+        await app.close();
+      } catch (error) {
+        cleanupFailure(error);
+      }
+    }
     if (run) {
-      await fs.writeFile(path.join(run, 'report.json'), JSON.stringify(report, null, 2) + '\n');
-      console.log('Report: ' + path.join(run, 'report.json'));
+      try {
+        await fs.writeFile(path.join(run, 'report.json'), JSON.stringify(report, null, 2) + '\n');
+        console.log('Report: ' + path.join(run, 'report.json'));
+      } catch (error) {
+        cleanupFailure(error);
+      }
     }
   }
-})();
+  // Explicit failure exit after awaited cleanup/reporting bypasses beforeExit
+  // hooks that otherwise request exit(0), including async-exit-hook.
+  if (report.passed !== true || process.exitCode) process.exit(1);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

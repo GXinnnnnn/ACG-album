@@ -1,6 +1,6 @@
 'use strict';
 const path = require('node:path');
-const { idFor: defaultIdFor } = require('./model.cjs');
+const { idFor: defaultIdFor, thumbnailKey } = require('./model.cjs');
 const { sortKey: defaultSortKey } = require('./natural-sort.cjs');
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -133,7 +133,7 @@ function createRenameIdentity(
       !current ||
       current.path !== plan.oldPath ||
       current.root !== plan.oldRoot ||
-      current.missing
+      (current.missing && !plan.folderRelocation)
     )
       throw fail('RENAME_CHANGED', '准备期间源条目已变化。');
     if ((frontier?.get(plan.oldRoot)?.after_id ?? null) !== plan.frontierAfter)
@@ -159,6 +159,17 @@ function createRenameIdentity(
         plan.count
     )
       throw fail('RENAME_STRUCTURE', '分类包含无法迁移的孤立节点。');
+    if (plan.folderRelocation) {
+      const parent = get.get(plan.destinationParent);
+      if (
+        !parent ||
+        parent.root !== plan.oldRoot ||
+        parent.kind !== 'folder' ||
+        parent.missing ||
+        !equivalent(parent.path, path.dirname(plan.path))
+      )
+        throw fail('RENAME_CHANGED', '目标父目录已变化。');
+    }
     const collisions = db
       .prepare(
         `SELECT 1 FROM rename_identity_map m JOIN nodes n
@@ -192,7 +203,10 @@ function createRenameIdentity(
       throw fail('RENAME_BUSY', '分类正在移除。');
   }
   const service = {
-    async prepare({ id, newPath, operationId }, checkpoint = async () => {}) {
+    async prepare(
+      { id, newPath, operationId, rootRelocation = false, folderRelocation = false },
+      checkpoint = async () => {}
+    ) {
       if (db.isTransaction) throw fail('RENAME_TRANSACTION', '重命名准备不能跨越外部事务。');
       if (activePlan) throw fail('RENAME_BUSY', '已有重命名映射正在准备或提交。');
       if (
@@ -204,9 +218,24 @@ function createRenameIdentity(
         throw fail('RENAME_PLAN', '重命名路径或操作编号无效。');
       if (commitReceipt.get(operationId)) throw fail('RENAME_COMMITTED', '操作编号已经提交。');
       const source = get.get(id);
-      if (!source || source.missing) throw fail('RENAME_SOURCE', '源条目不存在或已离线。');
+      if (!source || (source.missing && !folderRelocation))
+        throw fail('RENAME_SOURCE', '源条目不存在或已离线。');
       newPath = path.resolve(newPath);
-      if (!equivalent(path.dirname(source.path), path.dirname(newPath)))
+      if (
+        rootRelocation &&
+        (source.parent !== null || source.id !== source.root || source.depth !== 0)
+      )
+        throw fail('RENAME_PATH', '重新关联只允许完整根分类。');
+      if (
+        rootRelocation &&
+        (newPath.includes('\0') || within(source.path, newPath) || within(newPath, source.path))
+      )
+        throw fail('RENAME_PATH', '重新关联的目录不得互相包含。');
+      if (
+        !rootRelocation &&
+        !folderRelocation &&
+        !equivalent(path.dirname(source.path), path.dirname(newPath))
+      )
         throw fail('RENAME_PATH', '此操作只允许同目录重命名。');
       const rootNode = get.get(source.root);
       if (
@@ -219,8 +248,34 @@ function createRenameIdentity(
         (source.parent !== null && !within(rootNode.path, source.path))
       )
         throw fail('RENAME_STRUCTURE', '源分类结构无效。');
+      let destinationParent = null;
+      if (folderRelocation) {
+        if (
+          rootRelocation ||
+          !source.parent ||
+          source.kind !== 'folder' ||
+          !within(rootNode.path, newPath) ||
+          within(source.path, newPath) ||
+          within(newPath, source.path)
+        )
+          throw fail('RENAME_PATH', '子相册重新关联必须位于原分类中，且不得与源子树互相包含。');
+        destinationParent = db
+          .prepare('SELECT * FROM nodes WHERE path=?')
+          .get(path.dirname(newPath));
+        if (
+          !destinationParent ||
+          destinationParent.root !== source.root ||
+          destinationParent.kind !== 'folder' ||
+          destinationParent.missing
+        )
+          throw fail('RENAME_PATH', '目标父目录必须是原分类中已索引的在线目录。');
+      }
       const plan = {
         opId: operationId,
+        rootRelocation,
+        folderRelocation,
+        destinationParent: destinationParent?.id || null,
+        depthDelta: destinationParent ? destinationParent.depth + 1 - source.depth : 0,
         oldId: id,
         id: idFor(newPath),
         oldRoot: source.root,
@@ -343,6 +398,12 @@ function createRenameIdentity(
           sortkey=(SELECT new_sortkey FROM rename_identity_map WHERE op=? AND row_id=nodes.rowid),
           root=?,indexed=? WHERE rowid IN(SELECT row_id FROM rename_identity_map WHERE op=?)`
         ).run(op, op, op, op, plan.root, started, op);
+        if (plan.folderRelocation) {
+          db.prepare('UPDATE nodes SET parent=? WHERE id=?').run(plan.destinationParent, plan.id);
+          db.prepare(
+            'UPDATE nodes SET depth=depth+?,missing=0 WHERE rowid IN(SELECT row_id FROM rename_identity_map WHERE op=?)'
+          ).run(plan.depthDelta, op);
+        }
         for (const [table, key] of optionalIdTables)
           db.prepare(
             `UPDATE ${table} SET ${key}=(SELECT new_id FROM rename_identity_map m WHERE m.op=? AND m.old_id=${table}.${key})
@@ -363,6 +424,107 @@ function createRenameIdentity(
             plan.root,
             plan.oldRoot
           );
+        // Journal frames and cache hints use the same fixed ID/path map as the
+        // nodes. They commit or roll back together, including paused/offline jobs.
+        if (has('scan_directories')) {
+          // Hash-derived child IDs reorder after relocation. Restart these
+          // keyset cursors rather than translating an old lexical boundary.
+          db.prepare(
+            `UPDATE scan_directories SET after_child='' WHERE
+            id IN(SELECT old_id FROM rename_identity_map WHERE op=?) OR
+            after_child IN(SELECT old_id FROM rename_identity_map WHERE op=?) OR
+            id IN(SELECT old_parent FROM rename_identity_map WHERE op=? AND old_id=?) OR id=?`
+          ).run(op, op, op, plan.oldId, plan.destinationParent);
+          if (plan.folderRelocation)
+            db.prepare(
+              'UPDATE scan_directories SET depth=depth+? WHERE id IN(SELECT old_id FROM rename_identity_map WHERE op=?)'
+            ).run(plan.depthDelta, op);
+          for (const column of ['id', 'parent', 'after_child'])
+            db.prepare(
+              `UPDATE scan_directories SET ${column}=(SELECT new_id FROM rename_identity_map m WHERE m.op=? AND m.old_id=scan_directories.${column})
+              WHERE ${column} IN(SELECT old_id FROM rename_identity_map WHERE op=? AND old_id<>new_id)`
+            ).run(op, op);
+          db.prepare(
+            `UPDATE scan_directories SET path=(SELECT new_path FROM rename_identity_map m WHERE m.op=? AND m.old_path=scan_directories.path)
+            WHERE path IN(SELECT old_path FROM rename_identity_map WHERE op=?)`
+          ).run(op, op);
+        }
+        if (has('scan_directories') && plan.folderRelocation)
+          db.prepare('UPDATE scan_directories SET parent=? WHERE id=?').run(
+            plan.destinationParent,
+            plan.id
+          );
+        if (has('scan_jobs')) {
+          for (const column of ['path', 'target'])
+            db.prepare(
+              `UPDATE scan_jobs SET ${column}=(SELECT new_path FROM rename_identity_map m WHERE m.op=? AND m.old_path=scan_jobs.${column})
+              WHERE ${column} IN(SELECT old_path FROM rename_identity_map WHERE op=?)`
+            ).run(op, op);
+          if (plan.rootRenamed)
+            db.prepare('UPDATE scan_jobs SET root=? WHERE root=?').run(plan.root, plan.oldRoot);
+        }
+        if (has('scan_prune'))
+          db.prepare(
+            `UPDATE scan_prune SET id=(SELECT new_id FROM rename_identity_map m WHERE m.op=? AND m.old_id=scan_prune.id)
+            WHERE id IN(SELECT old_id FROM rename_identity_map WHERE op=? AND old_id<>new_id)`
+          ).run(op, op);
+        if (has('scan_new'))
+          db.prepare(
+            `UPDATE scan_new SET id=(SELECT new_id FROM rename_identity_map m WHERE m.op=? AND m.old_id=scan_new.id)
+            WHERE id IN(SELECT old_id FROM rename_identity_map WHERE op=? AND old_id<>new_id)`
+          ).run(op, op);
+        if (has('root_availability') && plan.rootRenamed) {
+          if (
+            plan.oldRoot !== plan.root &&
+            db.prepare('SELECT 1 FROM root_availability WHERE root=?').get(plan.root)
+          )
+            throw fail('RENAME_CONFLICT', '目标分类已有状态记录。');
+          db.prepare('UPDATE root_availability SET root=?,path=? WHERE root=?').run(
+            plan.root,
+            plan.path,
+            plan.oldRoot
+          );
+          if (plan.rootRelocation) {
+            db.prepare(
+              "UPDATE root_availability SET status='online',reason='',code='',offline_since=0,checked_at=? WHERE root=?"
+            ).run(started, plan.root);
+            if (has('scan_jobs'))
+              db.prepare(
+                "UPDATE scan_jobs SET state='paused',reason='' WHERE root=? AND state='offline'"
+              ).run(plan.root);
+          }
+        }
+        if (has('thumbs')) {
+          // Preserve the cache file path; only logical key/source hints change.
+          const rows = db.prepare(
+            'SELECT m.seq,m.old_path,m.new_path,n.mtime,n.bytes FROM rename_identity_map m JOIN nodes n ON n.rowid=m.row_id WHERE m.op=? ORDER BY m.seq'
+          );
+          for (const row of rows.iterate(op)) {
+            for (const size of [512, 768, 1024]) {
+              const oldKey = thumbnailKey(
+                  { path: row.old_path, mtime: row.mtime, bytes: row.bytes },
+                  size
+                ),
+                newKey = thumbnailKey(
+                  { path: row.new_path, mtime: row.mtime, bytes: row.bytes },
+                  size
+                );
+              if (oldKey !== newKey && db.prepare('SELECT 1 FROM thumbs WHERE key=?').get(oldKey)) {
+                if (db.prepare('SELECT 1 FROM thumbs WHERE key=?').get(newKey))
+                  throw fail('RENAME_CONFLICT', '目标已有缩略图关联。');
+                db.prepare('UPDATE thumbs SET key=?,source=? WHERE key=?').run(
+                  newKey,
+                  row.new_path,
+                  oldKey
+                );
+              }
+            }
+          }
+          db.prepare(
+            `UPDATE thumbs SET source=(SELECT new_path FROM rename_identity_map m WHERE m.op=? AND m.old_path=thumbs.source)
+            WHERE source IN(SELECT old_path FROM rename_identity_map WHERE op=?)`
+          ).run(op, op);
+        }
         if (fts)
           db.prepare(
             `INSERT INTO search_index(rowid,id,name) SELECT rowid,id,name FROM nodes

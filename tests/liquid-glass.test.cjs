@@ -458,7 +458,7 @@ test('per-surface budgets bound DPR, texture dimensions and total pixels', () =>
   }
 });
 
-test('real WebGL2 API path compiles GLSL, uploads one texture and draws/copies bounded surfaces using one context', () => {
+test('WebGL2 API contract submits GLSL, uploads one texture and draws/copies bounded surfaces using one context', () => {
   const f = fixture();
   const statuses = [];
   const renderer = createRenderer(
@@ -580,14 +580,21 @@ function materialMount(options = {}) {
     });
   };
   const values = new Map([
-    ['--liquid-opacity', '0.82'],
-    ['--frost-opacity', '0.92']
+    ['--floating-opacity', '0.35'],
+    ['--dialog-opacity', '0.35']
   ]);
   const root = {
-    dataset: { liquidGlass: options.off ? 'off' : 'on', theme: 'light', motion: 'low' },
+    dataset: {
+      liquidGlass: options.off ? 'off' : 'on',
+      theme: 'light',
+      motion: 'high',
+      wallpaper: options.wallpaper ? 'on' : 'off'
+    },
     style: { getPropertyValue: (name) => values.get(name) || '' }
   };
   const hosts = [textHost(box(20, 20, 180, 60)), textHost(box(300, 20, 220, 60))];
+  if (options.frostHost)
+    hosts[1].matches = (selector) => selector === '.modal:not(.viewer),#media-editor';
   for (const host of hosts) {
     host.dataset = {};
     host.children = [];
@@ -598,16 +605,40 @@ function materialMount(options = {}) {
   }
   const mutations = [];
   const counts = { rootReads: 0, hostReads: 0, contexts: 0, canvases: 0 };
+  const wallpaperDraws = [],
+    wallpaper = {
+      complete: true,
+      naturalWidth: 2400,
+      naturalHeight: 1600,
+      src: 'album-wallpaper://test',
+      getClientRects: () => [{}],
+      getBoundingClientRect: () => box(-50, -40, 900, 680)
+    },
+    shade = {};
   const ctx = {
+    save() {},
+    restore() {},
     fillRect() {},
     clearRect() {},
-    drawImage() {}
+    getImageData() {
+      if (options.unsafeWallpaper) throw new Error('unsafe source');
+    },
+    drawImage(...args) {
+      wallpaperDraws.push({ args, filter: this.filter });
+    }
   };
   const doc = eventNode({
     documentElement: root,
     body: {},
     hidden: false,
-    querySelector: () => null,
+    querySelector: (selector) =>
+      options.wallpaper
+        ? selector === '#app-wallpaper > img'
+          ? wallpaper
+          : selector === '#app-wallpaper > .wallpaper-shade'
+            ? shade
+            : null
+        : null,
     querySelectorAll: (selector) => (selector === surfaces ? hosts : []),
     createElement() {
       counts.canvases++;
@@ -626,15 +657,26 @@ function materialMount(options = {}) {
       });
     }
   });
-  const media = eventNode({ matches: !!options.reduced });
+  const media = {
+    motion: eventNode({ matches: !!options.reduced }),
+    transparency: eventNode({ matches: !!options.reducedTransparency }),
+    colors: eventNode({ matches: !!options.forcedColors })
+  };
   const win = eventNode(
     Object.assign(clock(), {
       document: doc,
       innerWidth: 800,
       innerHeight: 600,
       devicePixelRatio: 1,
-      matchMedia: () => media,
+      matchMedia: (query) =>
+        query.includes('reduced-transparency')
+          ? media.transparency
+          : query.includes('forced-colors')
+            ? media.colors
+            : media.motion,
       getComputedStyle(node) {
+        if (node === shade)
+          return { backdropFilter: 'blur(14px)', backgroundColor: 'rgba(20, 20, 30, 0.2)' };
         if (node === root) {
           counts.rootReads++;
           return root.style;
@@ -663,11 +705,11 @@ function materialMount(options = {}) {
   );
   const api = mount(win);
   const change = (
-    liquid = values.get('--liquid-opacity'),
-    frost = values.get('--frost-opacity')
+    liquid = values.get('--floating-opacity'),
+    frost = values.get('--dialog-opacity')
   ) => {
-    values.set('--liquid-opacity', String(liquid));
-    values.set('--frost-opacity', String(frost));
+    values.set('--floating-opacity', String(liquid));
+    values.set('--dialog-opacity', String(frost));
     win.emit('album-appearance-change');
   };
   return {
@@ -676,10 +718,44 @@ function materialMount(options = {}) {
     api,
     counts,
     hosts,
+    root,
+    doc,
+    media,
     change,
+    wallpaperDraws,
     mutate: (records) => mutations.forEach((callback) => callback(records))
   };
 }
+
+test('wallpaper uses the safe source and existing scene budget, with CSS-only accessibility fallback', () => {
+  const f = materialMount({ wallpaper: true });
+  f.win.tick();
+  const stats = f.api.stats();
+  assert.equal(stats.sampledWallpaper, 1);
+  assert.equal(stats.sampledImages, 1);
+  assert.equal(stats.securityChecks, 1);
+  assert.equal(stats.sceneWidth, 640);
+  const draw = f.wallpaperDraws.find(({ filter }) => filter?.startsWith('blur('));
+  assert.equal(Math.max(draw.args[0].width, draw.args[0].height), 128);
+  assert.deepEqual(draw.args.slice(1), [-40, -32, 720, 544]);
+  assert.equal(draw.filter, 'blur(11.200000000000001px)');
+  f.api.refresh();
+  f.win.tick();
+  assert.equal(f.api.stats().securityChecks, 1, 'The decoded source security check is cached');
+  f.api.destroy();
+  for (const options of [
+    { off: true },
+    { reducedTransparency: true },
+    { forcedColors: true },
+    { unsafeWallpaper: true }
+  ]) {
+    const other = materialMount({ wallpaper: true, ...options });
+    other.win.tick();
+    assert.equal(other.api.stats().sampledWallpaper, 0);
+    assert.equal(other.api.stats().sampledImages, 0);
+    other.api.destroy();
+  }
+});
 
 test('numeric range readouts do not rebuild the background scene, while real modal changes still do', () => {
   const f = materialMount();
@@ -703,7 +779,7 @@ test('numeric range readouts do not rebuild the background scene, while real mod
       type: 'childList',
       target: {
         nodeType: 1,
-        closest: (selector) => (selector === '.modal:not(.viewer)' ? {} : null)
+        closest: (selector) => (selector === '.modal:not(.viewer),#media-editor' ? {} : null)
       },
       addedNodes: [{ nodeType: 1 }],
       removedNodes: []
@@ -719,17 +795,17 @@ test('numeric range readouts do not rebuild the background scene, while real mod
 });
 
 test('material tokens clamp numeric alpha independently and preserve defaults', () => {
-  assert.deepEqual(materialSettings(null), { liquidOpacity: 0.82, frostOpacity: 0.92 });
+  assert.deepEqual(materialSettings(null), { floatingOpacity: 0.35, dialogOpacity: 0.35 });
   assert.deepEqual(
-    materialSettings({ getPropertyValue: (name) => (name.includes('liquid') ? '0' : '5') }),
+    materialSettings({ getPropertyValue: (name) => (name.includes('floating') ? '0' : '5') }),
     {
-      liquidOpacity: 0.1,
-      frostOpacity: 1
+      floatingOpacity: 0,
+      dialogOpacity: 1
     }
   );
   assert.deepEqual(materialSettings({ getPropertyValue: () => 'invalid' }), {
-    liquidOpacity: 0.82,
-    frostOpacity: 0.92
+    floatingOpacity: 0.35,
+    dialogOpacity: 0.35
   });
 });
 
@@ -770,11 +846,48 @@ test('appearance bursts reuse canvases, context, geometry and scene; same-value 
   assert.equal(f.api.stats().gpu.draws, changed.gpu.draws);
   for (let i = 0; i < 100; i++) f.change(undefined, 0.1 + i / 110);
   f.win.tick();
-  assert.equal(f.api.stats().gpu.draws, changed.gpu.draws, 'Frost is CSS-only');
-  assert.equal(f.counts.rootReads, 2);
+  assert.equal(
+    f.api.stats().gpu.draws,
+    changed.gpu.draws + 2,
+    'Dialog updates the shared material batch'
+  );
+  assert.equal(f.api.stats().gpu.uploads, baseline.gpu.uploads);
+  assert.equal(f.counts.hostReads, counts.hostReads);
+  assert.equal(f.counts.rootReads, 3);
   assert.equal(f.api.stats().pending, 0);
   f.win.tick(1000);
-  assert.equal(f.api.stats().gpu.draws, changed.gpu.draws, 'Idle material never self-schedules');
+  assert.equal(
+    f.api.stats().gpu.draws,
+    changed.gpu.draws + 2,
+    'Idle material never self-schedules'
+  );
+  f.api.destroy();
+});
+
+test('floating and dialog hosts keep independent full-range alpha without rebuilding the scene', () => {
+  const f = materialMount({ frostHost: true });
+  f.win.tick();
+  const baseline = f.api.stats();
+  const alpha = () =>
+    f.calls
+      .filter((call) => call[0] === 'uniform1f' && call[1] === 'opacity')
+      .slice(-2)
+      .map((call) => call[2]);
+  assert.deepEqual(alpha(), [0.35, 0.35]);
+  for (const [liquid, frost] of [
+    [0, 0.92],
+    [1, 0.92],
+    [1, 0],
+    [1, 1],
+    [0.35, 0.6]
+  ]) {
+    f.change(liquid, frost);
+    f.win.tick();
+    assert.deepEqual(alpha(), [liquid, frost]);
+    assert.equal(f.api.stats().sceneBuilds, baseline.sceneBuilds);
+    assert.equal(f.api.stats().gpu.uploads, baseline.gpu.uploads);
+  }
+  assert.equal(f.counts.contexts, 1);
   f.api.destroy();
 });
 
@@ -788,7 +901,11 @@ for (const options of [{ off: true }, { unavailable: true }, { reduced: true }])
       f.change(0.3, 0.4);
       f.win.tick();
       const stats = f.api.stats();
-      assert.deepEqual(stats.material, { liquidOpacity: 0.3, frostOpacity: 0.4, key: '0.3|0.4' });
+      assert.deepEqual(stats.material, {
+        floatingOpacity: 0.3,
+        dialogOpacity: 0.4,
+        key: '0.3|0.4'
+      });
       assert.equal(f.counts.contexts, initialContexts);
       if (options.off || options.unavailable) assert.equal(stats.gpu.draws || 0, 0);
       else {
@@ -811,6 +928,153 @@ for (const options of [{ off: true }, { unavailable: true }, { reduced: true }])
       f.api.destroy();
     }
   );
+
+for (const preference of ['transparency', 'colors']) {
+  const option = preference === 'transparency' ? 'reducedTransparency' : 'forcedColors';
+  test(`${preference} preference starts in CSS without allocating GL or optical canvases`, () => {
+    const f = materialMount({ [option]: true });
+    f.win.tick();
+    assert.equal(f.api.stats().opaqueMaterial, true);
+    assert.equal(f.root.dataset.liquidRenderer, 'css-accessible');
+    assert.equal(f.counts.contexts, 0);
+    assert.equal(f.counts.canvases, 0);
+    f.api.refresh({ immediate: true });
+    f.change(0.3, 0.4);
+    f.win.tick();
+    assert.equal(f.counts.contexts, 0, 'Immediate refresh cannot bypass accessibility');
+    assert.deepEqual(f.api.stats().material, {
+      floatingOpacity: 0.3,
+      dialogOpacity: 0.4,
+      key: '0.3|0.4'
+    });
+    f.media[preference].matches = false;
+    f.media[preference].emit('change');
+    f.win.tick();
+    assert.equal(f.api.stats().opaqueMaterial, false);
+    assert.equal(f.root.dataset.liquidRenderer, 'webgl2');
+    assert.equal(f.counts.contexts, 1);
+    assert.equal(f.api.stats().hosts, 2);
+    assert.equal(f.api.stats().gpu.draws, 2);
+    f.api.destroy();
+  });
+  test(`${preference} changes cancel pending work, release hosts and reuse the shared GL on restore`, () => {
+    const f = materialMount();
+    f.win.tick();
+    const before = f.api.stats();
+    f.api.refresh();
+    f.media[preference].matches = true;
+    f.media[preference].emit('change');
+    f.win.tick();
+    assert.equal(f.api.stats().gpu.draws, before.gpu.draws);
+    assert.equal(f.api.stats().sceneBuilds, before.sceneBuilds);
+    assert.equal(f.api.stats().hosts, 0);
+    assert.equal(f.api.stats().pending, 0);
+    f.change(0.3, 0.4);
+    f.api.refresh({ immediate: true });
+    f.win.tick();
+    assert.equal(f.api.stats().gpu.draws, before.gpu.draws);
+    f.media[preference].matches = false;
+    f.media[preference].emit('change');
+    f.win.tick();
+    assert.equal(f.api.stats().gpu.draws, before.gpu.draws + 2);
+    assert.equal(f.api.stats().gpu.uploads, before.gpu.uploads + 1);
+    assert.equal(f.counts.contexts, 1);
+    assert.equal(f.api.stats().pending, 0);
+    f.api.destroy();
+    const draws = f.api.stats().gpu.draws;
+    f.media[preference].matches = true;
+    f.media[preference].emit('change');
+    f.win.tick();
+    assert.equal(f.api.stats().gpu.draws, draws, 'Destroyed listeners stay detached');
+  });
+}
+
+test('diagnostics and frame scheduling do not read or consume pending native media changes', () => {
+  const f = materialMount();
+  f.win.tick();
+  let reads = 0;
+  for (const query of [f.media.transparency, f.media.colors]) {
+    let value = query.matches;
+    Object.defineProperty(query, 'matches', {
+      configurable: true,
+      get() {
+        reads++;
+        return value;
+      },
+      set(next) {
+        value = next;
+      }
+    });
+  }
+  f.media.colors.matches = true;
+  for (let i = 0; i < 20; i++) {
+    assert.equal(
+      f.api.stats().opaqueMaterial,
+      false,
+      'Pending native change is not consumed by observation'
+    );
+    f.api.refresh();
+    f.win.tick();
+  }
+  assert.equal(reads, 0);
+  f.media.colors.emit('change', { matches: true });
+  f.win.tick();
+  assert.equal(f.api.stats().opaqueMaterial, true);
+  assert.equal(f.api.stats().hosts, 0);
+  f.media.colors.matches = false;
+  f.api.stats();
+  f.media.colors.emit('change', { matches: false });
+  f.win.tick();
+  assert.equal(f.api.stats().opaqueMaterial, false);
+  assert.equal(f.api.stats().hosts, 2);
+  assert.equal(reads, 0, 'Native event values update the cache without reading MQL getters');
+  f.api.destroy();
+});
+
+test('opaque material stays active until both accessibility preferences clear', () => {
+  const f = materialMount({ reducedTransparency: true, forcedColors: true });
+  f.media.transparency.matches = false;
+  f.media.transparency.emit('change');
+  f.win.tick();
+  assert.equal(f.counts.contexts, 0);
+  f.media.colors.matches = false;
+  f.media.colors.emit('change');
+  f.win.tick();
+  assert.equal(f.counts.contexts, 1);
+  f.api.destroy();
+});
+
+test('reduced motion resets pointer lighting and ignores subsequent pointer draws without scene uploads', () => {
+  const f = materialMount();
+  f.root.dataset.motion = 'high';
+  f.win.tick();
+  const initial = f.api.stats();
+  const target = { closest: () => f.hosts[0] };
+  const pointer = { target, pointerType: 'mouse', buttons: 0, clientX: 20, clientY: 80 };
+  f.doc.emit('pointermove', pointer);
+  f.win.tick();
+  assert.equal(f.api.stats().gpu.draws, initial.gpu.draws + 1);
+  assert.deepEqual(
+    f.calls.filter((call) => call[0] === 'uniform2f' && call[1] === 'light').at(-1),
+    ['uniform2f', 'light', -1, -1]
+  );
+  f.media.motion.matches = true;
+  f.media.motion.emit('change');
+  f.win.tick();
+  const reduced = f.api.stats();
+  assert.equal(reduced.reducedMotion, true);
+  assert.equal(reduced.gpu.uploads, initial.gpu.uploads);
+  assert.deepEqual(
+    f.calls.filter((call) => call[0] === 'uniform2f' && call[1] === 'light').at(-1),
+    ['uniform2f', 'light', -0.65, 0.8]
+  );
+  for (let i = 0; i < 100; i++) f.doc.emit('pointermove', pointer);
+  f.win.tick(1000);
+  assert.equal(f.api.stats().gpu.draws, reduced.gpu.draws);
+  assert.equal(f.api.stats().pending, 0);
+  assert.equal(f.counts.contexts, 1);
+  f.api.destroy();
+});
 
 test('surface allowlist excludes cards and nested navigation filters', () => {
   assert.ok(surfaces.includes('.topbar > .navigation'));

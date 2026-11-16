@@ -33,6 +33,8 @@
     <link rel="stylesheet" href="progress-refinement.css" />
     <link rel="stylesheet" href="appearance.css" />
     <link rel="stylesheet" href="rename-dialog.css" />
+    <link rel="stylesheet" href="source-status.css" />
+    <link rel="stylesheet" href="wallpaper.css" />
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -82,8 +84,8 @@
         <button
           id="theme-button"
           class="icon-button"
-          aria-label="切换深浅主题"
-          title="切换深浅主题"
+          aria-label="切换到月之暗面"
+          title="切换到月之暗面"
           data-icon="moon"
         ></button
         ><span class="toolbar-divider"></span
@@ -287,6 +289,16 @@
               <p id="page-description">把散落的画面，整理成喜欢的世界。</p>
             </div>
           </div>
+          <section id="source-status" class="source-status" role="status" aria-live="polite" hidden>
+            <div>
+              <strong id="source-status-title"></strong>
+              <p id="source-status-detail"></p>
+            </div>
+            <div class="source-status-actions">
+              <button id="source-retry" class="subtle-button">重新连接</button
+              ><button id="source-relink" class="subtle-button">重新匹配文件夹…</button>
+            </div>
+          </section>
           <div id="intro-area"></div>
           <section id="timeline-controls" class="timeline-controls" hidden>
             <div>
@@ -307,9 +319,6 @@
           <div id="empty-state"></div>
           <div id="category-overview"></div>
           <div id="virtual-grid" class="virtual-grid"></div>
-          <div class="page-footnote" id="page-footnote">
-            <span data-icon="shield"></span>热爱留在本地，原图留在原处
-          </div>
         </div>
         <footer class="statusbar">
           <span id="footer-location">ACG-album · 本地相册</span
@@ -408,7 +417,10 @@
     <script src="crop.js"></script>
     <script src="../appearance-settings.cjs"></script>
     <script src="appearance.js"></script>
+    <script src="../wallpaper-settings.cjs"></script>
+    <script src="wallpaper.js"></script>
     <script src="effects.js"></script>
+    <script src="vendor/glasswork-lens.js"></script>
     <script src="liquid-glass.js"></script>
     <script src="theme.js"></script>
     <script src="display.js"></script>

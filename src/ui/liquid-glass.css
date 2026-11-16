@@ -1,19 +1,41 @@
 @charset "UTF-8";
-/* A single shared WebGL2 renderer copies bounded full-surface optical layers.
+/* Small trial controls use a native SVG backdrop rim; other surfaces retain
+   a single shared WebGL2 renderer with bounded optical layers.
    CSS backdrop-filter below the layer still samples actual DOM pixels. The GPU
    texture is only an image/theme proxy, never a screenshot of the interface. */
 :root {
-  --liquid-opacity: 0.82;
-  --frost-opacity: 0.92;
-  --liquid-body-tint: rgba(247, 244, 255, var(--liquid-opacity));
-  --frost-body-tint: rgba(247, 244, 255, var(--frost-opacity));
+  --liquid-floating-opacity: 0.5;
+  --liquid-dialog-opacity: 0.55;
+  --frost-floating-opacity: 0.5;
+  --frost-dialog-opacity: 0.6;
+  --floating-opacity: var(--liquid-floating-opacity);
+  --dialog-opacity: var(--liquid-dialog-opacity);
+  --glass-tint-rgb: 247, 244, 255;
+  --glass-highlight-rgb: 255, 255, 255;
+  --glass-highlight-alpha: 0.32;
+  --glass-bloom-alpha: 0.07;
+  --glass-depth-alpha: 0.018;
+  --glass-blur: 18px;
+  --glass-saturation: 1.18;
+  --glass-elevation: 0 2px 6px rgba(49, 37, 75, 0.035), 0 10px 28px var(--liquid-shade);
 }
 :root[data-theme='dark'] {
-  --liquid-body-tint: rgba(30, 26, 46, var(--liquid-opacity));
-  --frost-body-tint: rgba(30, 26, 46, var(--frost-opacity));
+  --glass-tint-rgb: 30, 26, 46;
+  --glass-highlight-rgb: 237, 233, 255;
+  --glass-highlight-alpha: 0.12;
+  --glass-bloom-alpha: 0.025;
+  --glass-depth-alpha: 0.055;
+  --glass-saturation: 1.12;
+  --glass-elevation: 0 2px 6px rgba(3, 2, 12, 0.14), 0 12px 30px var(--liquid-shade);
 }
-/* Material alpha belongs to the background, never the foreground content.
-   Both tokens still work with liquid disabled, failed GL or no blur support. */
+:root[data-liquid-glass='off'] {
+  --floating-opacity: var(--frost-floating-opacity);
+  --dialog-opacity: var(--frost-dialog-opacity);
+  --glass-blur: 24px;
+  --glass-saturation: 1.02;
+}
+/* Both modes share full-face tint and real backdrop blur. Alpha belongs only
+   to the material; text and controls keep their original opacity and geometry. */
 :root[data-theme]
   :is(
     .sidebar-shell,
@@ -27,17 +49,23 @@
     .album-select-list,
     .progress-panel,
     .toast,
-    .modal:not(.viewer)
+    .modal:not(.viewer),
+    :where(#media-editor)
   ) {
-  --glass-base-tint: var(--liquid-body-tint);
-  --glass-material-opacity: var(--liquid-opacity);
-  background: var(--glass-base-tint);
+  --glass-material-opacity: var(--floating-opacity);
+  --glass-material-default-opacity: 1;
+  --glass-base-tint: rgba(var(--glass-tint-rgb), var(--glass-material-opacity));
+  --glass-background: var(--glass-base-tint);
+  background: var(--glass-background);
+  border-color: var(--liquid-edge);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(calc(var(--glass-blur) * var(--glass-material-opacity)))
+    saturate(calc(1 + (var(--glass-saturation) - 1) * var(--glass-material-opacity)));
 }
-/* Windows use a uniformly denser reading surface, with full left/right coverage. */
-:root[data-theme] .modal:not(.viewer) {
-  --glass-base-tint: var(--frost-body-tint);
-  --glass-material-opacity: var(--frost-opacity);
-  backdrop-filter: blur(calc(18px * var(--frost-opacity) / 0.92)) saturate(1.35);
+/* Dialog is a semantic group, never a hard-coded frost style. Nested floating
+   menus establish their own group even when they live inside a dialog. */
+:root[data-theme] :is(.modal:not(.viewer), #media-editor) {
+  --glass-material-opacity: var(--dialog-opacity);
 }
 @supports (backdrop-filter: blur(1px)) {
   :root[data-liquid-glass='on']
@@ -53,22 +81,59 @@
       .album-select-list,
       .progress-panel,
       .toast,
-      .modal:not(.viewer)
+      .modal:not(.viewer),
+      :where(#media-editor)
     ) {
-    background:
-      linear-gradient(
-        125deg,
-        rgba(255, 255, 255, calc(0.09 * var(--glass-material-opacity))),
-        transparent 60%
+    --glass-background:
+      radial-gradient(
+        ellipse at 0 0,
+        rgba(
+          var(--glass-highlight-rgb),
+          calc(var(--glass-bloom-alpha) * var(--glass-material-opacity))
+        ),
+        transparent 65%
       ),
       linear-gradient(
-        175deg,
-        rgba(255, 255, 255, calc(0.04 * var(--glass-material-opacity))),
-        transparent 80%
+        160deg,
+        transparent 45%,
+        rgba(34, 24, 52, calc(var(--glass-depth-alpha) * var(--glass-material-opacity)))
       ),
       var(--glass-base-tint);
-    backdrop-filter: blur(calc(18px * var(--frost-opacity) / 0.92)) saturate(1.35);
   }
+}
+/* The SVG bends only pixels behind these hosts. Foreground text and controls
+   keep their original geometry, alpha, font, and focus treatment. No host filter.
+   Opacity, saturation and the user's 18px blur continue to use existing tokens. */
+:root[data-liquid-glass='on']
+  :is(.toolbar-right, .context-menu, .album-select-list)[data-glasswork-native] {
+  /* Nested popups must never inherit a parent's filter while their map decodes. */
+  --glass-lens: ;
+  backdrop-filter: blur(
+      calc(
+        var(--glass-blur) * var(--glass-material-opacity) / var(--glass-material-default-opacity)
+      )
+    )
+    saturate(calc(1 + (var(--glass-saturation) - 1) * var(--glass-material-opacity)))
+    var(--glass-lens,);
+}
+/* An empty material also removes SVG refraction. No foreground opacity changes. */
+:root[data-floating-transparent='on']
+  :is(
+    .sidebar-shell,
+    .topbar > .brand,
+    .topbar > .navigation,
+    .topbar > .search-wrap,
+    .topbar > .header-actions,
+    .toolbar-right,
+    .back-to-top,
+    .context-menu,
+    .album-select-list,
+    .progress-panel,
+    .toast
+  ),
+:root[data-dialog-transparent='on'] :is(.modal:not(.viewer), :where(#media-editor)) {
+  background: transparent;
+  backdrop-filter: none;
 }
 /* No separate center mask, inner transition band or opacity seam. */
 :root [data-liquid-glass-host] {
@@ -116,7 +181,8 @@
     .album-select-list,
     .progress-panel,
     .toast,
-    .modal:not(.viewer)
+    .modal:not(.viewer),
+    :where(#media-editor)
   ) {
   --glass-text-shadow: none;
   --glass-white-text-shadow: none;
@@ -137,7 +203,8 @@
     .album-select-list,
     .progress-panel,
     .toast,
-    .modal:not(.viewer)
+    .modal:not(.viewer),
+    :where(#media-editor)
   )
   :is(button, input, textarea, select, .album-select-option) {
   text-shadow: var(--glass-text-shadow, none);
@@ -158,7 +225,8 @@
     .album-select-list,
     .progress-panel,
     .toast,
-    .modal:not(.viewer)
+    .modal:not(.viewer),
+    :where(#media-editor)
   )
   svg {
   filter: none;
@@ -181,8 +249,484 @@
 :root:not([data-text-shadow='on']) :is(input, textarea)::placeholder {
   text-shadow: none !important;
 }
-/* The optical layer is static between invalidations. There is deliberately no
-   CSS animation or transition on it, including progress-panel contents. */
-:root[data-liquid-renderer='webgl2'][data-liquid-glass='on'] [data-liquid-glass-host] {
-  border-color: color-mix(in srgb, var(--liquid-edge) 75%, transparent);
+/* One static, 1px masked reflection per visible optical host. Its two soft
+   lobes fade around the curve, leaving the body and all pointer targets clear.
+   No animation, filter, extra DOM, raster noise or full-screen paint layer. */
+@supports (mask-composite: exclude) {
+  :root[data-liquid-glass='on'] [data-liquid-glass-host]:not(:focus-within)::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    z-index: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background:
+      radial-gradient(
+        ellipse at 12% 0,
+        rgba(
+          var(--glass-highlight-rgb),
+          calc(var(--glass-highlight-alpha) * var(--glass-material-opacity))
+        ),
+        transparent 62%
+      ),
+      linear-gradient(
+        135deg,
+        transparent 62%,
+        rgba(var(--glass-highlight-rgb), calc(0.035 * var(--glass-material-opacity)))
+      );
+    mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+}
+/* Dialog interiors share the existing material, including controls in retained
+   settings panels and the standalone wallpaper editor. Specificity deliberately
+   exceeds the later appearance/wallpaper sheets. Transparent layout containers,
+   photo previews, avatars and primary action fills remain their own content.
+   The outer dialog samples and blurs the backdrop once. Inner surfaces add only
+   a light tint; repeating full dialog paint/blur here flattens the real backdrop. */
+:root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+  --settings-glass-opacity: calc(var(--dialog-opacity) * 0.18);
+  --settings-glass-tint: rgba(var(--glass-tint-rgb), var(--settings-glass-opacity));
+  --settings-glass-sheen: none;
+  --settings-glass-fill: var(--settings-glass-sheen), var(--settings-glass-tint);
+  --settings-glass-filter: none;
+  --settings-glass-edge: color-mix(
+    in srgb,
+    var(--line) calc(100% * var(--dialog-opacity)),
+    transparent
+  );
+  --settings-glass-rim: none;
+  --settings-glass-state: color-mix(
+    in srgb,
+    var(--accent) calc(100% * var(--settings-glass-opacity)),
+    transparent
+  );
+  --settings-glass-state-fill:
+    var(--settings-glass-sheen),
+    color-mix(in srgb, var(--settings-glass-tint) 90%, var(--settings-glass-state));
+  --settings-glass-state-edge: color-mix(
+    in srgb,
+    var(--accent) calc(45% * var(--dialog-opacity)),
+    transparent
+  );
+  --settings-glass-checked-fill: color-mix(
+    in srgb,
+    var(--accent) calc(100% * var(--dialog-opacity)),
+    transparent
+  );
+  --settings-glass-state-outline: var(--accent);
+}
+@supports (backdrop-filter: blur(1px)) {
+  :root[data-liquid-glass='on'] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+    --settings-glass-sheen: linear-gradient(
+      145deg,
+      rgba(
+        var(--glass-highlight-rgb),
+        calc(var(--glass-bloom-alpha) * var(--settings-glass-opacity))
+      ),
+      transparent 58%
+    );
+    --settings-glass-rim: inset 0 1px 0
+      rgba(var(--glass-highlight-rgb), calc(var(--glass-highlight-alpha) * var(--dialog-opacity)));
+  }
+}
+:root[data-theme]
+  :is(.modal:not(.viewer), .settings-nav, .settings-panel)
+  :is(
+    .settings-tabs,
+    .settings-nav,
+    .appearance-subtabs,
+    .appearance-range-row,
+    .settings-card,
+    .settings-group,
+    .setting-card,
+    .setting-group,
+    .cache-location,
+    .cache-card,
+    .cache-path,
+    .wallpaper-gallery-tabs,
+    .wallpaper-gallery-header,
+    .wallpaper-empty,
+    .wallpaper-card,
+    .wallpaper-upload,
+    .wallpaper-options,
+    .wallpaper-crop-ranges,
+    .wallpaper-selected-mark,
+    .wallpaper-card-actions button,
+    .wallpaper-editor-close,
+    .album-select-button,
+    .field-input,
+    .setting-row select,
+    .subtle-button,
+    .chip,
+    .switch
+  ) {
+  background: var(--settings-glass-fill);
+  backdrop-filter: var(--settings-glass-filter);
+  border-color: var(--settings-glass-edge);
+  box-shadow: var(--settings-glass-rim);
+}
+/* The moving settings indicator already supplies the active tab's geometry.
+   Mixing equally transparent light tints keeps the same inner alpha in active
+   controls; frost adds no gradient and opaque accent-soft cannot leak through.
+   Semantic outlines stay readable independently from the optical material. */
+:root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) .settings-tab-indicator {
+  background: var(--settings-glass-state-fill);
+  box-shadow: var(--settings-glass-rim);
+}
+:root[data-theme]
+  :is(.modal:not(.viewer), .settings-nav, .settings-panel)
+  :is(
+    .appearance-subtabs button[aria-selected='true'],
+    .wallpaper-gallery-tabs button[aria-selected='true'],
+    .settings-nav button[aria-selected='true'],
+    .settings-nav button.active,
+    .chip.accent,
+    .wallpaper-card.is-selected,
+    .album-select-button[aria-expanded='true'],
+    .album-select-button:hover:enabled,
+    .subtle-button:hover:enabled,
+    .wallpaper-upload:hover:enabled,
+    .wallpaper-card-actions button:hover:enabled,
+    .wallpaper-editor-close:hover:enabled
+  ) {
+  background: var(--settings-glass-state-fill);
+  border-color: var(--settings-glass-state-edge);
+  box-shadow: var(--settings-glass-rim);
+}
+:root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) .switch:checked {
+  background: var(--settings-glass-checked-fill);
+  border-color: var(--settings-glass-state-edge);
+}
+:root[data-theme]
+  :is(.modal:not(.viewer), .settings-nav, .settings-panel)
+  :is(
+    .settings-tabs button.active,
+    .settings-tabs button[aria-selected='true'],
+    .settings-nav button.active,
+    .settings-nav button[aria-selected='true'],
+    .appearance-subtabs button[aria-selected='true'],
+    .wallpaper-gallery-tabs button[aria-selected='true'],
+    .wallpaper-card.is-selected,
+    .album-select-button[aria-expanded='true'],
+    .switch:checked
+  ):not(:focus-visible) {
+  outline: 1px solid var(--settings-glass-state-outline);
+  outline-offset: -1px;
+}
+:root[data-theme]
+  :is(.modal:not(.viewer), .settings-nav, .settings-panel)
+  :is(.album-select-button, .field-input)[aria-invalid='true']:not(:focus-visible) {
+  outline: 1px solid var(--red, #b93855);
+  outline-offset: -1px;
+}
+/* 100% removes optical paint, including state overlays and edge reflections.
+   Foreground, native range thumbs, checked knobs and focus rings keep their
+   original opacity. A zero transparency value keeps the outer dialog solid. */
+:root[data-dialog-transparent='on'] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+  --settings-glass-fill: transparent;
+  --settings-glass-state-fill: transparent;
+  --settings-glass-checked-fill: transparent;
+  --settings-glass-filter: none;
+  --settings-glass-edge: transparent;
+  --settings-glass-state-edge: transparent;
+  --settings-glass-rim: none;
+}
+/* A grouped range already sits on its options/crop surface. Keep that child's
+   optical paint clear; the group retains its tint and semantic boundaries. */
+:root[data-theme]
+  :is(.modal:not(.viewer), .settings-nav, .settings-panel)
+  :is(.wallpaper-options, .wallpaper-crop-ranges)
+  > .appearance-range-row {
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+/* An unavailable CSS backdrop has an honest solid fallback. System contrast
+   preferences below use the same path without changing saved opacity values. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+    --settings-glass-fill: var(--surface-solid);
+    --settings-glass-state-fill: var(--surface-solid);
+    --settings-glass-checked-fill: var(--accent);
+    --settings-glass-filter: none;
+    --settings-glass-edge: var(--line);
+    --settings-glass-state-edge: var(--accent);
+    --settings-glass-rim: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+    --settings-glass-fill: var(--surface-solid);
+    --settings-glass-state-fill: var(--surface-solid);
+    --settings-glass-checked-fill: var(--accent);
+    --settings-glass-filter: none;
+    --settings-glass-edge: var(--line);
+    --settings-glass-state-edge: var(--accent);
+    --settings-glass-rim: none;
+  }
+}
+@media (forced-colors: active) {
+  :root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) {
+    --settings-glass-fill: Canvas;
+    --settings-glass-state-fill: Canvas;
+    --settings-glass-checked-fill: Highlight;
+    --settings-glass-edge: CanvasText;
+    --settings-glass-state-edge: Highlight;
+    --settings-glass-state-outline: Highlight;
+  }
+}
+/* Saved opacity/font choices stay intact; system preferences only override
+   material rendering. This also covers unsupported or failed GPU contexts. */
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root[data-theme]
+    :is(
+      .sidebar-shell,
+      .topbar > .brand,
+      .topbar > .navigation,
+      .topbar > .search-wrap,
+      .topbar > .header-actions,
+      .toolbar-right,
+      .back-to-top,
+      .context-menu,
+      .album-select-list,
+      .progress-panel,
+      .toast,
+      .modal:not(.viewer),
+      :where(#media-editor)
+    ) {
+    background: var(--surface-solid);
+    backdrop-filter: none;
+    box-shadow: none;
+    border-color: var(--line);
+  }
+  :root .liquid-glass-canvas,
+  :root[data-liquid-glass='on'] [data-liquid-glass-host]::before {
+    display: none;
+  }
+}
+@media (forced-colors: active) {
+  :root[data-theme]
+    :is(
+      .sidebar-shell,
+      .topbar > .brand,
+      .topbar > .navigation,
+      .topbar > .search-wrap,
+      .topbar > .header-actions,
+      .toolbar-right,
+      .back-to-top,
+      .context-menu,
+      .album-select-list,
+      .progress-panel,
+      .toast,
+      .modal:not(.viewer),
+      :where(#media-editor)
+    ) {
+    color: CanvasText;
+    background: Canvas;
+    border-color: CanvasText;
+  }
+}
+/* Switching rails are floating surfaces, independent of the light dialog cards.
+   The sticky appearance rail samples the text scrolling inside settings-panel;
+   do not add a filter/opacity layer to that scroll container or its page wrapper.
+   Keep blur on the rail alone, with the same opacity-scaled blur/saturation as
+   other floating hosts. No additional GPU canvas or foreground blur is needed. */
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  :is(
+    .settings-tabs,
+    .appearance-subtabs,
+    .wallpaper-gallery-tabs,
+    .settings-nav,
+    .filter-tabs,
+    [role='tablist']
+  ) {
+  --settings-rail-opacity: var(--floating-opacity);
+  --settings-rail-tint: rgba(var(--glass-tint-rgb), var(--settings-rail-opacity));
+  --settings-rail-sheen: none;
+  --settings-rail-fill: var(--settings-rail-sheen), var(--settings-rail-tint);
+  --settings-rail-filter: blur(calc(var(--glass-blur) * var(--settings-rail-opacity)))
+    saturate(calc(1 + (var(--glass-saturation) - 1) * var(--settings-rail-opacity)));
+  --settings-rail-edge: var(--liquid-edge);
+  --settings-rail-shadow: var(--glass-elevation);
+  --settings-rail-state: color-mix(
+    in srgb,
+    var(--accent) calc(100% * var(--settings-rail-opacity)),
+    transparent
+  );
+  --settings-rail-state-fill: color-mix(
+    in srgb,
+    var(--settings-rail-tint) 90%,
+    var(--settings-rail-state)
+  );
+  --settings-rail-state-edge: color-mix(
+    in srgb,
+    var(--accent) calc(45% * var(--settings-rail-opacity)),
+    transparent
+  );
+  --settings-rail-state-outline: var(--accent);
+  background: var(--settings-rail-fill);
+  backdrop-filter: var(--settings-rail-filter);
+  border-color: var(--settings-rail-edge);
+  box-shadow: var(--settings-rail-shadow);
+}
+@supports (backdrop-filter: blur(1px)) {
+  :root[data-theme][data-liquid-glass='on']
+    .modal:not(.viewer)
+    :is(
+      .settings-tabs,
+      .appearance-subtabs,
+      .wallpaper-gallery-tabs,
+      .settings-nav,
+      .filter-tabs,
+      [role='tablist']
+    ) {
+    --settings-rail-sheen:
+      radial-gradient(
+        ellipse at 0 0,
+        rgba(
+          var(--glass-highlight-rgb),
+          calc(var(--glass-bloom-alpha) * var(--settings-rail-opacity))
+        ),
+        transparent 65%
+      ),
+      linear-gradient(
+        160deg,
+        transparent 45%,
+        rgba(34, 24, 52, calc(var(--glass-depth-alpha) * var(--settings-rail-opacity)))
+      );
+  }
+}
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  :is(
+    .settings-tabs,
+    .appearance-subtabs,
+    .wallpaper-gallery-tabs,
+    .settings-nav,
+    .filter-tabs,
+    [role='tablist']
+  )
+  :is(button, .settings-tab-indicator) {
+  background: transparent;
+  backdrop-filter: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  :is(
+    .settings-tabs,
+    .appearance-subtabs,
+    .wallpaper-gallery-tabs,
+    .settings-nav,
+    .filter-tabs,
+    [role='tablist']
+  )
+  :is(.settings-tab-indicator, button.active, button[aria-selected='true']) {
+  background: var(--settings-rail-state-fill);
+  border-color: var(--settings-rail-state-edge);
+  box-shadow: none;
+}
+/* The moving indicator paints the top-level active state exactly once. */
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  .settings-tabs
+  button:is(.active, [aria-selected='true']) {
+  background: transparent;
+  border-color: transparent;
+}
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  :is(
+    .settings-tabs,
+    .appearance-subtabs,
+    .wallpaper-gallery-tabs,
+    .settings-nav,
+    .filter-tabs,
+    [role='tablist']
+  )
+  button:is(.active, [aria-selected='true']):not(:focus-visible) {
+  outline: 1px solid var(--settings-rail-state-outline);
+  outline-offset: -1px;
+}
+/* The floating 100% endpoint clears rails even inside a painted dialog. The
+   dialog endpoint deliberately leaves their independently chosen material alone. */
+:root[data-theme][data-floating-transparent='on']
+  .modal:not(.viewer)
+  :is(
+    .settings-tabs,
+    .appearance-subtabs,
+    .wallpaper-gallery-tabs,
+    .settings-nav,
+    .filter-tabs,
+    [role='tablist']
+  ) {
+  --settings-rail-fill: transparent;
+  --settings-rail-state-fill: transparent;
+  --settings-rail-filter: none;
+  --settings-rail-edge: transparent;
+  --settings-rail-state-edge: transparent;
+  --settings-rail-shadow: none;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-theme][data-liquid-glass]
+    .modal:not(.viewer)
+    :is(
+      .settings-tabs,
+      .appearance-subtabs,
+      .wallpaper-gallery-tabs,
+      .settings-nav,
+      .filter-tabs,
+      [role='tablist']
+    ) {
+    --settings-rail-fill: var(--surface-solid);
+    --settings-rail-state-fill: var(--surface-solid);
+    --settings-rail-filter: none;
+    --settings-rail-edge: var(--line);
+    --settings-rail-state-edge: var(--accent);
+    --settings-rail-shadow: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  :root[data-theme][data-liquid-glass]
+    .modal:not(.viewer)
+    :is(
+      .settings-tabs,
+      .appearance-subtabs,
+      .wallpaper-gallery-tabs,
+      .settings-nav,
+      .filter-tabs,
+      [role='tablist']
+    ) {
+    --settings-rail-fill: var(--surface-solid);
+    --settings-rail-state-fill: var(--surface-solid);
+    --settings-rail-filter: none;
+    --settings-rail-edge: var(--line);
+    --settings-rail-state-edge: var(--accent);
+    --settings-rail-shadow: none;
+  }
+}
+@media (forced-colors: active) {
+  :root[data-theme][data-liquid-glass]
+    .modal:not(.viewer)
+    :is(
+      .settings-tabs,
+      .appearance-subtabs,
+      .wallpaper-gallery-tabs,
+      .settings-nav,
+      .filter-tabs,
+      [role='tablist']
+    ) {
+    --settings-rail-fill: Canvas;
+    --settings-rail-state-fill: Canvas;
+    --settings-rail-edge: CanvasText;
+    --settings-rail-state-edge: Highlight;
+    --settings-rail-state-outline: Highlight;
+    color: CanvasText;
+  }
 }

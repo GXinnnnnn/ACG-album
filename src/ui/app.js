@@ -74,6 +74,7 @@ const S = {
   roots: [],
   settings: {
     ...window.albumAppearanceSpec.defaults,
+    ...window.albumWallpaperSpec.defaults,
     ratio: 'poster',
     theme: 'light',
     autoMatch: true
@@ -125,8 +126,9 @@ function applySettings() {
     S.settings.ratio === 'tall' ? 9 / 16 : S.settings.ratio === 'square' ? 1 : 3 / 4.12
   );
   $('#theme-button').innerHTML = svg(S.settings.theme === 'dark' ? 'sun' : 'moon');
-  $('#theme-button').title = S.settings.theme === 'dark' ? '切换到明亮主题' : '切换到深色主题';
-  $('#theme-button').setAttribute('aria-label', $('#theme-button').title);
+  const themeAction = S.settings.theme === 'dark' ? '切换到月之亮面' : '切换到月之暗面';
+  $('#theme-button').title = themeAction;
+  $('#theme-button').setAttribute('aria-label', themeAction);
   if ($('#theme-select')) $('#theme-select').value = S.settings.theme;
   window.applyNavigationSettings?.();
   window.albumEffects?.apply(S.settings);
@@ -136,6 +138,7 @@ function applySettings() {
   applyDisplaySettings();
   window.albumAppearance.apply(S.settings);
   window.albumAppearanceControls?.sync();
+  window.albumWallpaper?.apply(S.settings);
 }
 window.albumAppearanceControls = window.albumAppearance.createController({
   settings: () => S.settings,
@@ -149,6 +152,12 @@ async function saveSetting(key, value) {
   S.settings[key] = value;
   applySettings();
 }
+window.albumWallpaper.configure({
+  getSettings: () => S.settings,
+  save: saveSetting,
+  call: api,
+  notify: toast
+});
 window.albumHomeCopy?.mount({ settings: () => S.settings, save: saveSetting, notify: toast });
 if (!window.albumBrowseSort?.create) throw new Error('排序偏好模块未加载，请重新启动应用');
 const browseSortMemory = window.albumBrowseSort.create({
@@ -283,7 +292,9 @@ async function navigate(
   $('#viewport').focus({ preventScroll: true });
 }
 function requestBrowseFilesystemSync(version, key) {
-  if (version !== S.loadVersion || key !== viewKey() || !S.parent || S.current?.missing) return;
+  if (version !== S.loadVersion || key !== viewKey() || !S.parent) return;
+  void probeBrowseSource(version, key);
+  if (S.current?.missing || sourceIsOffline(S.current)) return;
   void api('filesystemSync', { reason: 'browse', id: S.parent }).catch(() => {});
 }
 async function back() {
@@ -310,6 +321,111 @@ async function back() {
     S.sort === previous.sort && S.direction === previous.direction
       ? previous.scroll || 0
       : S.scrolls.get(viewKey()) || 0;
+}
+const rootProbeRequests = new Set();
+const rootRecoveryRequests = new Set();
+function sourceRoot(node = S.current) {
+  return S.roots.find((root) => root.id === (node?.root || node?.id)) || null;
+}
+function sourceIsOffline(node) {
+  return (sourceRoot(node)?.rootStatus || node?.rootStatus)?.status === 'offline';
+}
+function applyRootStatus(status) {
+  if (!status?.id) return;
+  const root = S.roots.find((node) => node.id === status.id);
+  if (!root) return;
+  root.rootStatus = status;
+  if (S.current && (S.current.root || S.current.id) === root.id) S.current.rootStatus = status;
+  updateSidebar();
+  renderSourceStatus();
+}
+function renderSourceStatus() {
+  const panel = $('#source-status');
+  if (!panel) return;
+  const root = sourceRoot(),
+    offline = S.roots.filter(sourceIsOffline),
+    missing = S.current?.missing;
+  panel.hidden = !(sourceIsOffline(root) || missing || (!S.parent && offline.length));
+  if (panel.hidden) return;
+  const detached = sourceIsOffline(root);
+  $('#source-status-title').textContent = detached
+    ? '来源目录已离线'
+    : missing
+      ? '文件夹已不可用'
+      : `${offline.length} 个分类已离线`;
+  $('#source-status-detail').textContent = detached
+    ? '缓存、作品关联与手动设置已保留。接回设备后重新连接，或重新匹配文件夹；其他分类可继续使用。'
+    : missing
+      ? '目录可能已删除或改名。可以重新匹配文件夹，或返回其他分类。'
+      : '已暂停这些分类的后台访问。可在左侧右键重新连接或重新匹配文件夹，也可继续导入新目录。';
+  const target = missing ? S.current : root;
+  for (const [id, fn] of [
+    ['#source-retry', () => retrySource(root)],
+    ['#source-relink', () => relinkSource(target)]
+  ]) {
+    const button = $(id);
+    button.hidden = !target || (id === '#source-retry' && !root);
+    button.disabled =
+      !!target && (rootRecoveryRequests.has(target.id) || rootRecoveryRequests.has(root?.id));
+    button.onclick = () => attempt(fn);
+  }
+}
+async function probeBrowseSource(version, key) {
+  const root = sourceRoot();
+  if (!root || sourceIsOffline(root) || rootProbeRequests.has(root.id)) return;
+  const checkedAt = root.rootStatus?.checkedAt;
+  if (Date.now() - (typeof checkedAt === 'number' ? checkedAt : Date.parse(checkedAt) || 0) < 10000)
+    return;
+  rootProbeRequests.add(root.id);
+  try {
+    const result = await api('rootStatus', { id: root.id, probe: true });
+    for (const status of result.roots || []) applyRootStatus(status);
+    if (version === S.loadVersion && key === viewKey()) renderSourceStatus();
+  } catch {
+    // The read-only RPC has a deadline. A failed check must not hold navigation or import.
+  } finally {
+    rootProbeRequests.delete(root.id);
+  }
+}
+async function retrySource(root) {
+  if (!root || rootRecoveryRequests.has(root.id)) return;
+  rootRecoveryRequests.add(root.id);
+  renderSourceStatus();
+  try {
+    const result = await api('retryRoot', { id: root.id });
+    if (result.root) applyRootStatus(result.root);
+    if (result.taskSnapshot) applyTaskSnapshot(result.taskSnapshot);
+    await loadSummary();
+    renderSourceStatus();
+    toast(
+      result.accepted
+        ? '目录已重新连接，正在更新索引'
+        : '目录仍不可用；已保留缓存，可重新匹配文件夹',
+      !result.accepted
+    );
+  } finally {
+    rootRecoveryRequests.delete(root.id);
+    renderSourceStatus();
+  }
+}
+async function relinkSource(node) {
+  if (!node || rootRecoveryRequests.has(node.id) || renamingNodes.size) return;
+  const saved = captureRenameNavigation(node);
+  rootRecoveryRequests.add(node.id);
+  renderSourceStatus();
+  try {
+    const result = await api(node.parent ? 'relinkFolder' : 'relinkRoot', { id: node.id });
+    if (!result) return;
+    const mapped = { ...result, renamed: true };
+    if (typeof rememberBrowseSortRenames === 'function') rememberBrowseSortRenames([mapped]);
+    grid.invalidateNavigationCache?.();
+    await applyRenameNavigation(mapped, saved);
+    renderSourceStatus();
+    toast('文件夹已重新匹配，关联与手动设置已保留');
+  } finally {
+    rootRecoveryRequests.delete(node.id);
+    renderSourceStatus();
+  }
 }
 function updateSidebar() {
   $('#root-count').textContent = S.roots.length;
@@ -476,6 +592,7 @@ function scheduleSummaryDetails() {
 }
 async function loadSummary() {
   const appearanceRevision = window.albumAppearanceControls.snapshot();
+  const wallpaperRevision = window.albumWallpaper.snapshot();
   const taskVersion = typeof startupTaskVersion === 'number' ? startupTaskVersion : null;
   const sortRead = typeof browseSortMemory !== 'undefined' ? browseSortMemory?.beginRead() : null;
   let init;
@@ -500,6 +617,7 @@ async function loadSummary() {
     )[1];
   }
   init.settings = window.albumAppearanceControls.mergeSummary(init.settings, appearanceRevision);
+  init.settings = window.albumWallpaper.mergeSummary(init.settings, wallpaperRevision);
   if (init.localIndex) window.albumLocalSearch?.setStatus(init.localIndex);
   S.roots = init.roots;
   const settingsChanged = Object.entries(init.settings).some(
@@ -513,6 +631,7 @@ async function loadSummary() {
   }
   renderSummaryStats(init.stats);
   updateSidebar();
+  renderSourceStatus();
   if (init.dateMigration && typeof showDateMigration === 'function')
     showDateMigration(init.dateMigration);
   return init;
@@ -532,11 +651,13 @@ async function loadPage(keepScroll = false) {
     S.current = recovery.node;
     if (recovery.unavailable && previousCurrent?.id === S.parent && grid.active) {
       $('#footer-status').textContent = '来源目录暂时不可用，已保留关联与缓存资料';
+      renderSourceStatus();
       return;
     }
     if (!recovery.unavailable) S.parent = recovery.node?.id || null;
   }
   if (S.parent && !S.current) S.parent = null;
+  renderSourceStatus();
   if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
   // Restore the already decoded cards synchronously, before breadcrumbs or any
   // background list validation can finish. A cold load owns its single reset.
@@ -559,7 +680,7 @@ async function loadPage(keepScroll = false) {
     : S.current
       ? 'A WORLD WORTH KEEPING'
       : {
-          library: 'YOUR PERSONAL COLLECTION',
+          library: '',
           favorites: 'CLOSE TO YOUR HEART',
           pending: 'A LITTLE ATTENTION NEEDED'
         }[S.view];
@@ -585,6 +706,10 @@ async function loadPage(keepScroll = false) {
   $('#sort-direction').style.transform = S.direction === 'desc' ? 'rotate(180deg)' : '';
   updateMediaView();
   window.albumHomeCopy?.render(S.view === 'library' && !S.parent && !S.search);
+  $('#eyebrow').hidden =
+    S.view !== 'timeline' &&
+    (!$('#eyebrow').textContent.trim() ||
+      $('#eyebrow').textContent.trim() === 'YOUR PERSONAL COLLECTION');
   const ancestors = S.current ? await api('ancestors', { id: S.current.id }) : [];
   if (version !== S.loadVersion) return;
   renderBreadcrumbs(ancestors);
@@ -1107,6 +1232,7 @@ function characterBindModal(n) {
 }
 function openModal(title, html, width = 610) {
   void window.albumAppearanceControls.flush();
+  void window.albumWallpaper.flush();
   modalGeneration++;
   if (!$('#modal').open)
     modalReturnFocus = window.albumDialogInteraction.rememberFocus(document.activeElement);
@@ -1122,6 +1248,7 @@ function openModal(title, html, width = 610) {
 }
 function closeModal() {
   void window.albumAppearanceControls.flush();
+  void window.albumWallpaper.flush();
   $('#modal').close();
   window.albumDialogInteraction.restoreFocus(modalReturnFocus);
 }
@@ -1593,6 +1720,14 @@ function showContext(e, n) {
   const actions = [];
   const action = (label, icon, fn, extra = {}) => actions.push({ label, icon, fn, ...extra });
   if (n.kind === 'folder') {
+    const root = sourceRoot(n);
+    if (root && (sourceIsOffline(n) || n.missing))
+      action('重新连接来源目录', 'refresh', () => retrySource(root), {
+        disabled: rootRecoveryRequests.has(root.id)
+      });
+    action('重新匹配文件夹…', 'link', () => relinkSource(n), {
+      disabled: rootRecoveryRequests.has(n.id) || !!renamingNodes.size
+    });
     if (!n.parent) action('分类绑定设置…', 'sliders', () => rootBindingModal(n));
     action('相册类型…', 'folder', () => albumKindModal(n));
     action('按时间浏览此相册', 'clock', () =>
@@ -2084,7 +2219,10 @@ async function recoverMissingBrowse(current, version, key, previous = S.current)
     );
   const rootNode = root && (root.id === current?.id ? current : await api('get', { id: root.id }));
   if (!valid()) return null;
-  if (rootNode?.missing) return { node: cached || rootNode, unavailable: true };
+  // Keep an indexed missing folder addressable so the user can repair its mapping.
+  // No scan/retry is scheduled here; cached browsing must settle after one pass.
+  if (current?.missing || rootNode?.missing || sourceIsOffline(rootNode))
+    return { node: cached || rootNode, unavailable: true };
   const candidates = [];
   if (path) {
     let parent = path;
@@ -2556,6 +2694,7 @@ async function settingsModal(tab = 'appearance') {
   const dispose = () => {
     if (disposed) return;
     void window.albumAppearanceControls.flush();
+    void window.albumWallpaper.flush();
     disposed = true;
     serial++;
     observer.disconnect();
@@ -2662,13 +2801,57 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div><div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">浅色 · 雾樱</option><option value="dark">深色 · 夜藏</option></select></div><div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK_中</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div>${window.albumAppearance.markup()}<div class="setting-row"><div><strong>封面比例与更多显示设置</strong><p>卡片尺寸也可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div><div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">为侧栏与顶部悬浮组件加入通透磨砂和柔和高光，关闭时恢复静态材质。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div><div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div><p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p>`;
+        content.innerHTML = `<div class="appearance-subtabs" role="tablist" aria-label="外观分类">${['theme', 'glass', 'wallpaper'].map((name, i) => `<button type="button" id="appearance-tab-${name}" role="tab" data-appearance-page="${name}" aria-controls="appearance-page-${name}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${['主题', '玻璃', '壁纸'][i]}</button>`).join('')}</div>
+<section id="appearance-page-theme" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-theme" tabindex="0">
+<div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">月之亮面</option><option value="dark">月之暗面</option></select></div>
+<div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div>
+<div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div>
+${window.albumAppearance.markup('theme')}
+<div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div>
+<div class="setting-row"><div><strong>封面比例与更多显示设置</strong><p>卡片尺寸也可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div>
+<p class="muted"><span id="settings-appearance-version">ACG-album · 正在读取版本…</span><br>资料库使用 SQLite 保存；你的原始文件始终留在导入目录。</p></section>
+<section id="appearance-page-glass" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-glass" tabindex="0" hidden inert>
+<div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">开启使用液态玻璃，关闭使用磨砂玻璃；悬浮组件与各种弹窗统一切换，两种材质分别记住透明度。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div>${window.albumAppearance.markup('glass')}</section>
+<section id="appearance-page-wallpaper" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-wallpaper" tabindex="0" hidden inert>${window.albumWallpaper?.markup?.() || ''}</section>`;
+        const appearanceTabs = [...content.querySelectorAll('[data-appearance-page]')];
+        const chooseAppearancePage = (name, focus = false) => {
+          for (const button of appearanceTabs) {
+            const active = button.dataset.appearancePage === name;
+            button.setAttribute('aria-selected', String(active));
+            button.tabIndex = active ? 0 : -1;
+            const panel = content.querySelector(
+              '#appearance-page-' + button.dataset.appearancePage
+            );
+            panel.hidden = !active;
+            panel.inert = !active;
+            if (active && focus) button.focus();
+          }
+          content.scrollTop = 0;
+          window.albumLiquidGlass?.refresh?.();
+        };
+        for (const button of appearanceTabs) {
+          button.onclick = () => chooseAppearancePage(button.dataset.appearancePage);
+          button.addEventListener('keydown', (event) => {
+            const index = appearanceTabs.indexOf(button);
+            let next;
+            if (event.key === 'ArrowRight') next = (index + 1) % 3;
+            if (event.key === 'ArrowLeft') next = (index + 2) % 3;
+            if (event.key === 'Home') next = 0;
+            if (event.key === 'End') next = 2;
+            if (next !== undefined) {
+              event.preventDefault();
+              event.stopPropagation();
+              chooseAppearancePage(appearanceTabs[next].dataset.appearancePage, true);
+            }
+          });
+        }
         $('#sidebar-mode').value = S.settings.sidebarMode || 'auto';
         $('#sidebar-mode').onchange = (e) =>
           attempt(() => saveSetting('sidebarMode', e.target.value));
         $('#theme-select').value = S.settings.theme;
         $('#theme-select').onchange = (e) => attempt(() => changeTheme(e.target.value));
         window.albumAppearanceControls.mount(content);
+        window.albumWallpaper?.mount(content);
         $('#settings-density').onclick = densityModal;
         $('#liquid-glass').checked = S.settings.liquidGlass !== false;
         $('#liquid-glass').onchange = (event) =>
@@ -2754,6 +2937,7 @@ async function settingsModal(tab = 'appearance') {
   async function switchTab(name) {
     if (!alive()) return;
     void window.albumAppearanceControls.flush();
+    void window.albumWallpaper.flush();
     const ticket = ++serial;
     requested = name;
     settle();
@@ -3290,6 +3474,10 @@ window.album.onEvent((event) => {
     typeof rememberStructuralChange === 'function'
   )
     rememberStructuralChange(event.data);
+  if (event.type === 'root-status') {
+    applyRootStatus(event.data);
+    updateImportBusy();
+  }
   if (event.type === 'tasks') {
     const hadScanWork = hasStartupScanWork();
     applyTaskSnapshot(event.data);
