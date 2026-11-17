@@ -10,7 +10,7 @@ const { EventEmitter } = require('node:events');
 const {
   REQUIRED_RUNTIME_FILES,
   STANDARD_IDENTITY,
-  FONT_WEIGHTS,
+  LEGACY_BUNDLED_FONTS,
   sameIdentity,
   safeRuntimePath,
   validateRuntimeManifest,
@@ -54,6 +54,7 @@ function runtimeEntries(value) {
 }
 const repository = 'fixture-owner/fixture-repo';
 const version = '1.2.2';
+const FONT_WEIGHTS = ['regular', 'medium', 'semibold', 'bold', 'heavy'];
 const tag = 'release/1.2.2';
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const payload = Buffer.from('synthetic ZIP transport fixture, never an executable');
@@ -615,26 +616,53 @@ test('timeouts remain retryable errors, network failures and manual cancellation
   assert.equal((await h.service.download({ edition: 'standard' })).phase, 'ready');
 });
 
-test('five exact local font weights are SHA-bound, preserve retries, and reject partial or changed overlays', async (t) => {
+test('legacy overlay API never reads or extracts bundled fonts, including incomplete old bundles', async (t) => {
   const root = await temporary(t);
   const app = path.join(root, 'app.asar');
   const cache = path.join(root, 'cache');
-  assert.deepEqual(await prepareFontOverlay(app, cache), []);
   const folder = path.join(app, 'src', 'assets', 'fonts', 'founder-lanting-yuan');
   await fs.mkdir(folder, { recursive: true });
-  await fs.writeFile(path.join(folder, 'regular.ttf'), 'regular font fixture');
-  await assert.rejects(prepareFontOverlay(app, cache), /不完整/);
-  for (const weight of FONT_WEIGHTS)
-    await fs.writeFile(path.join(folder, weight + '.ttf'), weight + ' font fixture');
-  const overlay = await prepareFontOverlay(app, cache);
-  assert.equal(overlay.length, 5);
-  for (const entry of overlay) assert.equal(hash(await fs.readFile(entry.source)), entry.sha256);
-  assert.deepEqual(await prepareFontOverlay(app, cache), overlay);
-  await fs.writeFile(overlay[0].source, 'tampered overlay');
-  await assert.rejects(prepareFontOverlay(app, cache), /已改变/);
+  for (const weight of ['regular', ...FONT_WEIGHTS]) {
+    await fs.writeFile(path.join(folder, weight + '.ttf'), weight + ' old bundled font');
+    assert.deepEqual(await prepareFontOverlay(app, cache), []);
+    await assert.rejects(fs.stat(cache), { code: 'ENOENT' });
+  }
+  assert.deepEqual(await prepareFontOverlay(undefined, undefined), []);
+  assert.deepEqual(
+    LEGACY_BUNDLED_FONTS,
+    require('../src/assets/fonts/founder-lanting-yuan/PROVENANCE.json').variants.map(
+      ({ file, bytes, sha256 }) => ({ name: file, bytes, sha256 })
+    )
+  );
+  assert.equal(LEGACY_BUNDLED_FONTS.length, 5);
 });
 
-test('publisher inventory excludes local index and local fonts; embedded proprietary fonts are rejected', async (t) => {
+test('installation plans reject stale private font overlays instead of migrating them', () => {
+  const options = {
+    executable: 'C:\\Apps\\ACG-album\\ACG-album.exe',
+    dataDirectory: 'C:\\Profiles\\Data',
+    userData: 'C:\\Profiles\\User',
+    installer: 'C:\\Cache\\update.exe',
+    sha256: 'a'.repeat(64),
+    parentPid: 123,
+    edition: 'standard',
+    version,
+    platform: 'win32',
+    packaged: true,
+    testMode: false
+  };
+  assert.deepEqual(installationPlan(options).fontOverlay, []);
+  assert.throws(
+    () => installationPlan({ ...options, fontOverlay: [{ name: 'regular.ttf' }] }),
+    /不再支持/
+  );
+  assert.doesNotMatch(
+    runtimeTransactionScript() + editionTransactionScript(),
+    /Copy-AlbumFontOverlay|font-overlay/
+  );
+});
+
+test('publisher permits only the official embedded font with its exact SHA and OFL', async (t) => {
   const root = await temporary(t);
   for (const file of [
     'resources/local-index/subjects.sqlite',
@@ -649,20 +677,89 @@ test('publisher inventory excludes local index and local fonts; embedded proprie
     (await runtimeInventory(root)).map((row) => row.path),
     ['resources/demo/test.jpg']
   );
-  const archive = path.join(root, 'app.asar');
-  function fakeAsar(files) {
-    const json = Buffer.from(JSON.stringify({ files }));
-    const prefix = Buffer.alloc(16);
+  const { licensedFont } = require('../scripts/public-font-package.cjs');
+  const sourceRoot = path.resolve(__dirname, '..');
+  const font = await fs.readFile(path.join(sourceRoot, licensedFont.path));
+  const license = await fs.readFile(path.join(sourceRoot, licensedFont.licensePath));
+  const approved = [
+    { path: licensedFont.path, data: font },
+    { path: licensedFont.licensePath, data: license }
+  ];
+  function fakeAsar(entries) {
+    const files = {},
+      chunks = [];
+    let offset = 0;
+    for (const entry of entries) {
+      let parent = files;
+      const parts = entry.path.split('/');
+      for (const name of parts.slice(0, -1)) parent = (parent[name] ||= { files: {} }).files;
+      const data = entry.data || Buffer.alloc(0);
+      parent[parts.at(-1)] = {
+        size: data.length,
+        offset: String(offset),
+        ...(entry.unpacked ? { unpacked: true } : {})
+      };
+      chunks.push(data);
+      offset += data.length;
+    }
+    const json = Buffer.from(JSON.stringify({ files })),
+      prefix = Buffer.alloc(16);
+    prefix.writeUInt32LE(json.length + 8, 4);
     prefix.writeUInt32LE(json.length, 12);
-    return Buffer.concat([prefix, json]);
+    return Buffer.concat([prefix, json, ...chunks]);
   }
-  await fs.writeFile(archive, fakeAsar({ 'public.js': { size: 0 } }));
+  const archive = path.join(root, 'app.asar');
+  // Exercise the real ASAR header/offset layout using only the approved source
+  // asset; this is a temporary unit fixture, not an application build.
+  const { createRequire } = require('node:module');
+  const builderRequire = createRequire(require.resolve('electron-builder'));
+  const asarRequire = createRequire(builderRequire.resolve('app-builder-lib'));
+  const asar = asarRequire('@electron/asar');
+  const archiveSource = await temporary(t);
+  for (const entry of approved) {
+    const target = path.join(archiveSource, entry.path);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, entry.data);
+  }
+  await asar.createPackage(archiveSource, archive);
   await assertPublicAsar(archive);
-  await fs.writeFile(
-    archive,
-    fakeAsar({ 'founder-lanting-yuan': { files: { 'regular.ttf': { size: 0 } } } })
+  for (const extension of ['ttf', 'OTF', 'woff', 'WOFF2', 'ttc', 'OTC', 'eot', 'TtF']) {
+    for (const name of [
+      'src/assets/fonts/founder-lanting-yuan/nested/regular.',
+      'src/copied-proprietary.'
+    ]) {
+      await fs.writeFile(archive, fakeAsar([{ path: name + extension }]));
+      await assert.rejects(assertPublicAsar(archive), /proprietary|unapproved/);
+    }
+    const privatePath = 'resources/app.asar.unpacked/src/moved-font.' + extension;
+    assert.equal(safeRuntimePath(privatePath), false);
+    const value = manifest();
+    value.files.push({ path: privatePath, bytes: 3, sha256: hash('NEW') });
+    assert.throws(() => validateRuntimeManifest(value, { repository, tag, version }), /清单/);
+    await fs.mkdir(path.dirname(path.join(root, privatePath)), { recursive: true });
+    await fs.writeFile(path.join(root, privatePath), 'PRIVATE');
+    await assert.rejects(runtimeInventory(root), /Unsafe or private runtime path/);
+    await fs.unlink(path.join(root, privatePath));
+  }
+  for (const entries of [
+    [{ path: licensedFont.path, data: Buffer.alloc(font.length) }, approved[1]],
+    [approved[0], { path: licensedFont.licensePath, data: Buffer.from('WRONG LICENSE') }],
+    [approved[0]],
+    [{ ...approved[0], unpacked: true }, approved[1]],
+    [{ path: 'elsewhere/SourceHanSansSC-VF.otf', data: font }, approved[1]]
+  ]) {
+    await fs.writeFile(archive, fakeAsar(entries));
+    await assert.rejects(assertPublicAsar(archive), /Licensed|SHA-256|unapproved/);
+  }
+  const external = 'resources/app.asar.unpacked/' + licensedFont.path;
+  assert.equal(
+    safeRuntimePath(external),
+    false,
+    'Licensed font belongs inside ASAR, never in an external overlay'
   );
-  await assert.rejects(assertPublicAsar(archive), /proprietary/);
+  await fs.mkdir(path.dirname(path.join(root, external)), { recursive: true });
+  await fs.writeFile(path.join(root, external), 'EXTERNAL FONT');
+  await assert.rejects(runtimeInventory(root), /Unsafe or private runtime path/);
 });
 
 test('ownership metadata is explicit, verifies bytes and rejects missing lists or modified owned files', async (t) => {
@@ -870,7 +967,7 @@ const decode = (value) =>
 for (const variant of ['standard', 'lite', 'full'])
   for (const failure of ['', 'hash', 'traversal', 'link', 'after-switch']) {
     test(
-      `actual PowerShell runtime ${variant}: ${failure || 'preserves index, fonts, full payload and profile'}`,
+      `actual PowerShell runtime ${variant}: ${failure || 'preserves index, unknown user fonts, full payload and profile'}`,
       { skip: process.platform !== 'win32' },
       async (t) => {
         const root = await temporary(t),
@@ -896,7 +993,7 @@ for (const variant of ['standard', 'lite', 'full'])
         for (const weight of FONT_WEIGHTS)
           await fs.writeFile(
             path.join(directory, 'resources', 'fonts', 'founder-lanting-yuan', weight + '.ttf'),
-            weight + ' PRIVATE FONT'
+            weight + ' UNKNOWN USER FONT'
           );
         const index = path.join(directory, 'resources', 'local-index');
         const identity =
@@ -949,7 +1046,7 @@ for (const variant of ['standard', 'lite', 'full'])
               path.join(directory, 'resources', 'fonts', 'founder-lanting-yuan', weight + '.ttf'),
               'utf8'
             ),
-            weight + ' PRIVATE FONT'
+            weight + ' UNKNOWN USER FONT'
           );
         assert.equal(await fs.readFile(path.join(profile, 'token'), 'utf8'), 'UNCHANGED');
         if (failure) {
@@ -983,50 +1080,6 @@ for (const variant of ['standard', 'lite', 'full'])
     );
   }
 
-for (const failure of ['', 'changed-source', 'different-existing']) {
-  test(
-    `runtime preserves all five exact local fonts: ${failure || 'success'}`,
-    { skip: process.platform !== 'win32' },
-    async (t) => {
-      const root = await temporary(t),
-        directory = path.join(root, 'application');
-      await fs.mkdir(path.join(directory, 'resources'), { recursive: true });
-      const executable = path.join(directory, 'ACG-album.exe');
-      await fs.writeFile(executable, 'OLD');
-      const sourceApp = path.join(root, 'source-app.asar');
-      const folder = path.join(sourceApp, 'src', 'assets', 'fonts', 'founder-lanting-yuan');
-      await fs.mkdir(folder, { recursive: true });
-      for (const weight of FONT_WEIGHTS)
-        await fs.writeFile(path.join(folder, weight + '.ttf'), weight + ' FONT');
-      const fontOverlay = await prepareFontOverlay(sourceApp, root);
-      if (failure === 'changed-source') await fs.writeFile(fontOverlay[0].source, 'CHANGED');
-      const destination = path.join(directory, 'resources', 'fonts', 'founder-lanting-yuan');
-      if (failure === 'different-existing') {
-        await fs.mkdir(destination, { recursive: true });
-        await fs.writeFile(path.join(destination, 'regular.ttf'), 'OTHER');
-      }
-      const value = manifest(),
-        installer = path.join(root, 'payload.zip');
-      await writeOwnership(directory);
-      await fs.writeFile(installer, zipFixture(runtimeEntries(value)));
-      const result = await runPowershell(
-        root,
-        `$p=${decode({ directory, executable, installer, indexIdentity: STANDARD_IDENTITY, runtimeManifest: value, fontOverlay })}\n${runtimeTransactionScript()}\nInstall-AlbumRuntime`
-      );
-      assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
-      if (failure) {
-        assert.match(result.stderr, /Local font overlay changed|Existing local font differs/);
-        assert.equal(await fs.readFile(executable, 'utf8'), 'OLD');
-      } else
-        for (const weight of FONT_WEIGHTS)
-          assert.equal(
-            await fs.readFile(path.join(destination, weight + '.ttf'), 'utf8'),
-            weight + ' FONT'
-          );
-    }
-  );
-}
-
 test(
   'full installer failure restores original runtime, original index and local fonts',
   { skip: process.platform !== 'win32' },
@@ -1051,5 +1104,160 @@ Install-AlbumEdition 'currentuser'`;
     assert.equal(await fs.readFile(executable, 'utf8'), 'OLD');
     assert.equal(await fs.readFile(path.join(fonts, 'retained-font'), 'utf8'), 'FONT');
     assert.deepEqual(await bundledIndexIdentity(path.join(directory, 'resources')), identity);
+  }
+);
+
+for (const mode of ['runtime', 'full']) {
+  for (const failure of [false, true, ...(mode === 'full' ? ['cleanup'] : [])]) {
+    const rollback = failure === true;
+    test(
+      mode +
+        ' retires only SHA-proven old bundled fonts to a private external backup' +
+        (rollback
+          ? ' and rolls back'
+          : failure === 'cleanup'
+            ? ' across post-commit cleanup failure'
+            : ''),
+      { skip: process.platform !== 'win32' },
+      async (t) => {
+        const root = await temporary(t),
+          directory = path.join(root, 'application');
+        const executable = path.join(directory, 'ACG-album.exe');
+        await fs.mkdir(path.join(directory, 'resources'), { recursive: true });
+        await fs.writeFile(executable, 'OLD');
+        const retiredBytes = Buffer.from('SYNTHETIC KNOWN OLD APPLICATION FONT');
+        const identity = {
+          name: 'regular.ttf',
+          bytes: retiredBytes.length,
+          sha256: hash(retiredBytes)
+        };
+        // Override the identity reader only inside this synthetic fixture;
+        // no real application or proprietary font is read.
+        const oldPaths = [
+          'fonts/founder-lanting-yuan/regular.ttf',
+          'resources/fonts/founder-lanting-yuan/regular.ttf'
+        ];
+        for (const name of oldPaths) {
+          await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
+          await fs.writeFile(path.join(directory, name), retiredBytes);
+        }
+        const unknowns = [
+          'resources/fonts/founder-lanting-yuan/medium.ttf',
+          'resources/fonts/founder-lanting-yuan/custom.otf',
+          'fonts/regular.ttf'
+        ];
+        const unknownBytes = Buffer.alloc(retiredBytes.length, 0x55);
+        for (const name of unknowns) {
+          await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
+          await fs.writeFile(path.join(directory, name), unknownBytes);
+        }
+        const profile = path.join(root, 'profile.json');
+        const settings = JSON.stringify({ fontFamily: '方正兰亭圆_GBK', token: 'RETAIN' });
+        await fs.writeFile(profile, settings);
+        await writeOwnership(directory);
+        const value = manifest();
+        const installer = path.join(root, 'payload.zip');
+        await fs.writeFile(installer, zipFixture(runtimeEntries(value)));
+        const newOwner = makeRuntimeOwnership({
+          version,
+          files: [{ path: 'ACG-album.exe', bytes: 3, sha256: hash('NEW') }]
+        });
+        const plan = {
+          mode,
+          directory,
+          executable,
+          installer,
+          version,
+          edition: 'standard',
+          indexIdentity: STANDARD_IDENTITY,
+          runtimeManifest: value
+        };
+        const definitions = runtimeTransactionScript() + editionTransactionScript();
+        // medium.ttf has the expected name and size but a different SHA. It
+        // remains a user file, including across a full installer replacement.
+        const knownReader =
+          'function Get-AlbumLegacyBundledFonts { $fonts = ' +
+          decode([identity, { ...identity, name: 'medium.ttf' }]) +
+          '; foreach ($font in $fonts) { $font } }';
+        const injectFailure =
+          failure && mode === 'runtime'
+            ? "function Confirm-AlbumRuntimeFiles($directory) { if ($directory -eq $p.directory) { throw 'Injected post-switch failure' } }"
+            : '';
+        const mockInstaller = String.raw`
+function Invoke-AlbumInstaller($mode) {
+  Remove-Item -LiteralPath $p.directory -Recurse -Force
+  if (${rollback ? '$true' : '$false'}) { return @{ ExitCode=7 } }
+  New-Item -ItemType Directory -Path (Join-Path $p.directory 'resources') -Force | Out-Null
+  [IO.File]::WriteAllText($p.executable, 'NEW')
+  [IO.File]::WriteAllText((Join-Path $p.directory 'resources/runtime-owned-files.json'), (${decode(newOwner)} | ConvertTo-Json -Depth 5))
+  return @{ ExitCode=0 }
+}`;
+        const cleanupFailure =
+          failure === 'cleanup'
+            ? String.raw`
+function Remove-Item {
+  [CmdletBinding()]param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+  if ((Split-Path -Leaf $LiteralPath) -like 'ACG-album-update-backup-*') { throw 'Injected backup cleanup failure' }
+  Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
+}`
+            : '';
+        const result = await runPowershell(
+          root,
+          '$p=' +
+            decode(plan) +
+            '\n' +
+            definitions +
+            '\n' +
+            knownReader +
+            '\n' +
+            injectFailure +
+            '\n' +
+            mockInstaller +
+            '\n' +
+            cleanupFailure +
+            '\n' +
+            (mode === 'runtime' ? 'Install-AlbumRuntime' : "Install-AlbumEdition 'currentuser'")
+        );
+        assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
+        assert.equal(await fs.readFile(executable, 'utf8'), rollback ? 'OLD' : 'NEW');
+        for (const name of unknowns)
+          assert.deepEqual(await fs.readFile(path.join(directory, name)), unknownBytes);
+        assert.equal(await fs.readFile(profile, 'utf8'), settings);
+        const backups = (await fs.readdir(root)).filter((name) =>
+          name.startsWith('ACG-album-private-font-backup-')
+        );
+        assert.equal(backups.length, 1);
+        const backup = path.join(root, backups[0]);
+        const migration = JSON.parse(
+          (await fs.readFile(path.join(backup, 'migration.json'), 'utf8')).replace(/^\uFEFF/, '')
+        );
+        assert.equal(migration.originalDirectory, directory);
+        assert.deepEqual(migration.paths.sort(), oldPaths.sort());
+        for (const name of oldPaths) {
+          if (rollback) {
+            assert.deepEqual(await fs.readFile(path.join(directory, name)), retiredBytes);
+            await assert.rejects(fs.stat(path.join(backup, name)), { code: 'ENOENT' });
+          } else {
+            await assert.rejects(fs.stat(path.join(directory, name)), { code: 'ENOENT' });
+            assert.deepEqual(await fs.readFile(path.join(backup, name)), retiredBytes);
+          }
+        }
+        await assertRuntimeOwnership(directory);
+      }
+    );
+  }
+}
+
+test(
+  'actual Windows PowerShell enumerates all five trusted historical font identities',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const root = await temporary(t);
+    const result = await runPowershell(
+      root,
+      runtimeTransactionScript() + '\n@(Get-AlbumLegacyBundledFonts) | ConvertTo-Json -Depth 4'
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), LEGACY_BUNDLED_FONTS);
   }
 );

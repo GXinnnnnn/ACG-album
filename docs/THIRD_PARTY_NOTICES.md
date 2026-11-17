@@ -84,11 +84,11 @@ Portions of this software are copyright © The FreeType Project (www.freetype.or
 
 构建入口、固定源码提交、Emscripten 3.1.61 参数及上游脚本见该目录 `README.md` 与源码归档。应用没有宣称已重新构建或验证逐位可复现。用户可在退出应用后，将 `libheif.js` 和 `libheif.wasm` 替换为接口兼容的修改版本，再重启应用；运行时不强制官方文件哈希，也不禁止为调试该组件修改而进行的逆向工程。应用使用本地文件启动独立工作线程，不从网络下载运行代码；适配器和线程入口源码为 `src/heif-decoder.cjs`、`src/heif-worker.cjs`。
 
-## 方正兰亭圆与公开字体分发
+## 字体
 
-维护者本机按用户请求保留现有的五种方正兰亭圆 GBK 字形，用于本地离线程序。原始文件未修改；版权为 `Copyright(c) Beijing Founder Electronics Co.,Ltd.2014`，不适用项目 MIT 许可。来源、大小与 SHA-256 记录位于 `src/assets/fonts/founder-lanting-yuan/PROVENANCE.json`。
+应用随附 Adobe 的思源黑体 / Source Han Sans SC VF 2.005R，采用 SIL Open Font License 1.1，保留 `Copyright 2014-2025 Adobe` 与 Reserved Font Name `Source`。未修改、子集化或重命名字体文件；完整许可原文为 `src/assets/fonts/source-han-sans/OFL.txt`，固定上游提交、文件大小及 SHA-256 见同目录 `PROVENANCE.json`。字体位于应用 ASAR 内，可离线使用；OFL 许可不被项目 MIT 许可替代。
 
-这些字体为方正专有字体；OS/2 的 `fsType=8` 表示 editable embedding，不能当作通用再分发授权。现有来源记录没有确认面向公众分发应用的独立授权，因此公开 Git 源码与 Standard / Lite / Full 安装器明确排除五个 TTF 文件。界面保留预设与本机字体选择，优先使用用户电脑已有的相应字体，缺少时回退系统字体；不通过网络下载字体。维护者的本地字体不会随公开发布删除。
+其他预设和手动选择的字体仅通过操作系统调用用户已安装字体，不随源码、安装器或本体载荷提供专有字库，也不联网获取。方正兰亭圆的历史哈希记录仅用于识别旧应用所有的副本并保存私有恢复备份；`fsType=8` 不代表通用再分发授权。元数据不授予额外字体权利，用户自行安装字体的使用范围遵循其取得的许可。
 
 ## 开发工具
 

@@ -8,6 +8,7 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { validRepository } = require('../src/repository.cjs');
+const { isPrivateFontPath, isFontPath, licensedFont } = require('./public-font-package.cjs');
 const {
   safeRuntimePath,
   runtimeName,
@@ -31,15 +32,56 @@ async function assertPublicAsar(file) {
     if ((await handle.read(bytes, 0, length, 16)).bytesRead !== length)
       throw new Error('Truncated app.asar header');
     const header = JSON.parse(bytes.toString('utf8'));
+    const entries = new Map();
     function visit(node, name = '') {
       for (const [key, value] of Object.entries(node.files || {})) {
-        const target = name + '/' + key;
-        if (/\/founder-lanting-yuan\/.*\.(?:ttf|otf)$/i.test(target))
-          throw new Error('Public runtime contains proprietary embedded fonts');
+        const target = name ? name + '/' + key : key;
+        if (isPrivateFontPath(target))
+          throw new Error('Public runtime contains proprietary or unapproved embedded fonts');
+        entries.set(target, value);
         visit(value, target);
       }
     }
     visit(header);
+    const contentOffset = 8 + prefix.readUInt32LE(4);
+    const archiveSize = (await handle.stat()).size;
+    for (const [name, expectedSha, expectedBytes] of [
+      [licensedFont.path, licensedFont.sha256, licensedFont.bytes],
+      [licensedFont.licensePath, licensedFont.licenseSha256]
+    ]) {
+      const entry = entries.get(name),
+        offset = Number(entry?.offset);
+      if (
+        !entry ||
+        entry.files ||
+        entry.link ||
+        entry.unpacked ||
+        !Number.isSafeInteger(entry.size) ||
+        entry.size <= 0 ||
+        (expectedBytes !== undefined && entry.size !== expectedBytes) ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        contentOffset < 16 + length ||
+        contentOffset + offset + entry.size > archiveSize
+      )
+        throw new Error('Licensed embedded font or OFL is missing or invalid: ' + name);
+      const digest = createHash('sha256');
+      const buffer = Buffer.alloc(Math.min(entry.size, 1024 * 1024));
+      for (let position = 0; position < entry.size; ) {
+        const count = Math.min(buffer.length, entry.size - position);
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          count,
+          contentOffset + offset + position
+        );
+        if (bytesRead !== count) throw new Error('Truncated licensed font or OFL: ' + name);
+        digest.update(buffer.subarray(0, bytesRead));
+        position += bytesRead;
+      }
+      if (digest.digest('hex') !== expectedSha)
+        throw new Error('Licensed font or OFL SHA-256 differs: ' + name);
+    }
   } finally {
     await handle.close();
   }
@@ -61,7 +103,7 @@ async function runtimeInventory(directory) {
         target.toLowerCase() === OWNERSHIP_PATH
       )
         continue;
-      if (!safeRuntimePath(target) || /\.(?:ttf|otf)$/i.test(target))
+      if (!safeRuntimePath(target) || isFontPath(target))
         throw new Error('Unsafe or private runtime path: ' + target);
       if (item.isDirectory()) await visit(target);
       else if (item.isFile())

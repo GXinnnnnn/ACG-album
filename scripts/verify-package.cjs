@@ -9,6 +9,8 @@ const builderRequire = createRequire(require.resolve('electron-builder'));
 const asarRequire = createRequire(builderRequire.resolve('app-builder-lib'));
 const asar = asarRequire('@electron/asar');
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+const { isPrivateFontPath, isFontPath } = require('./public-font-package.cjs');
+const { assertPublicAsar } = require('./build-runtime-update.cjs');
 async function walk(dir) {
   const result = [];
   for (const item of await fs.readdir(dir, { withFileTypes: true })) {
@@ -21,12 +23,15 @@ async function walk(dir) {
 (async () => {
   const installed = require('./distribution-paths.cjs').runtimeDirectory();
   const archive = path.join(installed, 'resources/app.asar');
+  await assertPublicAsar(archive);
   const entries = asar
     .listPackage(archive)
     .map((name) => name.replaceAll('\\', '/').replace(/^\//, ''));
   const manifest = JSON.parse(
     await fs.readFile(path.join(root, 'src/assets/licenses/manifest.json'), 'utf8')
   );
+  for (const entry of entries)
+    assert.equal(isPrivateFontPath(entry), false, 'proprietary font in ASAR: ' + entry);
   const extract = (name) => asar.extractFile(archive, name.replaceAll('/', path.sep));
   const report = {
     version: require('../package.json').version,
@@ -46,8 +51,14 @@ async function walk(dir) {
       report.sourceFiles++;
       continue;
     }
-    const privateFont = /^src\/assets\/fonts\/founder-lanting-yuan\/[^/]+\.ttf$/i.test(relative);
-    if (privateFont && !entries.includes(relative)) continue;
+    if (isPrivateFontPath(relative)) {
+      assert.equal(
+        entries.includes(relative),
+        false,
+        'proprietary font must be excluded: ' + relative
+      );
+      continue;
+    }
     assert.equal(hash(extract(relative)), hash(await fs.readFile(file)), relative);
     report.sourceFiles++;
   }
@@ -107,6 +118,10 @@ async function walk(dir) {
   assert.equal(chromium.length, manifest.chromium.bytes);
   assert.equal(hash(chromium), manifest.chromium.sha256);
   const files = await walk(installed);
+  for (const { file } of files) {
+    const relative = path.relative(installed, file).replaceAll('\\', '/');
+    assert.equal(isFontPath(relative), false, 'unapproved external font: ' + relative);
+  }
   for (const native of manifest.nativeBinaries) {
     const entry = files.find((entry) => path.basename(entry.file) === native.file);
     assert.ok(entry && entry.file.includes('app.asar.unpacked'), native.file);

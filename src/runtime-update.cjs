@@ -76,7 +76,8 @@ function safeRuntimePath(value) {
         !/^\.{1,2}$/.test(part) &&
         !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?: *\.| *$)/i.test(part)
     ) &&
-    !/^(?:resources\/(?:local-index|fonts)|fonts)(?:\/|$)/i.test(value)
+    !/^(?:resources\/(?:local-index|fonts)|fonts)(?:\/|$)/i.test(value) &&
+    !/\.(?:ttf|otf|woff2?|ttc|otc|eot)$/i.test(value)
   );
 }
 function validateRuntimeManifest(
@@ -331,71 +332,24 @@ async function bundledIndexIdentity(resourcesDirectory) {
     throw new Error('随包离线索引大小或 SHA-256 不匹配。');
   return identity;
 }
-const FONT_WEIGHTS = ['regular', 'medium', 'semibold', 'bold', 'heavy'];
-async function prepareFontOverlay(appPath, cacheDirectory) {
-  const files = [];
-  for (const weight of FONT_WEIGHTS) {
-    const source = path.join(
-      appPath,
-      'src',
-      'assets',
-      'fonts',
-      'founder-lanting-yuan',
-      weight + '.ttf'
-    );
-    let stat;
-    try {
-      stat = await fs.lstat(source);
-    } catch (error) {
-      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
-      throw error;
-    }
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 32 * 1024 ** 2)
-      throw new Error('本机字体无法安全保留，请手动更新。');
-    const bytes = await fs.readFile(source);
-    if (bytes.length !== stat.size) throw new Error('本机字体读取期间已改变。');
-    files.push({ weight, bytes, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
-  }
-  if (!files.length) return [];
-  if (files.length !== FONT_WEIGHTS.length)
-    throw new Error('本机五款字体不完整，更新已停止以保留旧程序。');
-  const directory = path.join(cacheDirectory, 'font-overlay');
-  await fs.mkdir(directory, { recursive: true });
-  const directoryStat = await fs.lstat(directory);
-  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())
-    throw new Error('字体保留缓存包含链接。');
-  const result = [];
-  for (const file of files) {
-    const source = path.join(directory, file.weight + '.ttf');
-    // A retry must not silently replace an overlay that was changed after preparation.
-    try {
-      await fs.writeFile(source, file.bytes, { flag: 'wx' });
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const stat = await fs.lstat(source);
-      if (
-        !stat.isFile() ||
-        stat.isSymbolicLink() ||
-        stat.size !== file.bytes.length ||
-        (await hashFile(source)) !== file.sha256
-      )
-        throw new Error('字体保留缓存已改变。');
-    }
-    result.push({
-      source,
-      name: file.weight + '.ttf',
-      bytes: file.bytes.length,
-      sha256: file.sha256
-    });
-  }
-  return result;
+// Exact identities of the application's old private copies, used only to retire
+// those files. Never search system fonts or treat bundled copies as installed fonts.
+const LEGACY_BUNDLED_FONTS =
+  require('./assets/fonts/founder-lanting-yuan/PROVENANCE.json').variants.map(
+    ({ file, bytes, sha256 }) => ({ name: file, bytes, sha256 })
+  );
+async function prepareFontOverlay() {
+  // Keep the update-service call compatible with older callers without reading
+  // source trees, app.asar, resources/fonts, or producing a font cache.
+  return [];
 }
+
 module.exports = {
   MAX_RUNTIME_MANIFEST_BYTES,
   REQUIRED_RUNTIME_FILES,
   IDENTITY_KEYS,
   STANDARD_IDENTITY,
-  FONT_WEIGHTS,
+  LEGACY_BUNDLED_FONTS,
   prepareFontOverlay,
   validIdentity,
   sameIdentity,

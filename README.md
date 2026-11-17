@@ -4,23 +4,23 @@
 
 ACG-album 是一款 Windows 本地相册，适合整理游戏 CG、角色插画、动画截图、设定集和日常照片。沿用现有文件夹结构，把收藏变成封面卡片和连续瀑布流；需要时关联 Bangumi 作品与角色资料，让收藏更好看，也更好找。
 
-**当前版本：1.2.2 · Windows x64 · MIT License**
+**当前版本：1.2.3 · Windows x64 · MIT License**
 
 [下载安装](#下载与版本选择) · [主要功能](#主要功能) · [开始使用](#开始使用) · [界面预览](#界面预览)
 
 ## 下载与版本选择
 
-前往 [v1.2.2 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.2)，选择一种安装包即可。**日常使用推荐 Lite。**
+前往 [v1.2.3 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.3)，选择一种安装包即可。**日常使用推荐 Lite。**
 
 | 版本 | 随附内容 | 适合的使用方式 |
 | --- | --- | --- |
-| [Standard](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Standard.exe) | 软件本体，不附带离线条目索引 | 主要联网匹配，希望下载更小 |
-| [Lite](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Lite.exe) | 软件本体＋名称、别名、类型与关联索引 | 本地名称检索与日常条目匹配 |
-| [Full](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/ACG-album-Setup-1.2.2-Full.exe) | 软件本体＋完整索引，保留更多简介、条目信息与原始资料 | 需要更完整的离线资料 |
+| [Standard](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.3/ACG-album-Setup-1.2.3-Standard.exe) | 软件本体，不附带离线条目索引 | 主要联网匹配，希望下载更小 |
+| [Lite](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.3/ACG-album-Setup-1.2.3-Lite.exe) | 软件本体＋名称、别名、类型与关联索引 | 本地名称检索与日常条目匹配 |
+| [Full](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.3/ACG-album-Setup-1.2.3-Full.exe) | 软件本体＋完整索引，保留更多简介、条目信息与原始资料 | 需要更完整的离线资料 |
 
 三版应用功能相同，可覆盖切换并沿用个人资料。Lite 与 Full 的名称覆盖及匹配规则相同，Full 不会额外提高识别准确度。**所有版本均不内置封面图片**，在线封面与资料补全需要网络及相应访问权限。
 
-下载大小见发布页，文件校验值见 [SHA256SUMS.txt](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.2/SHA256SUMS.txt)；安装、切换版本与备份步骤见 [安装说明](docs/INSTALLATION.md)。
+下载大小见发布页，文件校验值见 [SHA256SUMS.txt](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.3/SHA256SUMS.txt)；安装、切换版本与备份步骤见 [安装说明](docs/INSTALLATION.md)。
 
 ## 主要功能
 
@@ -105,4 +105,4 @@ ACG-album 是一款 Windows 本地相册，适合整理游戏 CG、角色插画�
 
 作者：[友利奈绪的胖次 / GXinnnnnn](https://github.com/GXinnnnnn) · [Bilibili](https://space.bilibili.com/396517775)
 
-作者代码采用 [MIT License](LICENSE)。第三方组件、Bangumi 数据、字体和图像资源遵循各自许可，品牌、头像、赞助二维码和用户图库不因代码采用 MIT 而自动获得相同授权。公开版不附带方正专有字体，缺少相应字形时回退系统字体。详见 [第三方声明](docs/THIRD_PARTY_NOTICES.md)。
+作者代码采用 [MIT License](LICENSE)。第三方组件、Bangumi 数据、字体和图像资源遵循各自许可，品牌、头像、赞助二维码和用户图库不因代码采用 MIT 而自动获得相同授权。详见 [第三方声明](docs/THIRD_PARTY_NOTICES.md)。

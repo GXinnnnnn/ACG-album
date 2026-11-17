@@ -1,21 +1,56 @@
 /* Bundled faces and installed fonts stay offline; no font is uploaded or installed. */
 (() => {
   'use strict';
-  const fallback = "'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif";
-  const defaultFamily = '方正兰亭圆_GBK';
-  const builtins = Object.freeze([
+  const bundledFamily = 'ACG Source Han Sans';
+  const systemFallback = "'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', sans-serif";
+  const fallback = `'${bundledFamily}', ${systemFallback}`;
+  const localPresets = Object.freeze([
     '方正兰亭圆_GBK',
     '方正兰亭圆_GBK_准',
     '方正兰亭圆_GBK_中',
     '方正兰亭圆_GBK_中粗',
     '方正兰亭圆_GBK_特'
   ]);
+  const builtins = Object.freeze([bundledFamily, ...localPresets]);
+  let defaultFamily = bundledFamily,
+    defaultLoad;
   const valid = (value) =>
     typeof value === 'string' && value.length <= 160 && !/[\u0000-\u001f\u007f]/u.test(value);
   const effective = (family) => family || defaultFamily;
-  const fontStack = (family) => `${JSON.stringify(effective(family))}, ${fallback}`;
+  const fontStack = (family) =>
+    `${JSON.stringify(effective(family))}, ${effective(family) === bundledFamily ? systemFallback : fallback}`;
+  const displayFamily = (family) =>
+    effective(family) === bundledFamily ? '思源黑体（内置）' : effective(family);
+  async function detectDefault() {
+    if (typeof FontFace === 'function') {
+      // An isolated local() source cannot resolve to a CSS alias or a deployed TTF.
+      // document.fonts.check() can succeed through fallback and is not an install check.
+      for (const family of localPresets) {
+        try {
+          await new FontFace('ACG Installed Font Probe', `local(${JSON.stringify(family)})`).load();
+          return family;
+        } catch {
+          /* Try another actually installed face before using the bundled family. */
+        }
+      }
+    } else {
+      try {
+        const result = await window.album?.call('systemFonts');
+        if (result?.source === 'windows-installed-fonts') {
+          const installed = new Set(result.families);
+          return localPresets.find((family) => installed.has(family)) || bundledFamily;
+        }
+      } catch {
+        /* Enumeration is optional; offline Source Han Sans remains available. */
+      }
+    }
+    return bundledFamily;
+  }
+  function resolveDefault() {
+    return (defaultLoad ||= detectDefault().then((family) => (defaultFamily = family)));
+  }
   let generation = 0,
-    currentStack = '',
+    currentChoice = null,
     pendingLoad = Promise.resolve(false);
   function capture() {
     try {
@@ -41,50 +76,58 @@
   }
   function apply(settings = {}) {
     const family = valid(settings.fontFamily) ? settings.fontFamily.trim() : '';
-    const stack = fontStack(family);
-    if (stack === currentStack) return pendingLoad;
-    currentStack = stack;
+    if (family === currentChoice) return pendingLoad;
+    currentChoice = family;
     const version = ++generation,
       snapshot = capture();
-    document.documentElement.style.fontFamily = stack;
-    // Small secondary labels use the regular local face instead of promoting
-    // each preset to a heavier face. Explicit third-party font choices still win.
-    const preset = builtins.indexOf(effective(family));
-    const inkFamily = preset >= 0 ? builtins[0] : effective(family);
-    document.documentElement.style.setProperty('--secondary-font-family', fontStack(inkFamily));
     document.documentElement.dataset.fontState = 'loading';
-    if (!document.fonts?.load) {
-      document.documentElement.dataset.fontState = 'fallback';
-      release(snapshot);
-      return (pendingLoad = Promise.resolve(false));
-    }
     pendingLoad = (async () => {
       try {
-        const weights =
-          effective(family) === 'ACG Lanting Yuan' ? [400, 500, 600, 700, 900] : [400];
-        const faces = await Promise.all(
-          weights.map((weight) =>
-            document.fonts.load(
-              `${weight} 16px ${JSON.stringify(effective(family))}`,
-              '相册 Aa0123'
-            )
-          )
-        );
+        if (!family) await resolveDefault();
         if (version !== generation) return false;
-        // A public checkout has no private font files. Empty face results must
-        // not claim that a preset loaded, while ordinary installed fonts can
-        // legitimately resolve without returning any CSS FontFace objects.
-        if (
-          (builtins.includes(effective(family)) || effective(family) === 'ACG Lanting Yuan') &&
-          faces.some((result) => !result.length)
-        ) {
-          document.documentElement.dataset.fontState = 'fallback';
-          return false;
+        const chosen = effective(family),
+          localPreset = localPresets.includes(chosen) || chosen === 'ACG Lanting Yuan',
+          inkFamily = localPreset ? localPresets[0] : chosen,
+          weights =
+            chosen === bundledFamily || chosen === 'ACG Lanting Yuan'
+              ? [400, 500, 600, 700, 900]
+              : [400];
+        let ready = false;
+        if (document.fonts?.load) {
+          // Preload before committing the stack, so changing a preference does
+          // not first resize text in a temporary fallback and then in its face.
+          const results = await Promise.allSettled(
+            weights.map((weight) =>
+              document.fonts.load(`${weight} 16px ${JSON.stringify(chosen)}`, '相册 Aa0123')
+            )
+          );
+          const cssFace = builtins.includes(chosen) || chosen === 'ACG Lanting Yuan';
+          ready = results.every(
+            (result) => result.status === 'fulfilled' && (!cssFace || result.value.length > 0)
+          );
+          if (inkFamily !== chosen) {
+            // The regular small-label face must settle in the same swap as a
+            // heavier local heading face, including when regular is missing.
+            await document.fonts
+              .load(`400 16px ${JSON.stringify(inkFamily)}`, '相册 Aa0123')
+              .catch(() => {});
+          }
+          if (chosen !== bundledFamily) {
+            // A missing local face and missing glyphs both fall back to the
+            // bundled font, never to a private copy elsewhere on disk.
+            await document.fonts
+              .load(`400 16px ${JSON.stringify(bundledFamily)}`, '相册 Aa0123')
+              .catch(() => {});
+          }
+          await document.fonts.ready;
         }
-        await document.fonts.ready;
         if (version !== generation) return false;
         await new Promise((resolve) => requestAnimationFrame(resolve));
         if (version !== generation) return false;
+        document.documentElement.style.fontFamily = fontStack(chosen);
+        // Small preset labels stay regular. If the regular local face is absent,
+        // its local-only CSS source falls straight through to Source Han Sans.
+        document.documentElement.style.setProperty('--secondary-font-family', fontStack(inkFamily));
         let anchor;
         try {
           const sameView =
@@ -99,13 +142,13 @@
         } catch {
           /* The page may still be mounting or have navigated. */
         }
-        document.documentElement.dataset.fontState = 'ready';
+        document.documentElement.dataset.fontState = ready ? 'ready' : 'fallback';
         window.dispatchEvent(
-          new CustomEvent('album:font-loaded', { detail: { family: effective(family) } })
+          new CustomEvent('album:font-loaded', { detail: { family: chosen, ready } })
         );
         window.dispatchEvent(new Event('resize'));
         if (anchor && typeof restoreDisplayAnchor === 'function') restoreDisplayAnchor(anchor);
-        return true;
+        return ready;
       } catch {
         if (version === generation) document.documentElement.dataset.fontState = 'fallback';
         return false;
@@ -120,7 +163,10 @@
       label = host.querySelector('#font-current');
     if (!button || !label) return;
     const describe = () => {
-      label.textContent = settings().fontFamily || defaultFamily;
+      label.textContent = displayFamily(settings().fontFamily);
+      void pendingLoad.then(() => {
+        if (label.isConnected) label.textContent = displayFamily(settings().fontFamily);
+      });
     };
     button.textContent = '选择字体';
     describe();
@@ -134,7 +180,7 @@
     dialog.dataset.fontLayer = 'builtin';
     dialog.setAttribute('aria-labelledby', 'font-picker-title');
     dialog.innerHTML =
-      '<div class="modal-top"><div><h2 id="font-picker-title">选择全局字体</h2><p data-font-help>预设字体在本机可用时使用，缺失时自动使用系统后备字体。也可选择这台电脑已安装的字体。</p></div><button class="icon-button" data-font-close aria-label="关闭字体选择">×</button></div><button class="subtle-button" data-font-back hidden>返回预设字体</button><button class="font-option font-local-entry" data-font-local aria-controls="font-options">选择本地字体</button><div data-font-local-controls hidden><label for="font-search">搜索已安装字体</label><input class="field-input" id="font-search" type="search" placeholder="输入中文或英文字体名称" autocomplete="off"></div><div id="font-options" role="listbox" aria-label="预设字体"></div><button class="subtle-button" data-font-more hidden>显示更多字体</button><p class="font-status" role="status" aria-live="polite"></p><button class="subtle-button" data-font-retry hidden>重新读取字体</button>';
+      '<div class="modal-top"><div><h2 id="font-picker-title">选择全局字体</h2><p data-font-help>内置思源黑体；本机已安装兰亭圆时默认使用本机字体。也可选择其他已安装字体。</p></div><button class="icon-button" data-font-close aria-label="关闭字体选择">×</button></div><button class="subtle-button" data-font-back hidden>返回预设字体</button><button class="font-option font-local-entry" data-font-local aria-controls="font-options">选择本地字体</button><div data-font-local-controls hidden><label for="font-search">搜索已安装字体</label><input class="field-input" id="font-search" type="search" placeholder="输入中文或英文字体名称" autocomplete="off"></div><div id="font-options" role="listbox" aria-label="预设字体"></div><button class="subtle-button" data-font-more hidden>显示更多字体</button><p class="font-status" role="status" aria-live="polite"></p><button class="subtle-button" data-font-retry hidden>重新读取字体</button>';
     document.body.append(dialog);
     const search = dialog.querySelector('#font-search'),
       options = dialog.querySelector('#font-options'),
@@ -185,7 +231,7 @@
       let failure = '';
       try {
         await save('fontFamily', family);
-        apply(settings());
+        await apply(settings());
         onSaved();
         if (!disposed) close();
       } catch (error) {
@@ -247,9 +293,13 @@
         option.dataset.fontFamily = family;
         option.setAttribute('role', 'option');
         option.setAttribute('aria-selected', String((family || defaultFamily) === selected));
-        option.textContent = family || defaultFamily + '（默认）';
-        option.title = family || '恢复默认字体；本机不可用时使用系统后备字体';
-        option.style.fontFamily = family ? `${JSON.stringify(family)}, ${fallback}` : fontStack('');
+        option.textContent = family ? displayFamily(family) : '自动（本机兰亭圆 / 内置思源黑体）';
+        option.title = family
+          ? family === bundledFamily
+            ? 'Adobe 思源黑体，随应用内置，离线可用'
+            : `${family}；仅调用本机已安装字体，缺失时使用内置思源黑体`
+          : '恢复自动默认：本机已安装兰亭圆时使用它，否则使用内置思源黑体';
+        option.style.fontFamily = fontStack(family);
         option.onclick = () => select(family);
         option.onkeydown = (event) => keyboard(event, option);
         fragment.append(option);
@@ -258,7 +308,7 @@
       if (!busy)
         status.textContent =
           layer === 'builtin'
-            ? '五种预设字型需在本机可用，缺失时自动使用系统后备字体。'
+            ? '思源黑体已内置；五种兰亭圆预设仅调用本机字体，未安装时使用思源黑体。'
             : loading
               ? '正在读取这台电脑已安装的字体…'
               : loaded

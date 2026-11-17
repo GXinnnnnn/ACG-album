@@ -22,7 +22,7 @@
     {"name":"Playwright Test","version":"1.58.2","license":"Apache-2.0","url":"https://github.com/microsoft/playwright","purpose":"界面、交互与独立测试资料目录的自动化检查；随附工具 NOTICE 按原文保留。"}
   ],
   "assets": [
-    {"name":"方正兰亭圆 GBK 字体（本地副本）","version":"常规 / 准 / 中 / 中粗 / 特","license":"方正专有字体；不适用项目 MIT","url":"https://www.foundertype.com/","purpose":"仅维护者本地交付保留本机现有字形，公开源码及安装器不包含 TTF；公开版可使用用户已有本机字体并回退系统字体。保留原版权与来源记录。"},
+    {"name":"思源黑体 / Source Han Sans SC VF","version":"2.005R","license":"SIL Open Font License 1.1","url":"https://github.com/adobe-fonts/source-han-sans","purpose":"未修改的简体中文可变字体，随应用离线提供；完整许可、版权和固定来源见 src/assets/fonts/source-han-sans/。用户自行安装的其他字体仅通过操作系统调用，不随应用分发。"},
     {"name":"Lucide / Feather 线性图标致谢","version":"内嵌路径；对照 Lucide 0.468.0","license":"ISC；Lucide 原文包含 Feather / MIT 历史通知","url":"https://github.com/lucide-icons/lucide","purpose":"app.js 中 plus、x 等硬编码 SVG 的几何线段与公开 Lucide 源码一致，按衍生图标保留 ISC 致谢；未断言整个图标集均来自同一版本。"},
     {"name":"作者授权的品牌、头像与收款码素材","version":"0.3.0","license":"作者授权；不自动适用项目 MIT","url":"https://github.com/GXinnnnnn","purpose":"友利奈绪的胖次（GXinnnnnn）提供或授权的应用素材及头像、用户收款码；第三方肖像、角色、商标与图像权利仍归原权利人。"}
   ],

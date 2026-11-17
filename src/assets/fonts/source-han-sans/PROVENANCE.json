@@ -1,0 +1,21 @@
+{
+  "name": "Source Han Sans SC VF / 思源黑体 VF",
+  "version": "2.005R",
+  "upstream": "https://github.com/adobe-fonts/source-han-sans",
+  "commit": "6c709ca72d3d7c46ab42ebecc1a26e7d69595a37",
+  "license": "SIL Open Font License 1.1",
+  "licenseFile": "OFL.txt",
+  "copyright": "Copyright 2014-2025 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. See the complete upstream license.",
+  "modified": false,
+  "font": {
+    "file": "SourceHanSansSC-VF.otf",
+    "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/6c709ca72d3d7c46ab42ebecc1a26e7d69595a37/Variable/OTF/SourceHanSansSC-VF.otf",
+    "bytes": 31749144,
+    "sha256": "e4fb7711890d8237bd2dfbbcf14f2fd26c2c5cedb29a44fcc60bef1447690422",
+    "gitBlobSha1": "b5ccdae4634bf9f67e1f9a3d35d71b93f90ba9d6",
+    "format": "OpenType CFF2 variable",
+    "family": "Source Han Sans SC VF",
+    "axes": {"wght": {"min": 250, "default": 250, "max": 900}}
+  },
+  "licenseSha256": "fcac737e761ec63dbfbdce11030a1780161920d80315edba9c8beff1c2bac5a2"
+}

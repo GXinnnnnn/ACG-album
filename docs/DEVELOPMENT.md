@@ -34,7 +34,7 @@ pnpm run package:installer
 
 Lite / Full 构建读取预处理的 Archive 数据与校验清单。先按 [本地检索数据说明](LOCAL_SEARCH_DATA.md) 准备数据，再通过 `ACG_INDEX_SOURCE` 指定目录。源码仓库不包含大型数据库、安装包、个人图库或维护者的完整诊断报告。
 
-公开源码、安装包和本体载荷不附带方正专有 TTF。分发包含原生组件的二进制时，需同时履行许可通知和对应源码提供义务，见 [第三方声明](THIRD_PARTY_NOTICES.md) 及源码中的 `src/assets/licenses/`。
+所有构建统一排除专有字体二进制；获准分发的字体与完整许可按原样随应用提供。分发包含原生组件的二进制时，需同时履行许可通知和对应源码提供义务，见 [第三方声明](THIRD_PARTY_NOTICES.md) 及源码中的 `src/assets/licenses/`。
 
 ## 验证范围与运行约定
 

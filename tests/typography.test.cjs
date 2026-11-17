@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/ui/typography.js'), 'utf8');
 const css = fs.readFileSync(path.join(__dirname, '../src/ui/typography.css'), 'utf8');
 const flush = async () => {
-  for (let i = 0; i < 12; i++) await Promise.resolve();
+  for (let i = 0; i < 24; i++) await Promise.resolve();
 };
 function deferred() {
   let resolve, reject;
@@ -20,6 +20,7 @@ function deferred() {
 function harness({
   systemFonts = async () => ({ families: ['Local Alpha', '本地字体'] }),
   load = async () => [{}],
+  localLoad = async () => ({}),
   save
 } = {}) {
   const events = [],
@@ -178,6 +179,15 @@ function harness({
   const context = {
     document,
     window,
+    FontFace: class {
+      constructor(family, source) {
+        this.family = family;
+        this.source = source;
+      }
+      load() {
+        return localLoad(this.source);
+      }
+    },
     Event: class {
       constructor(type) {
         this.type = type;
@@ -223,30 +233,34 @@ function harness({
   };
 }
 
-test('optional local faces map five weights and Chinese aliases without requiring private files', () => {
+test('bundled Source Han Sans supports all weights and Founder aliases resolve only installed faces', () => {
   const rules = [...css.matchAll(/@font-face\s*\{([^}]+)\}/g)].map((match) => match[1]);
-  assert.equal(rules.length, 10);
+  assert.equal(rules.length, 11);
+  const bundled = rules.find((rule) => /font-family:\s*'ACG Source Han Sans'/.test(rule));
+  assert.match(bundled, /SourceHanSansSC-VF\.otf/);
+  assert.match(bundled, /font-weight:\s*250 900/);
   const defaults = rules.filter((rule) => /font-family:\s*'ACG Lanting Yuan'/.test(rule));
   assert.deepEqual(
     defaults.map((rule) => /font-weight:\s*([^;]+)/.exec(rule)[1].trim()),
     ['400', '500', '600', '700 800', '900']
   );
-  for (const [i, file] of ['regular', 'medium', 'semibold', 'bold', 'heavy'].entries()) {
-    assert.match(defaults[i], new RegExp('/' + file + '\\.ttf'));
-    assert.match(defaults[i], /src:\s*local\('[^']+'\),\s*url\(/);
-    const alias = rules[i + 5];
-    const family = /font-family:\s*'([^']+)'/.exec(alias)[1];
+  for (const [i, family] of [
+    '方正兰亭圆_GBK',
+    '方正兰亭圆_GBK_准',
+    '方正兰亭圆_GBK_中',
+    '方正兰亭圆_GBK_中粗',
+    '方正兰亭圆_GBK_特'
+  ].entries()) {
+    const alias = rules.find((rule) => rule.includes(`font-family: '${family}'`));
     assert.ok(defaults[i].includes(`local('${family}')`));
     assert.ok(alias.includes(`local('${family}')`));
-    assert.match(alias, new RegExp('/' + file + '\\.ttf'));
+    assert.match(alias, /font-weight:\s*100 900/);
+    assert.doesNotMatch(defaults[i], /url\(/);
+    assert.doesNotMatch(alias, /url\(/);
   }
-  assert.match(css, /:root\s*\{\s*font-family:\s*'方正兰亭圆_GBK'/);
-  const middle = rules.find((rule) => /font-family:\s*'方正兰亭圆_GBK_中'/.test(rule));
-  assert.match(middle, /\/semibold\.ttf/);
-  for (const rule of rules) {
-    assert.match(rule, /font-display:\s*swap/);
-    assert.match(rule, /local\s*\(/i);
-  }
+  assert.match(css, /:root\s*\{\s*font-family:\s*'方正兰亭圆_GBK', 'ACG Source Han Sans'/);
+  for (const rule of rules) assert.match(rule, /font-display:\s*swap/);
+  assert.doesNotMatch(css, /founder-lanting-yuan|\.ttf/);
 });
 
 test('empty default loads regular, small labels stay regular and explicit heading/local families retain priority', async () => {
@@ -263,14 +277,16 @@ test('empty default loads regular, small labels stay regular and explicit headin
     h.document.documentElement.style.getPropertyValue('--secondary-font-family'),
     /^"方正兰亭圆_GBK"/
   );
-  assert.equal(loads.length, 1);
+  assert.equal(loads.length, 2);
   assert.match(loads[0].font, /"方正兰亭圆_GBK"/);
+  assert.match(loads[1].font, /"ACG Source Han Sans"/);
   assert.ok(loads.every((entry) => /相册/.test(entry.sample)));
   assert.equal(await h.apply({ fontFamily: '' }), true);
-  assert.equal(loads.length, 1, 'Unchanged application does not repeatedly load or relayout');
+  assert.equal(loads.length, 2, 'Unchanged application does not repeatedly load or relayout');
   await h.apply({ fontFamily: '方正兰亭圆_GBK_中' });
   assert.match(h.document.documentElement.style.fontFamily, /^"方正兰亭圆_GBK_中",/);
-  assert.match(loads.at(-1).font, /"方正兰亭圆_GBK_中"/);
+  assert.match(loads.at(-3).font, /"方正兰亭圆_GBK_中"/);
+  assert.match(loads.at(-2).font, /"方正兰亭圆_GBK"/, 'Small regular ink preloads before commit');
   assert.match(
     h.document.documentElement.style.getPropertyValue('--secondary-font-family'),
     /^"方正兰亭圆_GBK",/
@@ -284,7 +300,7 @@ test('empty default loads regular, small labels stay regular and explicit headin
   assert.equal(h.events.filter((event) => event.type === 'album:font-loaded').length, 3);
 });
 
-test('missing private fonts resolve to system fallback without false ready events or changing the choice', async () => {
+test('missing local fonts resolve to bundled fallback without false ready state or changing the choice', async () => {
   for (const load of [
     async () => [],
     async () => {
@@ -299,13 +315,15 @@ test('missing private fonts resolve to system fallback without false ready event
       /^"方正兰亭圆_GBK",.*Segoe UI.*Microsoft YaHei/
     );
     assert.equal(h.settings.fontFamily, '');
-    assert.equal(h.events.length, 0);
+    assert.match(h.document.documentElement.style.fontFamily, /ACG Source Han Sans/);
+    assert.equal(h.events.filter((event) => event.detail?.ready).length, 0);
+    assert.equal(h.events.filter((event) => event.type === 'resize').length, 1);
     assert.equal(h.viewport.listeners.scroll.size, 0);
     const dialog = h.open();
     assert.equal(dialog.querySelector('#font-options').getAttribute('aria-label'), '预设字体');
-    assert.match(dialog.querySelector('.font-status').textContent, /缺失时自动使用系统后备字体/);
-    assert.doesNotMatch(source, /内置/);
-    assert.equal(dialog.querySelector('#font-options').children.length, 5);
+    assert.match(dialog.querySelector('.font-status').textContent, /未安装时使用思源黑体/);
+    assert.match(source, /内置思源黑体/);
+    assert.equal(dialog.querySelector('#font-options').children.length, 6);
     assert.equal(await h.apply({ fontFamily: '方正兰亭圆_GBK' }), false);
     assert.match(h.document.documentElement.style.fontFamily, /^"方正兰亭圆_GBK",/);
     assert.equal(h.document.documentElement.dataset.fontState, 'fallback');
@@ -355,14 +373,14 @@ test('navigation or scrolling during font swap uses the current anchor and error
   assert.match(failed.document.documentElement.style.fontFamily, /Segoe UI/);
 });
 
-test('first layer has five builtin faces and no installed-font RPC until the first action opens local search', async () => {
+test('first layer has bundled and five local faces and no installed-font RPC until local search opens', async () => {
   const h = harness(),
     dialog = h.open(),
     options = dialog.querySelector('#font-options');
   assert.equal(dialog.dataset.fontLayer, 'builtin');
-  assert.equal(options.children.length, 5);
+  assert.equal(options.children.length, 6);
   assert.equal(h.requests.length, 0);
-  assert.equal(h.label.textContent, '方正兰亭圆_GBK');
+  assert.equal(h.label.textContent, '思源黑体（内置）');
   assert.equal(options.children[2].getAttribute('aria-selected'), 'false');
   assert.equal(options.children[0].getAttribute('aria-selected'), 'true');
   dialog.querySelector('[data-font-local]').onclick();
@@ -373,7 +391,7 @@ test('first layer has five builtin faces and no installed-font RPC until the fir
   assert.equal(options.children.length, 3);
   dialog.querySelector('[data-font-back]').onclick();
   assert.equal(dialog.dataset.fontLayer, 'builtin');
-  assert.equal(options.children.length, 5);
+  assert.equal(options.children.length, 6);
   dialog.querySelector('[data-font-local]').onclick();
   await flush();
   assert.equal(h.requests.length, 1);
@@ -386,7 +404,7 @@ test('first layer has five builtin faces and no installed-font RPC until the fir
 
 test('restoring the empty setting selects regular without rewriting an explicit choice', async () => {
   const h = harness();
-  await h.open().querySelector('#font-options').children[0].onclick();
+  await h.open().querySelector('#font-options').children[1].onclick();
   assert.equal(h.settings.fontFamily, '方正兰亭圆_GBK');
   assert.equal(h.label.textContent, '方正兰亭圆_GBK');
   assert.match(h.document.documentElement.style.fontFamily, /^"方正兰亭圆_GBK",/);
@@ -394,8 +412,12 @@ test('restoring the empty setting selects regular without rewriting an explicit 
   dialog.querySelector('[data-font-local]').onclick();
   await flush();
   const reset = dialog.querySelector('#font-options').children[0];
-  assert.equal(reset.textContent, '方正兰亭圆_GBK（默认）');
-  assert.equal(reset.getAttribute('aria-selected'), 'true');
+  assert.equal(reset.textContent, '自动（本机兰亭圆 / 内置思源黑体）');
+  assert.equal(
+    reset.getAttribute('aria-selected'),
+    'false',
+    'Explicit choice has not enabled auto default'
+  );
   await reset.onclick();
   assert.equal(h.settings.fontFamily, '');
   assert.equal(h.label.textContent, '方正兰亭圆_GBK');
@@ -464,7 +486,7 @@ test('installed-font retry, save failure, Escape and post-close async responses 
 test('each builtin selection persists its Chinese family, keeps parent settings and reports the current choice', async () => {
   const h = harness();
   const dialog = h.open();
-  const choice = dialog.querySelector('#font-options').children[3];
+  const choice = dialog.querySelector('#font-options').children[4];
   assert.equal(choice.dataset.fontFamily, '方正兰亭圆_GBK_中粗');
   await choice.onclick();
   assert.equal(h.settings.fontFamily, '方正兰亭圆_GBK_中粗');

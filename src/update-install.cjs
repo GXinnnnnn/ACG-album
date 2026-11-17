@@ -8,7 +8,7 @@ const {
   validIdentity,
   sameIdentity,
   validateRuntimeManifest,
-  FONT_WEIGHTS
+  LEGACY_BUNDLED_FONTS
 } = require('./runtime-update.cjs');
 
 function appGuid() {
@@ -108,21 +108,8 @@ function installationPlan({
     )
       throw new Error('运行时更新身份不匹配。');
   }
-  if (
-    !Array.isArray(fontOverlay) ||
-    ![0, 5].includes(fontOverlay.length) ||
-    fontOverlay.some(
-      (font) =>
-        !FONT_WEIGHTS.some((weight) => font.name === weight + '.ttf') ||
-        !/^[a-f\d]{64}$/.test(font.sha256) ||
-        !Number.isSafeInteger(font.bytes) ||
-        font.bytes <= 0 ||
-        font.bytes > 32 * 1024 ** 2 ||
-        font.source !== path.win32.join(path.win32.dirname(installer), 'font-overlay', font.name)
-    ) ||
-    new Set(fontOverlay.map((font) => font.name)).size !== fontOverlay.length
-  )
-    throw new Error('本机字体保留信息无效。');
+  if (!Array.isArray(fontOverlay) || fontOverlay.length)
+    throw new Error('更新不再支持保留随包私有字体，请重新检查更新。');
   if (ownershipSha256 !== undefined && !/^[a-f\d]{64}$/.test(ownershipSha256))
     throw new Error('程序文件所有权校验信息无效。');
   return {
@@ -275,17 +262,36 @@ function Confirm-AlbumIndex {
   $database = Join-Path $index 'subjects.sqlite'
   if ($m.database -cne 'subjects.sqlite' -or (Get-Item -LiteralPath $database).Length -ne $p.indexIdentity.bytes -or (Get-FileHash -LiteralPath $database -Algorithm SHA256).Hash -ine $p.indexIdentity.sha256) { throw 'Original index bytes changed.' }
 }
-function Copy-AlbumFontOverlay($target) {
-  foreach ($font in @($p.fontOverlay)) {
-    $source = Get-Item -LiteralPath $font.source -Force
-    if ($source.Attributes -band [IO.FileAttributes]::ReparsePoint -or $source.Length -ne $font.bytes -or (Get-FileHash -LiteralPath $font.source -Algorithm SHA256).Hash -ine $font.sha256) { throw 'Local font overlay changed.' }
-    $folder = Join-Path $target 'resources\fonts\founder-lanting-yuan'
-    New-Item -ItemType Directory -Path $folder -Force | Out-Null
-    $destination = Join-Path $folder $font.name
-    if (Test-Path -LiteralPath $destination) {
-      if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint -or (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ine $font.sha256) { throw 'Existing local font differs from retained font.' }
-    } else { Copy-Item -LiteralPath $font.source -Destination $destination -ErrorAction Stop }
-    if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ine $font.sha256) { throw 'Retained font verification failed.' }
+function Get-AlbumLegacyBundledFonts {
+  $fonts = '${JSON.stringify(LEGACY_BUNDLED_FONTS)}' | ConvertFrom-Json
+  foreach ($font in $fonts) { $font }
+}
+function Move-AlbumLegacyBundledFonts($directory, $backup, $retired) {
+  foreach ($relativeRoot in @('fonts/founder-lanting-yuan', 'resources/fonts/founder-lanting-yuan')) {
+    foreach ($font in @(Get-AlbumLegacyBundledFonts)) {
+      $relative = $relativeRoot + '/' + $font.name
+      $source = Join-Path $directory $relative
+      if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+      $item = Get-Item -LiteralPath $source -Force
+      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint -or $item.Length -ne $font.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $font.sha256) { continue }
+      # Only exact historical bytes at exact application-owned paths may move.
+      if (-not (Test-Path -LiteralPath $backup)) { New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null }
+      $destination = Join-Path $backup $relative
+      New-Item -ItemType Directory -Path (Split-Path -LiteralPath $destination) -Force | Out-Null
+      Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+      $retired.Add($relative) | Out-Null
+      @{ schemaVersion = 1; kind = 'retired-bundled-fonts'; originalDirectory = $directory; paths = @($retired); identities = @(Get-AlbumLegacyBundledFonts) } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $backup 'migration.json') -Encoding UTF8
+      if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ine $font.sha256) { throw 'Retired bundled font changed during backup.' }
+    }
+  }
+}
+function Restore-AlbumLegacyBundledFonts($directory, $backup, $retired) {
+  foreach ($relative in @($retired)) {
+    $source = Join-Path $backup $relative
+    $destination = Join-Path $directory $relative
+    if (Test-Path -LiteralPath $destination) { throw ('Cannot restore retired font over an existing file: ' + $destination) }
+    New-Item -ItemType Directory -Path (Split-Path -LiteralPath $destination) -Force | Out-Null
+    Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
   }
 }
 function Confirm-AlbumRuntimeFiles($directory) {
@@ -342,7 +348,7 @@ function Get-AlbumOwnership($directory) {
   $names = @{}; $bytes = 0L
   foreach ($file in @($m.files)) {
     $name = [string]$file.path
-    if (@($file.PSObject.Properties).Count -ne 3 -or -not $name -or $name.Length -gt 200 -or $name -ieq 'resources/runtime-owned-files.json' -or $name -match '^(?i:fonts|resources/(?:fonts|local-index))(?:/|$)' -or $names.ContainsKey($name) -or $file.bytes -lt 0 -or $file.bytes -ne [long]$file.bytes -or $file.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw ('Invalid owned runtime path: ' + $name) }
+    if (@($file.PSObject.Properties).Count -ne 3 -or -not $name -or $name.Length -gt 200 -or $name -ieq 'resources/runtime-owned-files.json' -or $name -match '^(?i:fonts|resources/(?:fonts|local-index))(?:/|$)' -or $name -match '(?i)\.(?:ttf|otf|woff2?|ttc|otc|eot)$' -or $names.ContainsKey($name) -or $file.bytes -lt 0 -or $file.bytes -ne [long]$file.bytes -or $file.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw ('Invalid owned runtime path: ' + $name) }
     foreach ($part in $name.Split('/')) {
       if (-not (Test-AlbumRuntimePathPart $part)) { throw ('Invalid owned runtime path: ' + $name) }
     }
@@ -423,6 +429,8 @@ function Install-AlbumRuntime {
   $stage = Join-Path $parent ('ACG-album-runtime-stage-' + [Guid]::NewGuid().ToString('N'))
   $backup = Join-Path $parent ('ACG-album-runtime-backup-' + [Guid]::NewGuid().ToString('N'))
   $oldMoved = @(); $newMoved = @(); $committed = $false
+  $privateFontBackup = Join-Path $parent ('ACG-album-private-font-backup-' + [Guid]::NewGuid().ToString('N'))
+  $retiredFonts = New-Object System.Collections.ArrayList
   try {
     Assert-AlbumPlainTree $p.directory
     Confirm-AlbumRuntimeOwnership $p.directory $p.ownershipSha256
@@ -434,19 +442,7 @@ function Install-AlbumRuntime {
     Expand-AlbumRuntime $stage
     Confirm-AlbumRuntimeOwnership $stage
     if ((Get-AlbumOwnership $stage).version -cne $p.runtimeManifest.version) { throw 'Runtime ownership version differs.' }
-    foreach ($relative in @('fonts', 'resources\fonts')) {
-      $source = Join-Path $p.directory $relative
-      if (Test-Path -LiteralPath $source) {
-        $target = Join-Path $stage $relative
-        New-Item -ItemType Directory -Path (Split-Path -LiteralPath $target) -Force | Out-Null
-        Copy-Item -LiteralPath $source -Destination $target -Recurse -ErrorAction Stop
-        foreach ($font in @(Get-ChildItem -LiteralPath $source -File -Recurse -Force)) {
-          $suffix = $font.FullName.Substring($source.Length).TrimStart('\')
-          if ((Get-FileHash -LiteralPath $font.FullName -Algorithm SHA256).Hash -ine (Get-FileHash -LiteralPath (Join-Path $target $suffix) -Algorithm SHA256).Hash) { throw 'Existing fonts could not be preserved.' }
-        }
-      }
-    }
-    Copy-AlbumFontOverlay $stage
+    Move-AlbumLegacyBundledFonts $p.directory $privateFontBackup $retiredFonts
     New-Item -ItemType Directory -Path (Join-Path $backup 'resources') -ErrorAction Stop | Out-Null
     foreach ($relative in $oldEntries) {
       Move-AlbumRuntimeFile (Join-Path $p.directory $relative) (Join-Path $backup $relative)
@@ -462,13 +458,13 @@ function Install-AlbumRuntime {
     Confirm-AlbumRuntimeOwnership $p.directory
     Confirm-AlbumIndex
     if ($manifestHash -and (Get-FileHash -LiteralPath (Join-Path $p.directory 'resources\local-index\manifest.json') -Algorithm SHA256).Hash -cne $manifestHash) { throw 'Original index manifest changed.' }
-    Copy-AlbumFontOverlay $p.directory
     $committed = $true
   } catch {
     $failure = $_
     foreach ($relative in $newMoved) { Remove-AlbumRuntimeFile (Join-Path $p.directory $relative) }
     Remove-AlbumEmptyRuntimeDirectories $p.directory $newMoved
     foreach ($relative in $oldMoved) { Move-AlbumRuntimeFile (Join-Path $backup $relative) (Join-Path $p.directory $relative) }
+    Restore-AlbumLegacyBundledFonts $p.directory $privateFontBackup $retiredFonts
     throw $failure
   } finally {
     # Keep the backup on any failure for recovery, including a failed rollback.
@@ -490,6 +486,8 @@ function Install-AlbumEdition($mode) {
   $hadIndex = Test-Path -LiteralPath $index
   $backedUp = $false
   $runtimeBackedUp = $false
+  $privateFontBackup = Join-Path (Split-Path -LiteralPath $p.directory) ('ACG-album-private-font-backup-' + [Guid]::NewGuid().ToString('N'))
+  $retiredFonts = New-Object System.Collections.ArrayList
   $installerStarted = $false
   $committed = $false
   try {
@@ -504,6 +502,7 @@ function Install-AlbumEdition($mode) {
         New-Item -ItemType Directory -Path (Split-Path -LiteralPath $target) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $p.directory $relative) -Destination $target -ErrorAction Stop
       }
+      Move-AlbumLegacyBundledFonts $p.directory $privateFontBackup $retiredFonts
       foreach ($relative in @('fonts', 'resources\fonts')) {
         $source = Join-Path $p.directory $relative
         if (Test-Path -LiteralPath $source) {
@@ -548,7 +547,6 @@ function Install-AlbumEdition($mode) {
         }
       }
     }
-    if ($p.fontOverlay) { Copy-AlbumFontOverlay $p.directory }
     if ($p.mode -eq 'full') {
       Confirm-AlbumRuntimeOwnership $p.directory
       if ((Get-AlbumOwnership $p.directory).version -cne $p.version) { throw 'Installed runtime ownership version differs.' }
@@ -588,6 +586,7 @@ function Install-AlbumEdition($mode) {
         }
       }
     }
+    if (-not $committed) { Restore-AlbumLegacyBundledFonts $p.directory $privateFontBackup $retiredFonts }
     if (-not $committed -and (Test-Path -LiteralPath $backup)) { Remove-Item -LiteralPath $backup -Recurse -Force }
     throw $failure
   }

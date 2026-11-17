@@ -2805,7 +2805,7 @@ async function settingsModal(tab = 'appearance') {
 <section id="appearance-page-theme" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-theme" tabindex="0">
 <div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">月之亮面</option><option value="dark">月之暗面</option></select></div>
 <div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div>
-<div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">方正兰亭圆_GBK</span>。支持兰亭圆预设与这台电脑已安装的字体；缺少字形时使用系统字体。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div>
+<div class="setting-row"><div><strong>全局字体</strong><p>当前：<span id="font-current">思源黑体（内置）</span>。本机已安装兰亭圆时默认使用它，否则使用内置思源黑体；保留你的字体选择。</p></div><button id="font-choose" class="subtle-button">选择字体</button></div>
 ${window.albumAppearance.markup('theme')}
 <div class="setting-row"><div><label for="motion-level"><strong>动效强度</strong></label><p id="motion-level-help">低：简单缩放；中：平滑聚焦；高：轻微 3D 跟随。遵循系统的「减少动态效果」偏好。</p></div><select id="motion-level" aria-describedby="motion-level-help"><option value="low">关闭过渡 · 简单缩放</option><option value="medium">中 · 平滑聚焦</option><option value="high">高 · 3D 跟随</option></select></div>
 <div class="setting-row"><div><strong>封面比例与更多显示设置</strong><p>卡片尺寸也可在相册工具栏中随时调整</p></div><button id="settings-density" class="subtle-button">调整显示</button></div>

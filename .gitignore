@@ -18,7 +18,14 @@ node_modules/
 *.dmg
 *.AppImage
 
-# Private local Founder fonts: no public redistribution grant; keep originals on disk
+# Proprietary fonts are not source or runtime resources; metadata remains tracked
+/src/assets/fonts/founder-lanting-yuan/*.[tT][tT][fF]
+/src/assets/fonts/founder-lanting-yuan/*.[oO][tT][fF]
+/src/assets/fonts/founder-lanting-yuan/*.[wW][oO][fF][fF]
+/src/assets/fonts/founder-lanting-yuan/*.[wW][oO][fF][fF]2
+/src/assets/fonts/founder-lanting-yuan/*.[tT][tT][cC]
+/src/assets/fonts/founder-lanting-yuan/*.[oO][tT][cC]
+/src/assets/fonts/founder-lanting-yuan/*.[eE][oO][tT]
 /src/assets/fonts/founder-lanting-yuan/regular.ttf
 /src/assets/fonts/founder-lanting-yuan/medium.ttf
 /src/assets/fonts/founder-lanting-yuan/semibold.ttf

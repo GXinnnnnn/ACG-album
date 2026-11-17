@@ -1,5 +1,6 @@
 {
-  "source": "Existing user-local Windows font files, copied byte for byte at the direct user request for this unpublished local app. No font was downloaded, installed, subsetted or modified.",
+  "source": "Historical hashes of user-local font files from a previous private build. These binaries are not bundled or loaded from the application; the hashes identify only known legacy copies for non-destructive private backup during migration.",
+  "distribution": "Do not distribute these proprietary binaries. Call only fonts already installed in the user's operating system. This metadata does not grant a font license.",
   "copyright": "Copyright(c) Beijing Founder Electronics Co.,Ltd.2014",
   "license": "Proprietary Founder font rights, not project MIT. OS/2 fsType=8 declares editable embedding; it is not a general redistribution license. This record does not establish a separate public application-distribution grant.",
   "variants": [

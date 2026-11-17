@@ -18,6 +18,7 @@ const { largestPngFromIco, customFolderIco } = require('./icons.cjs');
 const { rangedFileResponse } = require('./file-response.cjs');
 const { writeBitmap } = require('./clipboard.cjs');
 const { normalizeAccessToken } = require('./bangumi-access.cjs');
+const { retireLegacyBundledFonts } = require('./legacy-font-retirement.cjs');
 const { registerApplicationHandlers, openExternal } = require('./application.cjs');
 const { createWallpaperService, registerWallpaperHandlers } = require('./wallpaper.cjs');
 const { APP_NAME, resolveDataDirectory, resolveUserDataDirectory } = require('./profile-path.cjs');
@@ -534,6 +535,19 @@ if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
         dataDir: process.env.ACG_DATA_DIR
       });
       fs.mkdirSync(dataDir, { recursive: true });
+      if (app.isPackaged) {
+        try {
+          const retirement = await retireLegacyBundledFonts(path.dirname(process.execPath));
+          if (retirement.retired?.length)
+            log(
+              'Retired legacy bundled fonts:',
+              retirement.retired.length,
+              retirement.backupDirectory
+            );
+        } catch (error) {
+          log('Legacy font retirement deferred:', error.code || '', error.message);
+        }
+      }
       wallpapers = createWallpaperService({ dataDir });
       tokenPath = path.join(dataDir, 'bangumi-token.enc');
       const ready = bootWorker();
