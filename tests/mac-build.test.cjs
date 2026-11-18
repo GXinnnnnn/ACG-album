@@ -43,6 +43,18 @@ test('mac config passes the exact installed electron-builder schema and isolates
   assert.equal(config.electronVersion, '40.10.6');
   assert.equal(config.win, undefined);
   assert.equal(config.nsis, undefined);
+  assert.equal(config.extraFiles, undefined, 'macOS static data must not be copied to Contents/');
+  for (const [source, destination] of [
+    ['LICENSE', 'LICENSE.app.txt'],
+    ['README.md', 'README.md'],
+    ['docs', 'docs']
+  ]) {
+    assert.deepEqual(
+      config.extraResources.find((row) => row.from === path.join(root, source)),
+      { from: path.join(root, source), to: destination },
+      'Keep each complete document payload in Contents/Resources: ' + source
+    );
+  }
   assert.ok(!config.extraResources.some((row) => /local-index/.test(row.from + row.to)));
   assert.ok(
     config.extraResources.some(
@@ -57,6 +69,70 @@ test('mac config passes the exact installed electron-builder schema and isolates
   assert.equal(config.mac.mergeASARs, true);
   assert.equal(config.npmRebuild, false);
   assert.equal(config.artifactName, 'ACG-album-Setup-1.2.3-Full-universal.${ext}');
+});
+
+async function macBundleFixture(t) {
+  const temporaryRoot = await fsp.realpath(os.tmpdir());
+  const temporary = await fsp.mkdtemp(path.join(temporaryRoot, 'acg-mac-docs-test-'));
+  t.after(async () => {
+    assert.equal(path.dirname(temporary), temporaryRoot);
+    assert.ok(path.basename(temporary).startsWith('acg-mac-docs-test-'));
+    await fsp.rm(temporary, { recursive: true });
+  });
+  const contents = path.join(temporary, 'ACG-album.app', 'Contents');
+  const resources = path.join(contents, 'Resources');
+  await fsp.mkdir(path.join(resources, 'docs'), { recursive: true });
+  for (const filename of [
+    'LICENSE.app.txt',
+    'README.md',
+    'docs/THIRD_PARTY_NOTICES.md',
+    'docs/LOCAL_SEARCH_DATA.md'
+  ])
+    await fsp.writeFile(path.join(resources, filename), 'complete fixture notice\n');
+  return { contents, resources };
+}
+
+test('physical bundle accepts complete Resources documents and standard Apple Contents directories', async (t) => {
+  const { assertMacContentsLayout } = require('../scripts/check-mac-full.cjs');
+  const { contents, resources } = await macBundleFixture(t);
+  for (const name of [
+    'MacOS',
+    'Frameworks',
+    'SharedFrameworks',
+    'SharedSupport',
+    'PlugIns',
+    'XPCServices',
+    'Helpers',
+    'Library',
+    '_CodeSignature'
+  ])
+    await fsp.mkdir(path.join(contents, name));
+  for (const name of ['Info.plist', 'PkgInfo'])
+    await fsp.writeFile(path.join(contents, name), 'fixture metadata\n');
+  const entries = await fsp.readdir(contents);
+  assert.doesNotThrow(() => assertMacContentsLayout(entries));
+  assert.equal(
+    await fsp.readFile(path.join(resources, 'README.md'), 'utf8'),
+    'complete fixture notice\n'
+  );
+});
+
+test('physical bundle rejects misplaced README, application license and docs at Contents root', async (t) => {
+  const { assertMacContentsLayout } = require('../scripts/check-mac-full.cjs');
+  for (const filename of ['README.md', 'LICENSE.app.txt', 'docs']) {
+    const { contents } = await macBundleFixture(t);
+    if (filename === 'docs') await fsp.mkdir(path.join(contents, filename));
+    else await fsp.writeFile(path.join(contents, filename), 'misplaced notice\n');
+    const entries = await fsp.readdir(contents);
+    assert.throws(
+      () => assertMacContentsLayout(entries),
+      (error) => {
+        assert.match(error.message, /static data belongs in Resources/);
+        assert.ok(error.message.endsWith(filename));
+        return true;
+      }
+    );
+  }
 });
 
 test('universal exception matches only architecture-named sharp binaries in unpacked and ASAR paths', () => {

@@ -79,7 +79,32 @@ function parseMachOMinimumOS(output, architecture, maximum = '12.0') {
   return minimumCommands[0];
 }
 
+function assertMacContentsLayout(entries) {
+  const allowed = new Set([
+    'Info.plist',
+    'PkgInfo',
+    'MacOS',
+    'Resources',
+    'Frameworks',
+    'SharedFrameworks',
+    'SharedSupport',
+    'PlugIns',
+    'XPCServices',
+    'Helpers',
+    'Library',
+    '_CodeSignature',
+    '_MASReceipt',
+    'embedded.provisionprofile'
+  ]);
+  for (const name of entries)
+    assert.ok(
+      allowed.has(name),
+      'Nonstandard macOS Contents entry; static data belongs in Resources: ' + name
+    );
+}
+
 async function inspectApp(appPath) {
+  assertMacContentsLayout(await fsp.readdir(path.join(appPath, 'Contents')));
   const resources = path.join(appPath, 'Contents', 'Resources');
   const archive = path.join(resources, 'app.asar');
   const index = path.join(resources, 'local-index', 'subjects.sqlite');
@@ -113,7 +138,7 @@ async function inspectApp(appPath) {
     'docs/LOCAL_SEARCH_DATA.md'
   ])
     assert.ok(
-      (await fsp.stat(path.join(appPath, 'Contents', filename))).size > 0,
+      (await fsp.stat(path.join(resources, filename))).size > 0,
       'Missing distribution notice: ' + filename
     );
   const licenseDirectory = path.join(resources, 'licenses', 'mac-runtime');
@@ -574,4 +599,11 @@ async function main() {
 }
 
 if (require.main === module) runCli(main);
-module.exports = { parseMachOMinimumOS, inspectApp, nativeProbe, guiSmoke, main };
+module.exports = {
+  parseMachOMinimumOS,
+  assertMacContentsLayout,
+  inspectApp,
+  nativeProbe,
+  guiSmoke,
+  main
+};

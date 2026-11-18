@@ -138,9 +138,8 @@ function builderConfig({ root, stage, output, afterPack }) {
     ],
     extraResources: [
       { from: path.join(stage, 'src/demo'), to: 'demo' },
-      { from: path.join(stage, 'src/vendor/libheif'), to: 'codecs/libheif' }
-    ],
-    extraFiles: [
+      { from: path.join(stage, 'src/vendor/libheif'), to: 'codecs/libheif' },
+      // Static documents are resources; extraFiles would put them in macOS Contents/.
       { from: path.join(root, 'LICENSE'), to: 'LICENSE.app.txt' },
       { from: path.join(root, 'README.md'), to: 'README.md' },
       { from: path.join(root, 'docs'), to: 'docs' }
