@@ -21,6 +21,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { verifyNativeSources } = require('./mac-native-sources.cjs');
+const { detachMacVolume } = require('./mac-volume-detach.cjs');
 const HEIC = Object.freeze({
   url: 'https://raw.githubusercontent.com/strukturag/libheif/v1.19.8/examples/example.heic',
   bytes: 718114,
@@ -517,6 +518,7 @@ async function main() {
   await fsp.mkdir(evidence, { recursive: false });
   const mount = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'acg-mac-dmg-')));
   let mounted = false;
+  let pendingError;
   try {
     run('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg]);
     mounted = true;
@@ -560,13 +562,14 @@ async function main() {
     await fsp.writeFile(path.join(evidence, 'report.json'), JSON.stringify(result, null, 2) + '\n');
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
+    pendingError = error;
     await fsp.writeFile(
       path.join(evidence, 'error.json'),
       JSON.stringify({ error: error.stack || String(error) }, null, 2) + '\n'
     );
     throw error;
   } finally {
-    if (mounted) run('hdiutil', ['detach', mount]);
+    if (mounted) await detachMacVolume(mount, { pendingError });
   }
 }
 

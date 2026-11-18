@@ -22,13 +22,13 @@ ACG-album 是一款 Windows 本地相册，适合整理游戏 CG、角色插画�
 
 下载大小见发布页，文件校验值见 [SHA256SUMS.txt](https://github.com/GXinnnnnn/ACG-album/releases/download/v1.2.3/SHA256SUMS.txt)；安装、切换版本与备份步骤见 [安装说明](docs/INSTALLATION.md)。
 
-### macOS 适配准备中
+### macOS Full 完整包
 
-Mac 仅计划提供一个完整包：`ACG-album-Setup-1.2.3-Full-universal.dmg`，同一包支持 Apple Silicon 与 Intel，最低系统目标为 **macOS 12**，最终还需核验实际应用的最低系统声明并在真机测试。该包将追加到现有 [v1.2.3 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.3)；**当前尚无真实 Mac 构建、CI 验收或已发布附件**，现有 Windows 附件不代表 Mac 已通过验证。
+Mac 分发约定为单一完整包 `ACG-album-Setup-1.2.3-Full-universal.dmg`，同一包面向 Apple Silicon 与 Intel，部署目标为 **macOS 12**。附件可用性、文件大小、SHA-256 与验收范围，以 [v1.2.3 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.3) 的实际附件及同一 DMG 的原生双架构报告为准；部署目标不等于已在 macOS 12 真机验收。
 
-预期随包提供完整离线索引、两种架构的 Sharp / libvips、HEIC / HEIF WASM 解码资源及对应源码和许可。Mac 采用原生 Command 快捷键与 Dock 行为（卡片尺寸使用 Command＋滚轮），个人资料默认保存在 `Documents/ACG-album`，不会默认迁移 Windows 资料库；Token 使用 Electron `safeStorage` 调用系统安全存储。Mac 关闭 Windows 自动更新安装链路，后续从发布页手动下载新 DMG，退出应用后替换 `.app`。
+完整包须随附 Full 离线索引、两种架构的 Sharp / libvips、HEIC / HEIF WASM 解码资源及对应源码和许可，并保留思源黑体与 OFL。Mac 采用原生 Command 快捷键与 Dock 行为（卡片尺寸使用 Command＋滚轮），个人资料默认保存在 `Documents/ACG-album`，不会默认迁移 Windows 资料库；Token 使用 Electron `safeStorage` 调用系统安全存储。Mac 通过发布页手动下载新 DMG，退出应用后替换 `.app`，不执行 Windows 自动更新或 NSIS 安装事务。
 
-Mac 应用计划采用 ad-hoc 签名，没有 Developer ID 签名与 Apple 公证（notarization）。核对来源与摘要后，若首次打开被系统拦截，可在「系统设置 → 隐私与安全性」允许打开，或使用系统右键「打开」；不建议关闭 Gatekeeper。安装、资料备份和待验证边界见 [安装说明](docs/INSTALLATION.md#macos-full-完整包待真实验证)。
+Mac 应用使用 ad-hoc 签名，没有 Developer ID 签名且未经过 Apple 公证（notarization），DMG 本身不签名。核对来源与摘要后，若首次打开被系统拦截，可在「系统设置 → 隐私与安全性」允许打开，或使用系统右键「打开」；不建议关闭 Gatekeeper。安装、资料备份和验收范围见 [安装说明](docs/INSTALLATION.md#macos-full-完整包)。
 
 ## 主要功能
 

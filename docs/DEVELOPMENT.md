@@ -38,9 +38,9 @@ Lite / Full 构建读取预处理的 Archive 数据与校验清单。先按 [本
 
 ## macOS 开发与 Full 构建目标
 
-Mac 适配以 Electron 40.10.6 为基础，最低系统目标为 macOS 12.0，覆盖 Apple Silicon 与 Intel。开发使用原生 macOS、Node.js 24 和 pnpm 10.11.0（与 Mac 工作流固定版本一致）；正式包只有 `ACG-album-Setup-1.2.3-Full-universal.dmg`。当前没有真实 Mac build / CI 验收或已发布 DMG，不能把源码检查或 Windows 结果表述为 Mac 成品通过。
+Mac 适配以 Electron 40.10.6 为基础，部署目标为 macOS 12.0，覆盖 Apple Silicon 与 Intel。开发使用原生 macOS、Node.js 24 和 pnpm 10.11.0（与 Mac 工作流固定版本一致）；分发约定只有 `ACG-album-Setup-1.2.3-Full-universal.dmg`。实际构建与验收结果以对应提交的工作流记录、同一 DMG 的原生双架构报告和发布附件 SHA-256 为准，源码检查或 Windows 结果不能替代 Mac 成品验收。
 
-Mac 构建、资源与证据步骤见仓库根 [构建说明](../BUILDING.md#macos-单-full-universal-dmg待真实验证)。入口为 `scripts/build-mac-full.cjs`、`scripts/check-mac-full.cjs`、`scripts/check-mac-filesystems.cjs`、`scripts/mac-support.cjs` 与 `.github/workflows/mac-full.yml`；构建脚本在原生 darwin 上运行，需要 `7zz`，默认使用全新的 `release/mac-1.2.3`。不使用 Windows `package:installer` / NSIS 生成 Mac 安装包。
+Mac 构建、资源与证据步骤见仓库根 [构建说明](../BUILDING.md#macos-单-full-universal-dmg)。入口为 `scripts/build-mac-full.cjs`、`scripts/check-mac-full.cjs`、`scripts/check-mac-filesystems.cjs`、`scripts/mac-support.cjs` 与 `.github/workflows/mac-full.yml`；构建脚本在原生 darwin 上运行，需要 `7zz`，默认使用全新的 `release/mac-1.2.3`。不使用 Windows `package:installer` / NSIS 生成 Mac 安装包。
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -51,11 +51,11 @@ ACG_MAC_EXPECT_ARCH=x64 node scripts/check-mac-full.cjs
 ACG_MAC_EXPECT_ARCH=arm64 node scripts/check-mac-full.cjs
 ```
 
-每个原生 CI runner 还计划在构建或成品验收前运行 `scripts/check-mac-filesystems.cjs`，设置匹配的 `ACG_MAC_EXPECT_ARCH=x64` 或 `arm64`。脚本先编译重命名 helper、执行全部 Mac 契约测试，再创建并检查真实 APFS / APFSX 卷，借助 `ACG_MAC_RENAME_HELPER` 与 `ACG_MAC_TEST_ROOT` 在两种卷上分别执行 Mac 数据测试。可用 `ACG_MAC_FS_EVIDENCE` 指定新的 JSON 证据路径；这些 CI 入口尚无实际运行结果。
+每个原生 macOS 15 CI runner 在构建或成品验收前运行 `scripts/check-mac-filesystems.cjs`，设置匹配的 `ACG_MAC_EXPECT_ARCH=x64` 或 `arm64`。脚本先编译重命名 helper、执行全部 Mac 契约测试，再创建并检查真实 APFS / APFSX 卷，借助 `ACG_MAC_RENAME_HELPER` 与 `ACG_MAC_TEST_ROOT` 在两种卷上分别执行 Mac 数据测试。可用 `ACG_MAC_FS_EVIDENCE` 指定新的 JSON 证据路径；测试、卸载与清理须一并成功，局部通过不能代替工作流完整结果。
 
 Mac 测试应使用独立资料目录，保留默认系统「文稿 / Documents」下 `ACG-album`、显式 `ACG_DATA_DIR`、Windows 资料不默认迁移以及 `safeStorage` 系统安全存储的边界。窗口与快捷键适配需遵循原生 Command / Dock 行为；真机应检查 Command＋O 导入、Command＋逗号偏好设置、Command＋R 刷新、Command＋K 搜索、Command＋[ 返回、Command＋滚轮调整卡片，以及查看器中的 Command＋C 复制图片（输入框焦点下仍为文字复制）。Command＋W 关闭窗口后由 Dock 重开，Command＋Q 退出时完成后台 worker 收尾；这些目标均须实际运行验证。
 
-Mac 关闭 Windows 自动下载安装、本体更新和 NSIS 安装事务，用户从发布页手动下载 DMG，正常退出后替换 `.app`。Full 索引、两种架构的 Sharp / libvips 与相应源码 / 许可、HEIC WASM 及其源码计划全部随一个 DMG 提供；最低系统声明、原生加载、离线功能、签名和分发完整性都须对实际成品验收。ad-hoc 签名没有 Developer ID 身份，也不代表通过 Apple 公证；详见 [安装说明](INSTALLATION.md#macos-full-完整包待真实验证) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。
+Mac 不执行 Windows 自动下载安装、本体更新和 NSIS 安装事务，用户从发布页手动下载 DMG，正常退出后替换 `.app`。Full 索引、两种架构的 Sharp / libvips 与相应源码 / 许可、HEIC WASM 及其源码、思源黑体与 OFL 必须随一个 DMG 提供；最低系统声明、逐个 Mach-O 的 `otool` 最低版本、原生加载、离线功能、签名和分发完整性都须对同一实际成品验收。macOS 12 部署声明与 macOS 15 CI 结果不能代表已在 macOS 12 真机测试。依赖的隔离 stage、正式遍历策略和来源完整性要求见构建说明。ad-hoc 签名没有 Developer ID 身份且未经过 Apple 公证；详见 [安装说明](INSTALLATION.md#macos-full-完整包) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
 ## 验证范围与运行约定
 

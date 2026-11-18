@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { run, runCli } = require('./mac-support.cjs');
 const { buildRenameHelper } = require('./build-mac-full.cjs');
+const { detachMacVolume, cleanupMacTestDirectory } = require('./mac-volume-detach.cjs');
 
 async function checkCaseBehavior(directory, sensitive) {
   const original = path.join(directory, 'AcgCaseProbe');
@@ -23,6 +24,7 @@ async function main() {
   const temporary = await fsp.mkdtemp(path.join(temporaryRoot, 'acg-mac-filesystems-'));
   const results = [];
   let activeMount = null;
+  let pendingError;
   try {
     const helperResources = path.join(temporary, 'helper-resources');
     const helper = await buildRenameHelper(root, helperResources);
@@ -67,6 +69,7 @@ async function main() {
         image
       ]);
       let attached = false;
+      let volumeError;
       try {
         activeMount = mount;
         run('hdiutil', ['attach', '-nobrowse', '-mountpoint', mount, image]);
@@ -84,9 +87,12 @@ async function main() {
           { env: { ...env, ACG_MAC_TEST_ROOT: dataRoot }, stdio: 'inherit', timeout: 600_000 }
         );
         results.push({ filesystem, personality, caseBehavior, tests: dataTests, passed: true });
+      } catch (error) {
+        volumeError = error;
+        throw error;
       } finally {
         if (attached) {
-          run('hdiutil', ['detach', mount]);
+          await detachMacVolume(mount, { pendingError: volumeError });
           activeMount = null;
         }
       }
@@ -104,14 +110,11 @@ async function main() {
     };
     await fsp.writeFile(evidence, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
     console.log(JSON.stringify(report, null, 2));
+  } catch (error) {
+    pendingError = error;
+    throw error;
   } finally {
-    assert.equal(path.dirname(temporary), temporaryRoot);
-    assert.ok(path.basename(temporary).startsWith('acg-mac-filesystems-'));
-    // Never traverse a mount that could not be detached. Keep its owned evidence.
-    if (activeMount)
-      throw new Error('Temporary macOS test mount requires detach before cleanup: ' + activeMount);
-    // Only this invocation's fresh, detached disk images and helper test payload.
-    await fsp.rm(temporary, { recursive: true });
+    await cleanupMacTestDirectory({ temporary, temporaryRoot, activeMount }, pendingError);
   }
 }
 if (require.main === module) runCli(main);

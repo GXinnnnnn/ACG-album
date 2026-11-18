@@ -47,20 +47,20 @@ Standard、Lite、Full 使用同一应用身份与个人资料格式。退出相
 
 旧版本可能不识别新版数据库字段。需要回退时先保留当前完整备份，再使用与旧程序对应的资料副本；不要让旧程序反复写入唯一一份新版资料库。
 
-## macOS Full 完整包（待真实验证）
+## macOS Full 完整包
 
-Mac 适配目标是 **macOS 12 及以上**，同时支持 Apple Silicon（arm64）与 Intel（x64）。最低版本依据 Electron 40.10.6 的 breaking changes 与其固定 Chromium 144 源码依赖核对，最终仍须检查成品 `Info.plist` 及原生依赖，并完成真机验证。只计划提供 `ACG-album-Setup-1.2.3-Full-universal.dmg` 一个完整包，追加到现有 [v1.2.3 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.3)，不另增 Mac Standard / Lite 安装包或独立源码下载包。
+Mac 分发采用 `ACG-album-Setup-1.2.3-Full-universal.dmg` 一个完整包，面向 Apple Silicon（arm64）与 Intel（x64），部署目标为 **macOS 12**，不另增 Mac Standard / Lite 安装包或独立源码下载包。最低版本依据 Electron 40.10.6 与固定 Chromium 144 依赖；成品须核对 `Info.plist` 及每个 Mach-O 的最低系统要求。macOS 12 是部署目标，实际真机覆盖范围以验收报告为准；macOS 15 CI 结果不能作为 macOS 12 真机验证。
 
-**当前为适配与构建准备阶段：尚无真实 Mac 构建、CI 成功记录、安装验收或已发布 DMG。** 以下是预期步骤与资源位置，不是已完成的安装验证；不得用 Windows 的验证报告替代 Mac 结果。
+安装前以 [v1.2.3 发布页](https://github.com/GXinnnnnn/ACG-album/releases/tag/v1.2.3) 的实际附件、SHA-256 和同一 DMG 的原生 Intel / Apple Silicon 验收报告确认分发范围；Windows 验证报告或局部 Mac CI 通过不能替代完整成品验收。
 
-### 预期安装与首次打开
+### 安装与首次打开
 
-1. 待发布页实际出现上述 DMG 后，核对发布来源、实际大小和同批次 SHA-256；macOS 可使用 `shasum -a 256 <DMG路径>`。当前没有可引用的 Mac 成品摘要。
+1. 在发布页选择上述 DMG，核对发布来源、实际大小和同批次 SHA-256；macOS 可使用 `shasum -a 256 <DMG路径>`。摘要须与实际下载文件和本次 Mac 报告对应，不能套用 Windows 附件或其他批次的摘要。
 2. 打开 DMG，把 `ACG-album.app` 拖入「应用程序」，再从「应用程序」启动。Full 索引、运行库与解码资源随应用携带；下载、挂载、安装和缓存都需要额外磁盘空间。
-3. 应用计划使用 ad-hoc 签名，没有 Developer ID 签名与 Apple 公证（notarization）。核对来源和摘要后，首次打开若遭系统拦截，可按系统提示到「系统设置 → 隐私与安全性」允许打开，或使用 Finder 系统右键「打开」。较旧系统的设置名称可能不同；不建议关闭 Gatekeeper。
-4. 启动后的导入、浏览和本地检索使用方式与上文一致。Mac 快捷键适配包括 Command＋O 导入、Command＋逗号打开偏好设置、Command＋R 刷新、Command＋K 搜索，以及 Command＋滚轮调整卡片尺寸。Command＋W 关闭窗口后可从 Dock 再次打开，使用应用菜单或 Command＋Q 正常退出。实际窗口与快捷键行为仍待真机验收。
+3. 应用使用 ad-hoc 签名，没有 Developer ID 签名且未经过 Apple 公证（notarization），DMG 本身不签名。核对来源和摘要后，首次打开若遭系统拦截，可按系统提示到「系统设置 → 隐私与安全性」允许打开，或使用 Finder 系统右键「打开」。较旧系统的设置名称可能不同；不建议关闭 Gatekeeper。
+4. 启动后的导入、浏览和本地检索使用方式与上文一致。Mac 快捷键适配包括 Command＋O 导入、Command＋逗号打开偏好设置、Command＋R 刷新、Command＋K 搜索，以及 Command＋滚轮调整卡片尺寸。Command＋W 关闭窗口后可从 Dock 再次打开，使用应用菜单或 Command＋Q 正常退出。窗口与快捷键的实际验收范围以 Mac 报告为准。
 
-预期资源位于 `ACG-album.app/Contents/Resources/`：完整只读索引在 `local-index`，HEIC / HEIF 工厂、WASM、对应源码与许可在 `codecs/libheif`，Sharp / libvips 包含 arm64 和 x64 两套原生模块及匹配的源码、构建材料和许可；这些内容计划随同一个 DMG 提供。两架构的二进制加载、离线格式解码及源码交付完整性均须在最终成品中核对，详见 [构建说明](../BUILDING.md) 与 [第三方声明](THIRD_PARTY_NOTICES.md)。
+完整包资源须位于 `ACG-album.app/Contents/Resources/`：完整只读索引在 `local-index`，HEIC / HEIF 工厂、WASM、对应源码与许可在 `codecs/libheif`，Sharp / libvips 包含 arm64 和 x64 两套原生模块及匹配的源码、构建材料和许可；保留思源黑体与 OFL，这些内容须随同一个 DMG 提供。两架构的二进制加载、离线格式解码及源码交付完整性均须在最终成品中核对，详见 [构建说明](../BUILDING.md) 与 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
 ### Mac 资料、隐私与手动更新
 
@@ -68,7 +68,7 @@ Mac 新资料默认位于系统「文稿 / Documents」中的 `ACG-album`，即�
 
 Token 通过 Electron `safeStorage` 使用系统安全存储，在 Mac 上依赖系统钥匙串；复制资料库或更换账号、电脑后可能需要重新授权。原始图片、视频与另存的缓存继续分别备份。更新前从设置核对实际路径，正常退出后备份完整资料目录。
 
-Mac 关闭 Windows 的自动下载安装、本体更新与 NSIS 更新事务。后续更新需前往发布页手动下载对应的新 DMG，核对摘要，正常退出相册，再在「应用程序」中替换 `ACG-album.app`；保留个人资料与原图。应用内发布链接也不表示能够在 Mac 自动安装。Mac 最终发布需另附真实构建、两种架构的验收结果与大小 / SHA-256，全部完成前状态保持待验证。
+Mac 不执行 Windows 的自动下载安装、本体更新与 NSIS 更新事务。更新需前往发布页手动下载对应的新 DMG，核对摘要，正常退出相册，再在「应用程序」中替换 `ACG-album.app`；保留个人资料与原图。应用内发布链接也不表示能够在 Mac 自动安装。每次分发的兼容性与验收范围均以本次 Mac 同一 DMG 的双架构报告和 SHA-256 为准。
 
 ## 启动、继续任务与取消
 
