@@ -97,24 +97,21 @@ function createSystemFonts({
       }
     }
     if (platform === 'darwin') {
+      // AppKit enumerates available CSS family names without scanning or registering files.
+      // system_profiler can successfully return only {} when SPFontsDataType is unavailable.
       const output = await execute(
-        '/usr/sbin/system_profiler',
-        ['SPFontsDataType', '-json', '-timeout', '8'],
+        '/usr/bin/osascript',
+        [
+          '-l',
+          'JavaScript',
+          '-e',
+          "ObjC.import('AppKit'); JSON.stringify(ObjC.deepUnwrap($.NSFontManager.sharedFontManager.availableFontFamilies));"
+        ],
         run,
         8 * 1024 * 1024
       );
       try {
-        const report = JSON.parse(output);
-        if (!Array.isArray(report.SPFontsDataType)) throw new Error('Invalid font report');
-        const families = [];
-        for (const font of report.SPFontsDataType) {
-          if (!Array.isArray(font.typefaces)) throw new Error('Invalid typeface list');
-          for (const face of font.typefaces) {
-            // Filenames and face/PostScript names are not CSS family names.
-            if (face.enabled !== 'no') families.push(face.family);
-          }
-        }
-        return { families, source: 'macos-installed-fonts' };
+        return { families: JSON.parse(output), source: 'macos-installed-fonts' };
       } catch {
         throw new Error('本机字体列表格式无效，请重试。');
       }

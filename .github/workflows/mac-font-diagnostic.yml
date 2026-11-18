@@ -1,4 +1,4 @@
-name: macOS font format evidence
+name: macOS font preflight and format evidence
 
 on:
   workflow_dispatch:
@@ -20,6 +20,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -79,9 +80,11 @@ jobs:
           }
           write('summary.json', JSON.stringify(summary, null, 2) + '\n');
           console.log(JSON.stringify({...summary, records: undefined}));
-          // This job collects evidence; status/signal/parse errors remain explicit
-          // evidence fields. It does not validate the application or build a package.
+          // This step preserves collection errors as evidence. The separate font
+          // API test below validates application behavior without building a package.
           NODE
+      - name: Verify the application font API before packaging
+        run: node --test --test-concurrency=1 tests/mac-data-fonts.test.cjs
       - name: Preserve native font evidence
         if: always()
         uses: actions/upload-artifact@v4
