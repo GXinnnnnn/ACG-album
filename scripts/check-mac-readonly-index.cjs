@@ -43,6 +43,38 @@ function contains(directory, filename) {
   );
 }
 
+function validateReadOnlyVolume(volume) {
+  assert.equal(
+    String(volume.FilesystemType).toLowerCase(),
+    'apfs',
+    'The real mounted fixture must use APFS'
+  );
+  // diskutil's plist exposes writability, not a ReadOnlyVolume key.
+  assert.equal(volume.Writable, false, 'diskutil must explicitly report a non-writable mount');
+  if (Object.hasOwn(volume, 'WritableVolume'))
+    assert.equal(volume.WritableVolume, false, 'The mounted volume must not be writable');
+}
+
+async function verifyReadOnlyWriteProbe(mount, io = fsp) {
+  const marker = path.join(mount, '.acg-readonly-probe-' + require('node:crypto').randomUUID());
+  let handle;
+  try {
+    handle = await io.open(marker, 'wx');
+  } catch (error) {
+    // Permissions failures do not prove a read-only filesystem.
+    assert.equal(error.code, 'EROFS', 'The actual mount must reject creation with EROFS', {
+      cause: error
+    });
+    return { code: error.code, syscall: 'open', flags: 'wx', creationRejected: true };
+  }
+  try {
+    await handle.close();
+  } finally {
+    await io.unlink(marker);
+  }
+  assert.fail('The fixture mount unexpectedly permitted file creation');
+}
+
 async function childRuntime(expectedArch) {
   assert.equal(process.platform, 'darwin', 'A real macOS Electron runtime is required');
   assert.ok(['arm64', 'x64'].includes(expectedArch));
@@ -506,21 +538,21 @@ async function main(expectedArch = process.argv[2], reportArgument = process.arg
     const volume = JSON.parse(
       run('plutil', ['-convert', 'json', '-o', '-', '-'], { input: plist, timeout: 30_000 })
     );
-    assert.equal(
-      String(volume.FilesystemType).toLowerCase(),
-      'apfs',
-      'The real mounted fixture must use APFS'
-    );
-    assert.equal(volume.ReadOnlyVolume, true, 'The fixture volume must actually be read-only');
+    // Retain the actual plist fields even when a validation assertion fails.
+    report.diskutilPlist = plist;
+    report.diskutil = volume;
+    validateReadOnlyVolume(volume);
     assert.equal(
       await fsp.realpath(volume.MountPoint),
       await fsp.realpath(mount),
       "diskutil must describe this invocation's actual mount"
     );
+    const writeProbe = await verifyReadOnlyWriteProbe(mount);
     report.volume = {
       filesystem: volume.FilesystemType,
-      readOnlyVolume: volume.ReadOnlyVolume,
-      readOnlyMedia: volume.ReadOnlyMedia,
+      writable: volume.Writable,
+      writableVolume: volume.WritableVolume,
+      writeProbe,
       mountPoint: volume.MountPoint,
       personality: volume.FileSystemPersonality,
       imageFormat: 'UDRO',
@@ -603,4 +635,11 @@ if (require.main === module)
       console.log(resultPrefix + JSON.stringify(proof));
     } else await main();
   });
-module.exports = { snapshotFixture, createFixture, probeFixture, main };
+module.exports = {
+  snapshotFixture,
+  createFixture,
+  probeFixture,
+  validateReadOnlyVolume,
+  verifyReadOnlyWriteProbe,
+  main
+};
