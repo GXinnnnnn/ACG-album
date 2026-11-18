@@ -2,7 +2,11 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { parseMachOMinimumOS } = require('../scripts/check-mac-full.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { run } = require('../scripts/mac-support.cjs');
+const { parseMachOMinimumOS, readMachOMinimumOS } = require('../scripts/check-mac-full.cjs');
 
 const buildVersion = (version = '12.0', platform = '1') => `Load command 0
       cmd LC_BUILD_VERSION
@@ -106,3 +110,91 @@ test('mac minimum OS: rejects missing, duplicate, malformed and foreign minimum 
       /Malformed macOS version/
     );
 });
+
+test('mac minimum OS: otool receives each full literal path with archive syntax disabled', () => {
+  const filename = path.join(os.tmpdir(), 'ACG app (parent)', 'ACG-album Helper (GPU)');
+  for (const architecture of ['arm64', 'x86_64']) {
+    const args = ['-m', '-arch', architecture, '-l', filename];
+    const result = readMachOMinimumOS(filename, architecture, (tool, actualArgs) => {
+      assert.equal(tool, 'otool');
+      assert.deepEqual(actualArgs, args);
+      return `${filename} (architecture ${architecture}):\n${buildVersion()}`;
+    });
+    assert.deepEqual(result, {
+      architecture,
+      loadCommand: 'LC_BUILD_VERSION',
+      platform: 'macos',
+      versionField: 'minos',
+      version: '12.0',
+      tool: 'otool',
+      args
+    });
+    assert.throws(
+      () =>
+        readMachOMinimumOS(filename, architecture, (tool, actualArgs) => {
+          assert.equal(tool, 'otool');
+          assert.deepEqual(actualArgs, args);
+          return `${filename} (architecture ${architecture}):\n${buildVersion('13.0')}`;
+        }),
+      /minimum macOS 13\.0 exceeds 12\.0/
+    );
+    const toolError = new Error('otool fixture failure');
+    assert.throws(
+      () =>
+        readMachOMinimumOS(filename, architecture, () => {
+          throw toolError;
+        }),
+      (error) => error === toolError
+    );
+  }
+});
+
+test(
+  'mac minimum OS: native universal binaries with spaces and parentheses keep the macOS 12 gate',
+  {
+    skip: process.platform !== 'darwin' ? 'Requires real Darwin clang, lipo and otool' : false
+  },
+  (t) => {
+    const temporaryDirectory = fs.realpathSync(os.tmpdir());
+    const root = fs.mkdtempSync(path.join(temporaryDirectory, 'acg-minimum-os-'));
+    t.after(() => {
+      assert.equal(path.dirname(root), temporaryDirectory);
+      assert.ok(path.basename(root).startsWith('acg-minimum-os-'));
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const parent = path.join(root, 'ACG app (parent)');
+    fs.mkdirSync(parent);
+    const source = path.join(parent, 'probe.c');
+    fs.writeFileSync(source, 'int main(void) { return 0; }\n');
+    for (const minimum of ['12.0', '13.0']) {
+      const filename = path.join(parent, `ACG-album Helper ${minimum} (GPU)`);
+      run('xcrun', [
+        'clang',
+        '-arch',
+        'arm64',
+        '-arch',
+        'x86_64',
+        `-mmacosx-version-min=${minimum}`,
+        source,
+        '-o',
+        filename
+      ]);
+      const architectures = run('lipo', ['-archs', filename]).split(/\s+/).sort();
+      assert.deepEqual(architectures, ['arm64', 'x86_64']);
+      for (const architecture of architectures) {
+        if (minimum === '13.0') {
+          assert.throws(
+            () => readMachOMinimumOS(filename, architecture),
+            /minimum macOS 13\.0(?:\.0)? exceeds 12\.0/
+          );
+        } else {
+          const result = readMachOMinimumOS(filename, architecture);
+          assert.equal(result.architecture, architecture);
+          assert.equal(result.platform, 'macos');
+          assert.match(result.version, /^12(?:\.0){0,2}$/);
+          assert.deepEqual(result.args, ['-m', '-arch', architecture, '-l', filename]);
+        }
+      }
+    }
+  }
+);

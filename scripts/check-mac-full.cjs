@@ -79,6 +79,12 @@ function parseMachOMinimumOS(output, architecture, maximum = '12.0') {
   return minimumCommands[0];
 }
 
+function readMachOMinimumOS(filename, architecture, runTool = run) {
+  // -m treats literal parentheses as filename characters, not archive(member) syntax.
+  const args = ['-m', '-arch', architecture, '-l', filename];
+  return { ...parseMachOMinimumOS(runTool('otool', args), architecture), tool: 'otool', args };
+}
+
 function assertMacContentsLayout(entries) {
   const allowed = new Set([
     'Info.plist',
@@ -226,9 +232,8 @@ async function inspectApp(appPath) {
       relative
     );
     const minimumOS = architectures.map((architecture) => {
-      const args = ['-arch', architecture, '-l', filename];
       try {
-        return { ...parseMachOMinimumOS(run('otool', args), architecture), tool: 'otool', args };
+        return readMachOMinimumOS(filename, architecture);
       } catch (error) {
         throw new Error(
           `Minimum macOS check failed for ${relative} [${architecture}]: ${error.message}`,
@@ -601,6 +606,7 @@ async function main() {
 if (require.main === module) runCli(main);
 module.exports = {
   parseMachOMinimumOS,
+  readMachOMinimumOS,
   assertMacContentsLayout,
   inspectApp,
   nativeProbe,
