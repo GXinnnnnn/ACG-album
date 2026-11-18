@@ -28,6 +28,56 @@ const HEIC = Object.freeze({
   rgbaSha256: '7f8f77c3e33f64338ebea81ce0102de5a0cf132061bef3176cad0373d7bada3b'
 });
 
+function parseMachOMinimumOS(output, architecture, maximum = '12.0') {
+  assert.ok(['arm64', 'x86_64'].includes(architecture), 'Unexpected Mach-O architecture');
+  const versionParts = (value) => {
+    assert.match(value, /^[1-9]\d*(?:\.(?:0|[1-9]\d*)){0,2}$/, 'Malformed macOS version: ' + value);
+    const parts = value.split('.').map((part) => BigInt(part));
+    while (parts.length < 3) parts.push(0n);
+    return parts;
+  };
+  const maximumParts = versionParts(maximum);
+  const headers = [...output.matchAll(/^.*\(architecture ([^)]+)\):\s*$/gm)];
+  assert.ok(headers.length <= 1, 'Expected output for exactly one Mach-O slice');
+  if (headers.length) assert.equal(headers[0][1], architecture, 'Mach-O slice header mismatch');
+  const minimumCommands = [];
+  for (const block of output.split(/^Load command \d+\s*$/m).slice(1)) {
+    const field = (name) => {
+      const lines = block
+        .split(/\r?\n/)
+        .filter((line) => new RegExp('^\\s*' + name + '(?:\\s|$)').test(line));
+      assert.equal(lines.length, 1, 'Expected exactly one ' + name + ' field');
+      const tokens = lines[0].trim().split(/\s+/);
+      assert.equal(tokens.length, 2, 'Malformed ' + name + ' field');
+      return tokens[1];
+    };
+    const loadCommand = field('cmd');
+    if (!['LC_BUILD_VERSION', 'LC_VERSION_MIN_MACOSX'].includes(loadCommand)) continue;
+    const versionField = loadCommand === 'LC_BUILD_VERSION' ? 'minos' : 'version';
+    if (loadCommand === 'LC_BUILD_VERSION') {
+      const platform = field('platform');
+      assert.ok(
+        ['1', 'MACOS', 'macos'].includes(platform),
+        'LC_BUILD_VERSION platform is not macOS: ' + platform
+      );
+    }
+    const version = field(versionField);
+    const parts = versionParts(version);
+    const difference = parts.findIndex((part, index) => part !== maximumParts[index]);
+    assert.ok(
+      difference === -1 || parts[difference] < maximumParts[difference],
+      `Mach-O ${architecture} ${loadCommand} minimum macOS ${version} exceeds ${maximum}`
+    );
+    minimumCommands.push({ architecture, loadCommand, platform: 'macos', versionField, version });
+  }
+  assert.equal(
+    minimumCommands.length,
+    1,
+    'Expected exactly one minimum macOS load command per slice'
+  );
+  return minimumCommands[0];
+}
+
 async function inspectApp(appPath) {
   const resources = path.join(appPath, 'Contents', 'Resources');
   const archive = path.join(resources, 'app.asar');
@@ -149,7 +199,18 @@ async function inspectApp(appPath) {
       native ? [native[1] === 'x64' ? 'x86_64' : 'arm64'] : ['arm64', 'x86_64'],
       relative
     );
-    macho.push({ path: relative, architectures });
+    const minimumOS = architectures.map((architecture) => {
+      const args = ['-arch', architecture, '-l', filename];
+      try {
+        return { ...parseMachOMinimumOS(run('otool', args), architecture), tool: 'otool', args };
+      } catch (error) {
+        throw new Error(
+          `Minimum macOS check failed for ${relative} [${architecture}]: ${error.message}`,
+          { cause: error }
+        );
+      }
+    });
+    macho.push({ path: relative, architectures, minimumOS });
   }
   for (const arch of ['arm64', 'x64']) {
     assert.ok(
@@ -510,4 +571,4 @@ async function main() {
 }
 
 if (require.main === module) runCli(main);
-module.exports = { inspectApp, nativeProbe, guiSmoke, main };
+module.exports = { parseMachOMinimumOS, inspectApp, nativeProbe, guiSmoke, main };

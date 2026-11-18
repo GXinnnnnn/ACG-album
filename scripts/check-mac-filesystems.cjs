@@ -42,13 +42,17 @@ async function main() {
       ['--test', '--test-concurrency=1', ...tests.map((name) => path.join(root, 'tests', name))],
       { env, stdio: 'inherit', timeout: 600_000 }
     );
-    for (const [filesystem, sensitive] of [
-      ['APFS', false],
-      ['APFSX', true]
+    // APFSX is a diskutil-only alias; hdiutil needs the filesystem personality name.
+    for (const [filesystem, personality, sensitive] of [
+      ['APFS', 'APFS', false],
+      ['APFSX', 'Case-sensitive APFS', true]
     ]) {
       const image = path.join(temporary, filesystem + '.sparseimage');
       const mount = path.join(temporary, filesystem + '-volume');
       await fsp.mkdir(mount);
+      console.log(
+        `Creating ${filesystem} test volume: hdiutil -size 512m -type SPARSE -fs ${JSON.stringify(personality)}`
+      );
       run('hdiutil', [
         'create',
         '-size',
@@ -56,7 +60,7 @@ async function main() {
         '-type',
         'SPARSE',
         '-fs',
-        filesystem,
+        personality,
         '-volname',
         'ACG-' + filesystem,
         '-o',
@@ -79,7 +83,7 @@ async function main() {
           ],
           { env: { ...env, ACG_MAC_TEST_ROOT: dataRoot }, stdio: 'inherit', timeout: 600_000 }
         );
-        results.push({ filesystem, caseBehavior, tests: dataTests, passed: true });
+        results.push({ filesystem, personality, caseBehavior, tests: dataTests, passed: true });
       } finally {
         if (attached) {
           run('hdiutil', ['detach', mount]);
