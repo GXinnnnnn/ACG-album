@@ -11,6 +11,16 @@
     if (value === null) return null;
     if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value))
       return undefined;
+    if (window.album?.platform && window.album.platform !== 'win32') {
+      if (!value.startsWith('/')) return undefined;
+      const parts = [];
+      for (const part of value.split('/')) {
+        if (!part || part === '.') continue;
+        if (part === '..') parts.pop();
+        else parts.push(part);
+      }
+      return '/' + parts.join('/');
+    }
     const input = value.replace(/\//g, '\\').toLowerCase();
     let prefix, rest;
     const drive = input.match(/^(?:\\\\\?\\)?[a-z]:\\/);
@@ -71,15 +81,17 @@
       for (const [key, pair] of map) {
         const [view, path] = JSON.parse(key),
           oldPath = rename.oldPath,
-          nextPath = rename.path;
+          nextPath = rename.path,
+          separator = oldPath.startsWith('/') ? '/' : '\\';
         if (
           path &&
-          (path === oldPath || path.startsWith(oldPath.endsWith('\\') ? oldPath : oldPath + '\\'))
+          (path === oldPath ||
+            path.startsWith(oldPath.endsWith(separator) ? oldPath : oldPath + separator))
         ) {
-          const tail = path.slice(oldPath.length).replace(/^\\/, '');
+          const tail = path.slice(oldPath.length).replace(separator === '/' ? /^\// : /^\\/, '');
           const next = scope(
             view,
-            nextPath + (tail ? (nextPath.endsWith('\\') ? '' : '\\') + tail : '')
+            nextPath + (tail ? (nextPath.endsWith(separator) ? '' : separator) + tail : '')
           );
           if (next) {
             map.delete(key);

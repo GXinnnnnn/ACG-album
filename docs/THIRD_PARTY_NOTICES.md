@@ -76,6 +76,23 @@ Portions of this software are copyright © The FreeType Project (www.freetype.or
 
 已检查的 npm 原生包及官方 Windows zip 没有单独的书面源码提供承诺。本目录保存许可文本与获取入口，没有捏造发行者的 written offer。**对外分发二进制时，发行者仍须按适用的 LGPL / MPL 条款随附完整对应源码，或采用许可允许且实际可履行的源码提供方式；仅有本页上游链接不等于已交付对应源码。** 如修改依赖，必须保留版权、标记修改并同步提供对应的构建材料。本文清单依据所附版本表与上游通知；升级、换平台或启用其他编解码组件后应重新核验。
 
+## macOS Full 计划随包内容（待真实验证）
+
+本节补充 1.2.3 Mac 适配目标，不把前述 Windows x64 的 DLL、组件清单或 1.1.1 源码附件视为 Mac 已交付证据。Mac 仅计划提供 `ACG-album-Setup-1.2.3-Full-universal.dmg`，Sharp 0.34.5、libvips 及其依赖须按实际 macOS 两种架构包分别核对许可与对应源码。
+
+| macOS 原生包目标                                                    | 固定版本                     | 许可核对与交付要求                                                                                                       |
+| ------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `@img/sharp-darwin-arm64` / `@img/sharp-darwin-x64`                 | 0.34.5                       | 保留两包实际 LICENSE、package 元数据与校验记录；Sharp 主体为 Apache-2.0，原生组合的声明以各包原文为准                    |
+| `@img/sharp-libvips-darwin-arm64` / `@img/sharp-libvips-darwin-x64` | 1.2.4（libvips 8.17.3 组合） | 核对实际 `versions.json`、README、许可及上游 THIRD-PARTY-NOTICES；保留 LGPL 及其他组件原始条文，并随附对应源码和构建材料 |
+
+计划在 `ACG-album.app/Contents/Resources/licenses/mac-runtime/` 保存实际 macOS 运行包的许可、元数据与清单，在 `ACG-album.app/Contents/Resources/native-sources/` 的 `shared/` 与 `darwin/` 子目录保存两架构预编译组合对应的组件源码、Sharp / libvips 构建树、依赖、Mac 补丁及来源 / 完整性记录。源码覆盖须与最终二进制版本一致；仅保留上游链接或 Windows 源码不等于完成 Mac 对应源码交付。
+
+原生模块目标位于 `ACG-album.app/Contents/Resources/app.asar.unpacked/node_modules/@img/`，两架构的 `.node` / `.dylib` 按平台包加载。对兼容修改版本的替换需保持包名、文件名、架构与 ABI；不附加禁止为调试 LGPL 修改而进行逆向工程的条件。ad-hoc 签名不是禁止修改的许可条件，修改后原签名可能失效，需按 macOS 的本地签名要求处理。
+
+独立 HEIC / HEIF WASM 与原始许可、来源和四份对应代码 / 构建归档计划继续保存在 `ACG-album.app/Contents/Resources/codecs/libheif/`，归档在其 `sources/` 下；应用 ASAR 内继续保留其他 `src/assets/licenses/` 及思源黑体 OFL。完整离线索引及来源位于 `Contents/Resources/local-index/`。Electron 的许可汇编须保留在最终应用相应运行时资源内，不以本文中文说明替代。
+
+这些源码、许可和资源计划包含在同一 Full DMG 中，不额外发布 Mac 多版安装器或独立源码包。**当前尚无真实 Mac 构建、CI 成功记录、已发布 DMG 或最终资源 / 许可清单的成品验收。** 发布前必须对同一 DMG 做原生 Intel 与 Apple Silicon 加载、对应源码覆盖、原始条文与来源哈希检查，当前状态保持待真实验证。构建及检查入口见 [构建说明](../BUILDING.md#macos-单-full-universal-dmg待真实验证)。
+
 ## 独立 HEIC / HEVC 离线解码器
 
 1.1.0 新增 `libheif-js` 1.23.5 的 WASM 工厂与二进制，内含 libheif 1.23.5 和 libde265 1.0.15；它与上表 Sharp 所用的 libheif 1.20.2 分开加载。原生解码库采用 LGPL-3.0-or-later，包装层随附的 `LICENSE-wrapper` 为 LGPLv3；继续保留各内嵌组件的版权与许可。完整 upstream `LICENSE` 包含 LGPLv3、其引用的 GPLv3 及相关 MIT 通知，另保留包装层 `LICENSE-wrapper`。

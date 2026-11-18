@@ -13,7 +13,7 @@ const within = (parent, child) => {
     !relative.startsWith('..' + path.sep)
   );
 };
-const equivalent = (a, b) => a.toLowerCase() === b.toLowerCase();
+const { samePath: equivalent, pathCollation } = require('./filesystem-path.cjs');
 /** Explicit user-authorized rename only. No filesystem writes or name inference.
  * prepare() yields with no write transaction open. Caller reserves the affected
  * root, invalidates old async jobs, then executes FS before commit(). commit()
@@ -60,7 +60,7 @@ function createRenameIdentity(
     'SELECT * FROM rename_identity_map WHERE op=? AND scanned=0 ORDER BY seq LIMIT 128'
   );
   const conflict = db.prepare(
-    'SELECT rowid AS node_rowid FROM nodes WHERE id=? OR path=? COLLATE NOCASE'
+    `SELECT rowid AS node_rowid FROM nodes WHERE id=? OR path=? COLLATE ${pathCollation()}`
   );
   const commitReceipt = db.prepare('SELECT * FROM rename_commits WHERE op_id=?');
   const frontier = has('match_frontier')
@@ -173,7 +173,7 @@ function createRenameIdentity(
     const collisions = db
       .prepare(
         `SELECT 1 FROM rename_identity_map m JOIN nodes n
-      ON n.id=m.new_id OR n.path=m.new_path COLLATE NOCASE
+      ON n.id=m.new_id OR n.path=m.new_path COLLATE ${pathCollation()}
       WHERE m.op=? AND n.rowid<>m.row_id LIMIT 1`
       )
       .get(plan.opId);

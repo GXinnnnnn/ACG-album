@@ -26,12 +26,12 @@ try {
   $installed.Dispose()
 }
 `;
-function execute(file, args, run) {
+function execute(file, args, run, maxBuffer = 2 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     run(
       file,
       args,
-      { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer: 2 * 1024 * 1024 },
+      { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer },
       (error, stdout) => {
         if (error) {
           const message =
@@ -92,6 +92,29 @@ function createSystemFonts({
       );
       try {
         return { families: JSON.parse(output), source: 'windows-installed-fonts' };
+      } catch {
+        throw new Error('本机字体列表格式无效，请重试。');
+      }
+    }
+    if (platform === 'darwin') {
+      const output = await execute(
+        '/usr/sbin/system_profiler',
+        ['SPFontsDataType', '-json', '-timeout', '8'],
+        run,
+        8 * 1024 * 1024
+      );
+      try {
+        const report = JSON.parse(output);
+        if (!Array.isArray(report.SPFontsDataType)) throw new Error('Invalid font report');
+        const families = [];
+        for (const font of report.SPFontsDataType) {
+          if (!Array.isArray(font.typefaces)) throw new Error('Invalid typeface list');
+          for (const face of font.typefaces) {
+            // Filenames and face/PostScript names are not CSS family names.
+            if (face.enabled !== 'no') families.push(face.family);
+          }
+        }
+        return { families, source: 'macos-installed-fonts' };
       } catch {
         throw new Error('本机字体列表格式无效，请重试。');
       }

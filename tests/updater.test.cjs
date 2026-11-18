@@ -412,15 +412,21 @@ test('version/edition/repository changes and altered downloaded bytes cannot sta
   }
 });
 
-test('test/development/unsupported platforms never execute even after valid download', async (t) => {
+test('test mode cannot execute a valid download; unsupported platforms reject before download', async (t) => {
   for (const options of [{ testMode: true }, { platform: 'linux' }, { arch: 'arm64' }]) {
     const h = await fixture(t, options);
-    await h.service.download({ edition: 'standard' });
+    const unsupported = options.platform === 'linux' || options.arch === 'arm64';
+    if (unsupported) {
+      await assert.rejects(h.service.download({ edition: 'standard' }), /发布页.*完整包/);
+    } else {
+      await h.service.download({ edition: 'standard' });
+    }
     await assert.rejects(
       h.service.install({ confirm: true, repository, version, edition: 'standard' }),
-      /不支持/
+      unsupported ? /发布页.*完整包/ : /不支持/
     );
     assert.equal(h.launches.length, 0);
+    assert.equal(h.quits(), 0);
   }
 });
 

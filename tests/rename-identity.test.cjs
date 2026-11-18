@@ -7,10 +7,11 @@ const { DatabaseSync } = require('node:sqlite');
 const { idFor } = require('../src/model.cjs');
 const { sortKey } = require('../src/natural-sort.cjs');
 const { createRenameIdentity } = require('../src/rename-identity.cjs');
+const { pathCollation } = require('../src/filesystem-path.cjs');
 
 function fixture(t, options = {}) {
   const db = new DatabaseSync(':memory:');
-  db.exec(`CREATE TABLE nodes(id TEXT PRIMARY KEY,root TEXT,parent TEXT,path TEXT UNIQUE COLLATE NOCASE,
+  db.exec(`CREATE TABLE nodes(id TEXT PRIMARY KEY,root TEXT,parent TEXT,path TEXT UNIQUE COLLATE ${pathCollation()},
     name TEXT,sortkey TEXT,kind TEXT,depth INTEGER,missing INTEGER DEFAULT 0,indexed REAL DEFAULT 1,
     cover TEXT,cover_source TEXT,local_newest TEXT,fs_identity TEXT,
     crop_x REAL DEFAULT 50,crop_y REAL DEFAULT 50,crop_zoom REAL DEFAULT 1,favorite INTEGER DEFAULT 0,
@@ -206,21 +207,28 @@ test('root rename migrates the exact policy and materializes only the undiscover
   );
 });
 
-test('case-only root rename keeps path-hash IDs while correcting every descendant path and the top natural sort key', async (t) => {
+test('case-only root rename preserves platform path identity while correcting descendant paths and the top natural sort key', async (t) => {
   const f = fixture(t),
     album = f.seed(path.join(f.source, 'Inner Album'));
   const image = f.seed(path.join(album.path, 'Legacy.jpg'), album.id, 2, 'image');
   const newPath = path.join(path.dirname(f.source), 'LIBRARY');
   const plan = await f.service.prepare({ id: f.root, newPath, operationId: 'case' });
-  assert.equal(plan.id, f.root);
-  assert.equal(plan.caseOnly, true);
+  const windows = process.platform === 'win32';
+  assert.equal(plan.id === f.root, windows);
+  assert.equal(plan.caseOnly, windows);
   f.service.commit(plan);
-  assert.equal(f.get(f.root).path, newPath);
-  assert.equal(f.get(f.root).name, 'LIBRARY');
-  assert.equal(f.get(f.root).sortkey, sortKey('LIBRARY'));
-  assert.equal(f.get(album.id).path, path.join(newPath, album.name));
-  assert.equal(f.get(image.id).path, path.join(newPath, album.name, image.name));
-  assert.equal(f.get(image.id).node_rowid, image.node_rowid);
+  const root = f.get(idFor(newPath));
+  const nextAlbum = f.get(idFor(path.join(newPath, album.name)));
+  const nextImage = f.get(idFor(path.join(newPath, album.name, image.name)));
+  assert.equal(root.path, newPath);
+  assert.equal(root.name, 'LIBRARY');
+  assert.equal(root.sortkey, sortKey('LIBRARY'));
+  assert.equal(nextAlbum.path, path.join(newPath, album.name));
+  assert.equal(nextImage.path, path.join(newPath, album.name, image.name));
+  assert.equal(nextImage.node_rowid, image.node_rowid);
+  assert.equal(nextImage.parent, nextAlbum.id);
+  assert.equal(nextAlbum.root, root.id);
+  if (!windows) assert.equal(f.get(f.root), undefined);
 });
 
 test('large explicit rename is paged without a 2048-node limit and yields with no global transaction while other roots can write', async (t) => {

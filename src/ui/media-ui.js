@@ -86,7 +86,7 @@ async function mediaProperties(n) {
       : '文件修改日期';
   openModal(
     '拍摄信息与地点',
-    `<dl class="property-grid"><dt>名称</dt><dd>${esc(node.name)}</dd><dt>类型 / 大小</dt><dd>${esc(pathExt(node.name))} ${node.kind === 'video' ? '视频' : '图片'} · ${bytes(node.bytes)}</dd><dt>尺寸</dt><dd>${m.width ? fmt(m.width) + ' × ' + fmt(m.height) : '暂未读取'}${m.frames > 1 ? ' · ' + fmt(m.frames) + ' 帧' : ''}</dd><dt>时间</dt><dd>${date(m.taken)}<small class="media-note">${source}</small></dd><dt>相机</dt><dd>${esc(m.camera || '未记录')}</dd><dt>色彩</dt><dd>${m.depth ? m.depth + ' 位 / 通道 · ' : ''}${esc(m.space || '未记录')}${m.has_icc ? ' · 含 ICC' : ''}<small class="media-note">${m.hdr ? '可能为高位深或宽色域，HDR 状态未确认。' : ''}原图使用 Chromium 解码；缩略图与编辑预览为 SDR，不保证 HDR 色调映射。</small></dd><dt>地址</dt><dd>${esc(node.path)}</dd>${m.error ? `<dt>解析提示</dt><dd>${esc(m.error)}</dd>` : ''}</dl><div class="media-place-fields"><label for="media-place">地点名称</label><input class="field-input" id="media-place" maxlength="120" placeholder="例如：杭州 · 西湖（手动填写）" value="${esc(m.place || '')}"><div class="coordinate-fields"><label>纬度<input id="media-latitude" type="number" min="-90" max="90" step="any" value="${m.latitude ?? ''}" placeholder="未记录"></label><label>经度<input id="media-longitude" type="number" min="-180" max="180" step="any" value="${m.longitude ?? ''}" placeholder="未记录"></label></div><p class="field-help">GPS 来自图片 EXIF 或手动录入；地点名称保存在本地资料库。不会自动联网查询地址，也不会写回原文件。清空坐标并保存可移除本地记录。</p><p class="inline-error" id="media-place-error" role="alert"></p></div><div class="modal-actions"><button id="media-prop-reveal" class="subtle-button">在资源管理器中定位</button><button id="media-place-save" class="primary">保存地点</button></div>`,
+    `<dl class="property-grid"><dt>名称</dt><dd>${esc(node.name)}</dd><dt>类型 / 大小</dt><dd>${esc(pathExt(node.name))} ${node.kind === 'video' ? '视频' : '图片'} · ${bytes(node.bytes)}</dd><dt>尺寸</dt><dd>${m.width ? fmt(m.width) + ' × ' + fmt(m.height) : '暂未读取'}${m.frames > 1 ? ' · ' + fmt(m.frames) + ' 帧' : ''}</dd><dt>时间</dt><dd>${date(m.taken)}<small class="media-note">${source}</small></dd><dt>相机</dt><dd>${esc(m.camera || '未记录')}</dd><dt>色彩</dt><dd>${m.depth ? m.depth + ' 位 / 通道 · ' : ''}${esc(m.space || '未记录')}${m.has_icc ? ' · 含 ICC' : ''}<small class="media-note">${m.hdr ? '可能为高位深或宽色域，HDR 状态未确认。' : ''}原图使用 Chromium 解码；缩略图与编辑预览为 SDR，不保证 HDR 色调映射。</small></dd><dt>地址</dt><dd>${esc(node.path)}</dd>${m.error ? `<dt>解析提示</dt><dd>${esc(m.error)}</dd>` : ''}</dl><div class="media-place-fields"><label for="media-place">地点名称</label><input class="field-input" id="media-place" maxlength="120" placeholder="例如：杭州 · 西湖（手动填写）" value="${esc(m.place || '')}"><div class="coordinate-fields"><label>纬度<input id="media-latitude" type="number" min="-90" max="90" step="any" value="${m.latitude ?? ''}" placeholder="未记录"></label><label>经度<input id="media-longitude" type="number" min="-180" max="180" step="any" value="${m.longitude ?? ''}" placeholder="未记录"></label></div><p class="field-help">GPS 来自图片 EXIF 或手动录入；地点名称保存在本地资料库。不会自动联网查询地址，也不会写回原文件。清空坐标并保存可移除本地记录。</p><p class="inline-error" id="media-place-error" role="alert"></p></div><div class="modal-actions"><button id="media-prop-reveal" class="subtle-button">${window.albumPlatform?.revealLabel || '在资源管理器中定位'}</button><button id="media-place-save" class="primary">保存地点</button></div>`,
     660
   );
   $('#media-prop-reveal').onclick = () => attempt(() => api('reveal', { id: n.id }));
@@ -244,7 +244,7 @@ async function displayImage(n) {
   const video = n.kind === 'video';
   $('#viewer-hint').textContent = video
     ? '← → 切换 · 使用原生播放控件 · Esc 关闭'
-    : '← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭';
+    : window.albumPlatform?.viewerHint || '← → 切换 · 滚轮缩放 · Ctrl C 复制 · Esc 关闭';
   $('#viewer-copy').hidden = $('#viewer-fit').hidden = $('#viewer-edit').hidden = video;
   if (!video) {
     let previewRequested = false;
@@ -253,7 +253,9 @@ async function displayImage(n) {
       const loading = $('#viewer-loading');
       loading.hidden = false;
       if (previewRequested) {
-        loading.textContent = '预览图片读取失败。可点击「系统打开」或在资源管理器中检查文件。';
+        loading.textContent = window.albumPlatform?.isMac
+          ? '预览图片读取失败。可点击「系统打开」或在 Finder 中检查文件。'
+          : '预览图片读取失败。可点击「系统打开」或在资源管理器中检查文件。';
         return;
       }
       previewRequested = true;

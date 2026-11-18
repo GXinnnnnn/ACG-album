@@ -442,6 +442,7 @@ function startupHarness({ resumeReject = false } = {}) {
     bytes: String,
     window: {
       albumAppearanceControls: { snapshot: () => 0, mergeSummary: (s) => s },
+      albumWallpaper: { snapshot: () => 0, mergeSummary: (s) => s },
       albumLocalSearch: { setStatus() {} }
     },
     requestAnimationFrame: (callback) => frames.push(callback),
@@ -481,6 +482,7 @@ function startupHarness({ resumeReject = false } = {}) {
   });
   new vm.Script(
     section('function viewKey()', 'function snapshot()') +
+      section('const rootProbeRequests =', 'async function probeBrowseSource(') +
       section('let startupTaskSnapshot =', 'let filterResizeObserver'),
     { filename }
   ).runInContext(context);

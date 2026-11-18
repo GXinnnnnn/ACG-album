@@ -67,6 +67,9 @@ const allowed = new Set([
   'external'
 ]);
 contextBridge.exposeInMainWorld('album', {
+  // Expose only fixed platform identifiers, never the Node process or environment.
+  platform: typeof process === 'object' ? process.platform : null,
+  arch: typeof process === 'object' ? process.arch : null,
   call: (method, args = {}) => {
     if (!allowed.has(method)) return Promise.reject(new Error('不支持的操作'));
     return ipcRenderer.invoke('library:' + method, args);

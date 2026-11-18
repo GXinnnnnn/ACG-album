@@ -1,6 +1,6 @@
 'use strict';
 
-// Application actions live in Settings. Retain the native edit-menu copy bridge.
+// Keep native macOS menu actions connected to the existing controls and guards.
 (() => {
   const viewport = document.querySelector('#viewport');
   const blankTarget = (target) =>
@@ -39,7 +39,11 @@
     action('卡片尺寸与批量确认…', 'sliders', densityModal);
     action('导入文件夹…', 'plus', importFolder, { disabled: isImportBusy() });
     if (S.parent)
-      action('在资源管理器中定位当前文件夹', 'external', () => api('reveal', { id: S.parent }));
+      action(
+        window.albumPlatform?.isMac ? '在 Finder 中显示当前文件夹' : '在资源管理器中定位当前文件夹',
+        'external',
+        () => api('reveal', { id: S.parent })
+      );
     showActionMenu(event, actions, '页面操作');
   }
   viewport.setAttribute('tabindex', '0');
@@ -63,11 +67,30 @@
     .querySelector('#sidebar-about')
     ?.addEventListener('click', () => attempt(() => window.showAbout()));
   window.album.onEvent((event) => {
-    if (
-      event?.type === 'application' &&
-      event.data?.action === 'copy' &&
-      document.querySelector('#viewer').open
-    )
-      document.querySelector('#viewer-copy').click();
+    if (event?.type !== 'application') return;
+    const action = event.data?.action;
+    if (action === 'copy') {
+      const textFocus = document.activeElement?.closest?.(
+        'input,textarea,[contenteditable]:not([contenteditable="false"])'
+      );
+      const selectedText = window.getSelection?.()?.toString();
+      if (
+        document.querySelector('#viewer').open &&
+        V.node?.kind === 'image' &&
+        !textFocus &&
+        !selectedText &&
+        !document.querySelector('dialog[open]:not(#viewer)')
+      )
+        document.querySelector('#viewer-copy').click();
+      else window.album.window('copy');
+      return;
+    }
+    // Do not replace a settings/editor dialog with an accelerator action.
+    if (document.querySelector('dialog[open]')) return;
+    if (action === 'settings') document.querySelector('#settings-button').click();
+    else if (action === 'import') document.querySelector('#import-sidebar').click();
+    else if (action === 'refresh') document.querySelector('#refresh-button').click();
+    else if (action === 'search') document.querySelector('#search').focus();
+    else if (action === 'back') document.querySelector('#back-button').click();
   });
 })();

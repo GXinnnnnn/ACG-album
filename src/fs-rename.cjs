@@ -8,7 +8,19 @@ const fsp = fs.promises;
 function failure(code, message, details = {}) {
   return Object.assign(new Error(message), { code, ...details });
 }
-function validateRenameName(name) {
+function validateRenameName(name, platform = process.platform) {
+  if (platform !== 'win32') {
+    if (
+      typeof name !== 'string' ||
+      !name ||
+      name === '.' ||
+      name === '..' ||
+      Buffer.byteLength(name, 'utf8') > 255 ||
+      /[/\x00-\x1f\x7f]/u.test(name)
+    )
+      throw failure('RENAME_NAME', '名称不能包含斜杠或控制字符，且 UTF-8 长度不得超过 255 字节。');
+    return name;
+  }
   if (
     typeof name !== 'string' ||
     !name.trim() ||
@@ -142,10 +154,88 @@ function windowsMoveNoReplace(source, destination, kind) {
   });
 }
 
+// A signed, packaged helper uses renameatx_np(RENAME_EXCL), with pinned parent
+// descriptors and the identities already recorded by this journal. No unsafe
+// fallback is available when the helper is missing or its result is uncertain.
+function macosMoveNoReplace({ helperPath, run = execFile } = {}) {
+  return (source, destination, kind, evidence = {}) => {
+    if (typeof helperPath !== 'string' || !path.isAbsolute(helperPath))
+      return Promise.reject(
+        failure('RENAME_PLATFORM', '缺少 macOS 原子重命名组件，请安装完整应用。')
+      );
+    if (
+      !['file', 'directory'].includes(kind) ||
+      !/^[fd]:\d+:\d+:\d+$/u.test(evidence.identity || '') ||
+      !/^d:\d+:\d+:\d+$/u.test(evidence.parentIdentity || '')
+    )
+      return Promise.reject(failure('RENAME_IDENTITY', '重命名缺少可靠的对象身份。'));
+    return new Promise((resolve, reject) => {
+      run(
+        helperPath,
+        [source, destination, kind, evidence.identity, evidence.parentIdentity],
+        { shell: false, timeout: 30000, maxBuffer: 32768, encoding: 'utf8' },
+        (error, stdout) => {
+          let result;
+          try {
+            result = JSON.parse(String(stdout || '').trim());
+          } catch {}
+          if (!error && result?.ok === true) return resolve();
+          const codes = [
+            'EEXIST',
+            'ENOENT',
+            'ENOTDIR',
+            'EACCES',
+            'EPERM',
+            'ELOOP',
+            'EXDEV',
+            'ENAMETOOLONG',
+            'ENOTEMPTY',
+            'EINVAL',
+            'ENOSPC',
+            'EROFS',
+            'ESTALE',
+            'EIO'
+          ];
+          if (
+            error?.code === 1 &&
+            !error.killed &&
+            !error.signal &&
+            result?.ok === false &&
+            Number.isSafeInteger(result.errno) &&
+            result.errno > 0 &&
+            result.errno < 4096 &&
+            codes.includes(result.code)
+          )
+            return reject(
+              failure(
+                result.code,
+                result.code === 'EEXIST'
+                  ? '目标名称已存在，未覆盖任何文件。'
+                  : 'macOS 无法完成原子重命名。'
+              )
+            );
+          if (['ENOENT', 'EACCES', 'ENOEXEC'].includes(error?.code))
+            return reject(
+              failure('RENAME_PLATFORM', '无法启动 macOS 原子重命名组件，请安装完整应用。')
+            );
+          reject(
+            failure('RENAME_MOVE', 'macOS 重命名结果尚未确认，请重新打开应用恢复。', {
+              recoveryRequired: true,
+              renameOutcomeUnknown: true
+            })
+          );
+        }
+      );
+    });
+  };
+}
+
 /** No source copy/delete. Caller holds its mutation reservation until complete.
  * Persist DB commit with this opId before complete(); recover() runs before jobs.
  */
-function createFsRename({ journalDir, moveNoReplace = windowsMoveNoReplace } = {}) {
+function createFsRename({ journalDir, helperPath, moveNoReplace } = {}) {
+  moveNoReplace ||=
+    process.platform === 'darwin' ? macosMoveNoReplace({ helperPath }) : windowsMoveNoReplace;
   if (typeof journalDir !== 'string' || !path.isAbsolute(journalDir))
     throw new TypeError('journalDir must be an absolute application-owned directory');
   const home = path.resolve(journalDir),
@@ -243,9 +333,20 @@ function createFsRename({ journalDir, moveNoReplace = windowsMoveNoReplace } = {
       throw failure('RENAME_CHANGED', '重命名期间源对象已变化。');
     if (await actualEntry(path.dirname(to), path.basename(to)))
       throw failure('EEXIST', '目标名称已存在，未覆盖任何文件。');
-    await moveNoReplace(from, to, r.kind);
-    if (identity(await fsp.lstat(to, { bigint: true })) !== r.identity)
-      throw failure('RENAME_CHANGED', '重命名后的对象身份不一致。', { recoveryRequired: true });
+    await moveNoReplace(from, to, r.kind, {
+      identity: r.identity,
+      parentIdentity: r.parentIdentity
+    });
+    try {
+      if (identity(await fsp.lstat(to, { bigint: true })) !== r.identity)
+        throw failure('RENAME_CHANGED', '重命名后的对象身份不一致。', { recoveryRequired: true });
+    } catch (error) {
+      if (process.platform === 'darwin') {
+        error.recoveryRequired = true;
+        error.renameOutcomeUnknown = true;
+      }
+      throw error;
+    }
   }
   async function restore(r) {
     let current = await where(r);
@@ -300,6 +401,17 @@ function createFsRename({ journalDir, moveNoReplace = windowsMoveNoReplace } = {
         noOp: actual === newName,
         caseOnly: actual !== newName && samePath(actual, newName)
       };
+      if (process.platform === 'darwin' && !r.noOp) {
+        // APFS may resolve the new spelling to the original entry. Require the
+        // same object and absence of that exact entry spelling before staging.
+        try {
+          const target = await fsp.lstat(r.path, { bigint: true });
+          if (identity(target) === r.identity && !(await actualEntry(parent, newName)))
+            r.caseOnly = true;
+        } catch (error) {
+          if (!absent(error)) throw error;
+        }
+      }
       validateRecord(r);
       if (!r.noOp && !r.caseOnly && (await actualEntry(parent, newName)))
         throw failure('EEXIST', '目标名称已存在，未覆盖任何文件。');
@@ -329,6 +441,15 @@ function createFsRename({ journalDir, moveNoReplace = windowsMoveNoReplace } = {
         await persist(r);
         return { ...r, renamed: true };
       } catch (error) {
+        if (error.renameOutcomeUnknown) {
+          // Leave the durable journal for an explicit recovery pass. A timeout
+          // or malformed helper reply cannot authorize another filesystem move.
+          error.recoveryRequired = true;
+          try {
+            error.actualPath = await where(r);
+          } catch {}
+          throw error;
+        }
         try {
           await restore(r);
           error.rolledBack = true;
@@ -398,4 +519,4 @@ function createFsRename({ journalDir, moveNoReplace = windowsMoveNoReplace } = {
     }
   };
 }
-module.exports = { validateRenameName, windowsMoveNoReplace, createFsRename };
+module.exports = { validateRenameName, windowsMoveNoReplace, macosMoveNoReplace, createFsRename };

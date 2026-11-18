@@ -15,7 +15,7 @@ const positive = (n) => finite(n) && Number.isSafeInteger(n) && n > 0;
 const fail = (message) => {
   throw new Error(message);
 };
-const keyPath = (p) => path.resolve(p).toLowerCase();
+const { pathKey: keyPath, pathCollation } = require('./filesystem-path.cjs');
 let exifr;
 function dateTaken(exif) {
   const value = exif?.DateTimeOriginal;
@@ -560,8 +560,8 @@ function createMedia({ db, home, getNode, send = () => {} }) {
       const source = await fsp.realpath(n.path);
       if (
         keyPath(target) === keyPath(source) ||
-        one('SELECT id FROM nodes WHERE path=? COLLATE NOCASE', destination) ||
-        one('SELECT id FROM nodes WHERE path=? COLLATE NOCASE', target)
+        one(`SELECT id FROM nodes WHERE path=? COLLATE ${pathCollation()}`, destination) ||
+        one(`SELECT id FROM nodes WHERE path=? COLLATE ${pathCollation()}`, target)
       )
         fail('不能覆盖原文件或任何已索引路径，请另存为新文件。');
       try {

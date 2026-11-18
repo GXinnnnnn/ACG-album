@@ -1480,7 +1480,7 @@ async function properties(n) {
   const dims = n.kind === 'image' ? await api('dimensions', { id: n.id }) : null;
   openModal(
     '属性',
-    `<dl class="property-grid"><dt>名称</dt><dd>${esc(n.name)}</dd><dt>类型</dt><dd>${n.kind === 'folder' ? '相册文件夹' : esc(pathExt(n.name)) + ' 图片'}</dd><dt>文件地址</dt><dd>${esc(n.path)}</dd><div class="wide-rule"></div><dt>大小</dt><dd>${bytes(n.kind === 'folder' ? n.total_bytes : n.bytes)}${n.kind === 'folder' ? '（已索引媒体合计）' : ''}</dd>${n.kind === 'folder' ? `<dt>包含</dt><dd>${fmt(n.folders)} 个子文件夹，${fmt(n.files)} 个媒体项目</dd>` : `<dt>分辨率</dt><dd>${dims.width ? dims.width + ' × ' + dims.height : '暂不支持读取'}</dd>`}<dt>创建时间</dt><dd>${date(n.birth)}</dd><dt>修改时间</dt><dd>${date(n.mtime)}</dd><dt>索引时间</dt><dd>${date(n.indexed)}</dd>${n.kind === 'folder' ? `<div class="wide-rule"></div><dt>封面来源</dt><dd>${{ manual: '手动指定', 'local-icon': '本地 ICO 图标', 'local-name': '与文件夹同名的图片', fallback: '自动选择相册内图片', bangumi: 'Bangumi 作品封面', 'bangumi-character': 'Bangumi 角色立绘', 'folder-icon': 'Windows 自定义文件夹图标' }[n.cover_source] || 'Windows 文件夹图标'}${n.confirmed ? ' · 已确认' : ' · 待确认'}</dd><dt>${n.effective_album_kind === 'character' ? '角色条目' : '作品条目'}</dt><dd>${n.effective_album_kind === 'character' ? (n.character_id ? 'https://bgm.tv/character/' + n.character_id : n.custom_character ? '自定义角色资料' : '未关联') : n.subject_id ? 'https://bgm.tv/subject/' + n.subject_id : '未关联'}</dd><dt>简介缓存</dt><dd>${n.metadata_updated ? date(n.metadata_updated) : '未缓存'}</dd>` : ''}${n.scan_error ? `<dt>扫描提示</dt><dd>${esc(n.scan_error)}</dd>` : ''}</dl><div class="modal-actions"><button id="prop-copy" class="subtle-button">${svg('copy')}复制地址</button><button id="prop-reveal" class="primary">${svg('folder')}在资源管理器中定位</button></div>`
+    `<dl class="property-grid"><dt>名称</dt><dd>${esc(n.name)}</dd><dt>类型</dt><dd>${n.kind === 'folder' ? '相册文件夹' : esc(pathExt(n.name)) + ' 图片'}</dd><dt>文件地址</dt><dd>${esc(n.path)}</dd><div class="wide-rule"></div><dt>大小</dt><dd>${bytes(n.kind === 'folder' ? n.total_bytes : n.bytes)}${n.kind === 'folder' ? '（已索引媒体合计）' : ''}</dd>${n.kind === 'folder' ? `<dt>包含</dt><dd>${fmt(n.folders)} 个子文件夹，${fmt(n.files)} 个媒体项目</dd>` : `<dt>分辨率</dt><dd>${dims.width ? dims.width + ' × ' + dims.height : '暂不支持读取'}</dd>`}<dt>创建时间</dt><dd>${date(n.birth)}</dd><dt>修改时间</dt><dd>${date(n.mtime)}</dd><dt>索引时间</dt><dd>${date(n.indexed)}</dd>${n.kind === 'folder' ? `<div class="wide-rule"></div><dt>封面来源</dt><dd>${{ manual: '手动指定', 'local-icon': '本地 ICO 图标', 'local-name': '与文件夹同名的图片', fallback: '自动选择相册内图片', bangumi: 'Bangumi 作品封面', 'bangumi-character': 'Bangumi 角色立绘', 'folder-icon': 'Windows 自定义文件夹图标' }[n.cover_source] || 'Windows 文件夹图标'}${n.confirmed ? ' · 已确认' : ' · 待确认'}</dd><dt>${n.effective_album_kind === 'character' ? '角色条目' : '作品条目'}</dt><dd>${n.effective_album_kind === 'character' ? (n.character_id ? 'https://bgm.tv/character/' + n.character_id : n.custom_character ? '自定义角色资料' : '未关联') : n.subject_id ? 'https://bgm.tv/subject/' + n.subject_id : '未关联'}</dd><dt>简介缓存</dt><dd>${n.metadata_updated ? date(n.metadata_updated) : '未缓存'}</dd>` : ''}${n.scan_error ? `<dt>扫描提示</dt><dd>${esc(n.scan_error)}</dd>` : ''}</dl><div class="modal-actions"><button id="prop-copy" class="subtle-button">${svg('copy')}复制地址</button><button id="prop-reveal" class="primary">${svg('folder')}${window.albumPlatform?.revealLabel || '在资源管理器中定位'}</button></div>`
   );
   $('#prop-copy').onclick = () =>
     attempt(async () => {
@@ -1510,7 +1510,12 @@ function confirmModal(title, message, onConfirm, label = '确认') {
     });
 }
 function renameParts(n) {
-  const name = String(n.path?.split(/[\\/]/).filter(Boolean).at(-1) || n.name || '');
+  const name = String(
+    window.albumPlatform?.pathName(n.path) ||
+      n.path?.split(/[\\/]/).filter(Boolean).at(-1) ||
+      n.name ||
+      ''
+  );
   const dot = name.lastIndexOf('.');
   return n.kind !== 'folder' && dot > 0
     ? { basename: name.slice(0, dot), extension: name.slice(dot) }
@@ -1518,6 +1523,12 @@ function renameParts(n) {
 }
 function renameNameError(name) {
   if (!name || name === '.' || name === '..') return '请输入有效名称。';
+  if (window.albumPlatform?.isMac) {
+    if (/[\/\u0000-\u001f\u007f]/.test(name)) return '名称不能包含 / 或控制字符。';
+    if (new TextEncoder().encode(name).byteLength > 255)
+      return '名称过长，请缩短到 UTF-8 编码的 255 字节以内。';
+    return '';
+  }
   if (/[<>:"/\\|?*\u0000-\u001f]/.test(name)) return '名称不能包含 \\ / : * ? " < > | 或控制字符。';
   if (/[.\s]$/.test(name)) return '名称不能以句点或空格结尾。';
   if (/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name))
@@ -1527,7 +1538,9 @@ function renameNameError(name) {
 }
 function renamedPath(path, oldPath, newPath) {
   if (typeof path !== 'string') return path;
-  const fold = (value) => value.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const fold =
+    window.albumPlatform?.pathKey ||
+    ((value) => value.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase());
   const old = fold(oldPath),
     current = fold(path);
   if (current === old) return newPath;
@@ -1797,7 +1810,9 @@ function showContext(e, n) {
   });
   if (['folder', 'image', 'video'].includes(n.kind))
     action('重命名…', 'edit', () => renameModal(n), { disabled: !!renamingNodes.size });
-  action('在资源管理器中定位', 'external', () => api('reveal', { id: n.id }));
+  action(window.albumPlatform?.revealLabel || '在资源管理器中定位', 'external', () =>
+    api('reveal', { id: n.id })
+  );
   action('复制文件地址', 'copy', async () => {
     await api('copyPath', { id: n.id });
     toast('文件地址已复制');
@@ -2210,12 +2225,17 @@ async function recoverMissingBrowse(current, version, key, previous = S.current)
       path: S.history.findLast((entry) => entry.parent === S.parent)?.parentPath
     };
   const path = cached.path;
-  const fold = (value) => value?.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const fold =
+    window.albumPlatform?.pathKey ||
+    ((value) => value?.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase());
   const root =
     S.roots.find((node) => node.id === cached?.root || node.id === cached?.id) ||
     S.roots.find(
       (node) =>
-        path && (fold(path) === fold(node.path) || fold(path).startsWith(fold(node.path) + '/'))
+        path &&
+        (window.albumPlatform?.descendant
+          ? window.albumPlatform.descendant(path, node.path)
+          : fold(path) === fold(node.path) || fold(path).startsWith(fold(node.path) + '/'))
     );
   const rootNode = root && (root.id === current?.id ? current : await api('get', { id: root.id }));
   if (!valid()) return null;
@@ -2227,12 +2247,16 @@ async function recoverMissingBrowse(current, version, key, previous = S.current)
   if (path) {
     let parent = path;
     while (parent && (!root || fold(parent) !== fold(root.path))) {
-      const separator = Math.max(parent.lastIndexOf('\\'), parent.lastIndexOf('/'));
-      if (separator < 0) break;
-      parent = parent.slice(0, separator);
+      const separator = window.albumPlatform?.isMac
+        ? parent.lastIndexOf('/')
+        : Math.max(parent.lastIndexOf('\\'), parent.lastIndexOf('/'));
+      if (separator < 0 || parent === '/') break;
+      parent = parent.slice(0, separator) || (window.albumPlatform?.isMac ? '/' : '');
       if (
         root &&
-        !(fold(parent) === fold(root.path) || fold(parent).startsWith(fold(root.path) + '/'))
+        !(window.albumPlatform?.descendant
+          ? window.albumPlatform.descendant(parent, root.path)
+          : fold(parent) === fold(root.path) || fold(parent).startsWith(fold(root.path) + '/'))
       )
         break;
       if (parent) candidates.push(parent);
@@ -2548,7 +2572,7 @@ function densityModal() {
     : '确认当前页面全部文件夹封面，清除当前页面红点；包含尚未滚动加载的项目，首页同时包含已展开的相册预览。';
   const dialog = openModal(
     '查看设置',
-    `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div>${window.albumAppearance.rangeMarkup('density', 'display')}<section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 Ctrl + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
+    `<div class="density-popup" role="group" aria-label="卡片尺寸">${cardDisplayPresets.map(({ width, name, count }) => `<button class="density-choice" data-density="${width}" aria-pressed="false"><span class="density-icon" aria-hidden="true">${'<i></i>'.repeat(count)}</span>${name}卡片</button>`).join('')}</div>${window.albumAppearance.rangeMarkup('density', 'display')}<section class="page-review-setting" aria-labelledby="page-review-title"><div><strong id="page-review-title">批量确认封面</strong><p id="page-review-help">${help}</p></div><button id="clear-page-review" class="subtle-button" aria-describedby="page-review-help">${svg('check-circle')}批量确认封面</button><p id="page-review-status" class="display-help page-review-status" role="status" aria-live="polite" aria-atomic="true"></p></section><div class="setting-row"><div><strong>封面比例</strong><p>相册与图片共用；支持右键调整封面位置和缩放</p></div><select id="ratio-select" aria-label="封面比例"><option value="poster">海报 · 3:4.12</option><option value="tall">竖卡 · 9:16</option><option value="square">方形 · 1:1</option></select></div><p class="display-help">工具栏或 ${window.albumPlatform?.modifier || 'Ctrl'} + 鼠标滚轮可调整卡片大小，重启后保留选择。分类封面保留横向概览，切换尺寸时保留正在浏览的卡片。</p>`
   );
   dialog.classList.add('display-dialog');
   window.albumAppearanceControls.mount(dialog);
@@ -3077,7 +3101,10 @@ async function displayOriginalImage(n, onError = null) {
   image.onerror = () => {
     if (serial !== V.serial) return;
     if (onError) void onError(serial);
-    else $('#viewer-loading').textContent = '原图读取失败，可用系统应用打开或在资源管理器中定位。';
+    else
+      $('#viewer-loading').textContent = window.albumPlatform?.isMac
+        ? '原图读取失败，可用系统应用打开或在 Finder 中显示。'
+        : '原图读取失败，可用系统应用打开或在资源管理器中定位。';
   };
   image.src = `acg-image://original/${n.id}`;
   image.oncontextmenu = (e) => showContext(e, n);
@@ -3222,7 +3249,12 @@ function paintProgress({
     $('.progress-details').after(directoryLabel);
   }
   if (directoryLabel.hidden !== !directory) directoryLabel.hidden = !directory;
-  setProgressText(directoryLabel, directory.split(/[\\/]/).filter(Boolean).at(-1) || directory);
+  setProgressText(
+    directoryLabel,
+    window.albumPlatform?.pathName(directory) ||
+      directory.split(/[\\/]/).filter(Boolean).at(-1) ||
+      directory
+  );
   if (directoryLabel.title !== directory) directoryLabel.title = directory;
   setProgressAttribute(directoryLabel, 'aria-label', directory ? `当前目录：${directory}` : '');
   setProgressText($('#progress-detail'), detail);
@@ -3582,9 +3614,10 @@ $('#viewport').addEventListener(
   'wheel',
   (event) => {
     if (
-      !event.ctrlKey ||
+      !(window.albumPlatform?.primaryModifier
+        ? window.albumPlatform.primaryModifier(event)
+        : event.ctrlKey && !event.metaKey) ||
       event.altKey ||
-      event.metaKey ||
       event.shiftKey ||
       !event.deltaY ||
       event.defaultPrevented ||

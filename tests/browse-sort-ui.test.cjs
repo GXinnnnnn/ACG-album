@@ -421,6 +421,10 @@ test('summary changes to sort preferences never reapply appearance settings', as
     snapshot: () => 0,
     mergeSummary: (settings) => settings
   };
+  h.context.window.albumWallpaper = {
+    snapshot: () => 0,
+    mergeSummary: (settings) => settings
+  };
   vm.runInContext(
     section(appSource, 'async function loadSummary()', 'async function loadPage('),
     h.context

@@ -142,7 +142,7 @@ test('Linux uses read-only fontconfig and unsupported platforms honestly retain 
   assert.equal(found.source, 'fontconfig');
   assert.ok(found.families.includes('Noto Sans CJK SC'));
   const other = createSystemFonts({
-    platform: 'darwin',
+    platform: 'freebsd',
     run: () => {
       throw Error('unexpected process');
     }

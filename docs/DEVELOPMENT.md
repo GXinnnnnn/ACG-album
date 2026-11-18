@@ -36,6 +36,27 @@ Lite / Full 构建读取预处理的 Archive 数据与校验清单。先按 [本
 
 所有构建统一排除专有字体二进制；获准分发的字体与完整许可按原样随应用提供。分发包含原生组件的二进制时，需同时履行许可通知和对应源码提供义务，见 [第三方声明](THIRD_PARTY_NOTICES.md) 及源码中的 `src/assets/licenses/`。
 
+## macOS 开发与 Full 构建目标
+
+Mac 适配以 Electron 40.10.6 为基础，最低系统目标为 macOS 12.0，覆盖 Apple Silicon 与 Intel。开发使用原生 macOS、Node.js 24 和 pnpm 10.11.0（与 Mac 工作流固定版本一致）；正式包只有 `ACG-album-Setup-1.2.3-Full-universal.dmg`。当前没有真实 Mac build / CI 验收或已发布 DMG，不能把源码检查或 Windows 结果表述为 Mac 成品通过。
+
+Mac 构建、资源与证据步骤见仓库根 [构建说明](../BUILDING.md#macos-单-full-universal-dmg待真实验证)。入口为 `scripts/build-mac-full.cjs`、`scripts/check-mac-full.cjs`、`scripts/check-mac-filesystems.cjs`、`scripts/mac-support.cjs` 与 `.github/workflows/mac-full.yml`；构建脚本在原生 darwin 上运行，需要 `7zz`，默认使用全新的 `release/mac-1.2.3`。不使用 Windows `package:installer` / NSIS 生成 Mac 安装包。
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+node --test tests/mac-*.test.cjs
+node scripts/build-mac-full.cjs
+# 在对应的原生 Intel / Apple Silicon Mac 上分别检查同一 DMG
+ACG_MAC_EXPECT_ARCH=x64 node scripts/check-mac-full.cjs
+ACG_MAC_EXPECT_ARCH=arm64 node scripts/check-mac-full.cjs
+```
+
+每个原生 CI runner 还计划在构建或成品验收前运行 `scripts/check-mac-filesystems.cjs`，设置匹配的 `ACG_MAC_EXPECT_ARCH=x64` 或 `arm64`。脚本先编译重命名 helper、执行全部 Mac 契约测试，再创建并检查真实 APFS / APFSX 卷，借助 `ACG_MAC_RENAME_HELPER` 与 `ACG_MAC_TEST_ROOT` 在两种卷上分别执行 Mac 数据测试。可用 `ACG_MAC_FS_EVIDENCE` 指定新的 JSON 证据路径；这些 CI 入口尚无实际运行结果。
+
+Mac 测试应使用独立资料目录，保留默认系统「文稿 / Documents」下 `ACG-album`、显式 `ACG_DATA_DIR`、Windows 资料不默认迁移以及 `safeStorage` 系统安全存储的边界。窗口与快捷键适配需遵循原生 Command / Dock 行为；真机应检查 Command＋O 导入、Command＋逗号偏好设置、Command＋R 刷新、Command＋K 搜索、Command＋[ 返回、Command＋滚轮调整卡片，以及查看器中的 Command＋C 复制图片（输入框焦点下仍为文字复制）。Command＋W 关闭窗口后由 Dock 重开，Command＋Q 退出时完成后台 worker 收尾；这些目标均须实际运行验证。
+
+Mac 关闭 Windows 自动下载安装、本体更新和 NSIS 安装事务，用户从发布页手动下载 DMG，正常退出后替换 `.app`。Full 索引、两种架构的 Sharp / libvips 与相应源码 / 许可、HEIC WASM 及其源码计划全部随一个 DMG 提供；最低系统声明、原生加载、离线功能、签名和分发完整性都须对实际成品验收。ad-hoc 签名没有 Developer ID 身份，也不代表通过 Apple 公证；详见 [安装说明](INSTALLATION.md#macos-full-完整包待真实验证) 和 [第三方声明](THIRD_PARTY_NOTICES.md)。
+
 ## 验证范围与运行约定
 
 - 根据改动选择检查范围，记录本轮实际执行与通过的项目；以对应 Release 的 `VALIDATION_REPORT.md` 说明正式产物的验证结果，历史结果不能代替本轮验收。

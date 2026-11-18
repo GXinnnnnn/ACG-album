@@ -1,5 +1,5 @@
 'use strict';
-const path = require('node:path');
+const { containsPath } = require('./filesystem-path.cjs');
 
 // Durable logical removal precedes bounded physical cleanup. A scan of the same
 // path must await wait(root), so old cleanup can never delete a reimported row.
@@ -205,16 +205,10 @@ function createRootRemoval(
     if (active) await active;
   }
   function blockers(directory) {
-    const target = path.resolve(directory).toLowerCase();
     return db
       .prepare('SELECT root,path FROM root_removals ORDER BY removed_at')
       .all()
-      .filter((row) => {
-        const old = path.resolve(row.path).toLowerCase();
-        return (
-          old === target || target.startsWith(old + path.sep) || old.startsWith(target + path.sep)
-        );
-      });
+      .filter((row) => containsPath(row.path, directory) || containsPath(directory, row.path));
   }
   return {
     enqueue,

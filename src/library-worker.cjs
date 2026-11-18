@@ -4,6 +4,7 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
+const { samePath, containsPath, pathCollation } = require('./filesystem-path.cjs');
 let sharpImplementation;
 function sharp(...args) {
   if (!sharpImplementation) {
@@ -76,7 +77,7 @@ const db = new DatabaseSync(path.join(home, 'library.sqlite'));
 // Keep a 16 MiB page-cache target to avoid FTS/index churn in large libraries.
 // Cache budgeting does not relax the durable WAL commit policy.
 db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-16384; PRAGMA busy_timeout=4000;
-CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,root TEXT,parent TEXT,path TEXT UNIQUE COLLATE NOCASE,name TEXT,sortkey TEXT,kind TEXT,depth INTEGER,bytes INTEGER DEFAULT 0,mtime REAL,birth REAL,missing INTEGER DEFAULT 0,cover TEXT,cover_source TEXT,crop_x REAL DEFAULT 50,crop_y REAL DEFAULT 50,confirmed INTEGER DEFAULT 0,manual_cover INTEGER DEFAULT 0,subject_id INTEGER,manual_subject INTEGER DEFAULT 0,intro INTEGER DEFAULT -1,favorite INTEGER DEFAULT 0,files INTEGER DEFAULT 0,folders INTEGER DEFAULT 0,total_bytes INTEGER DEFAULT 0,indexed REAL,scan_error TEXT);
+CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,root TEXT,parent TEXT,path TEXT UNIQUE COLLATE ${pathCollation()},name TEXT,sortkey TEXT,kind TEXT,depth INTEGER,bytes INTEGER DEFAULT 0,mtime REAL,birth REAL,missing INTEGER DEFAULT 0,cover TEXT,cover_source TEXT,crop_x REAL DEFAULT 50,crop_y REAL DEFAULT 50,confirmed INTEGER DEFAULT 0,manual_cover INTEGER DEFAULT 0,subject_id INTEGER,manual_subject INTEGER DEFAULT 0,intro INTEGER DEFAULT -1,favorite INTEGER DEFAULT 0,files INTEGER DEFAULT 0,folders INTEGER DEFAULT 0,total_bytes INTEGER DEFAULT 0,indexed REAL,scan_error TEXT);
 CREATE INDEX IF NOT EXISTS nodes_parent_name ON nodes(parent,missing,kind,sortkey,id);
 CREATE INDEX IF NOT EXISTS nodes_parent_date ON nodes(parent,missing,kind,birth,id);
 CREATE INDEX IF NOT EXISTS nodes_parent_modified ON nodes(parent,missing,kind,mtime,id);
@@ -460,7 +461,10 @@ const scanJournal = createScanJournal(db);
 const rootAvailability = require('./root-availability.cjs').createRootAvailability(db);
 const onlineRootSql = (alias) => rootAvailability.onlineSql(alias);
 const fsRename = require('./fs-rename.cjs').createFsRename({
-  journalDir: path.join(home, 'rename-journal')
+  journalDir: path.join(home, 'rename-journal'),
+  helperPath: workerData.resourcesPath
+    ? path.join(workerData.resourcesPath, 'bin', 'acg-fs-rename')
+    : undefined
 });
 const renameIdentity = require('./rename-identity.cjs').createRenameIdentity(db, {
   idFor,
@@ -753,8 +757,15 @@ function browseWhere({
   else if (filter === 'pending') where.push(pendingReviewSql('n'));
   else if (parent && timeline) {
     const folder = getNode(parent);
-    where.push("n.path LIKE ? ESCAPE '\\'");
-    args.push(path.join(folder?.path || '__missing__', path.sep).replace(/[\\%_]/g, '\\$&') + '%');
+    const prefix = path.join(folder?.path || '__missing__', path.sep);
+    if (process.platform === 'win32') {
+      where.push("n.path LIKE ? ESCAPE '\\'");
+      args.push(prefix.replace(/[\\%_]/g, '\\$&') + '%');
+    } else {
+      // SQLite LIKE folds ASCII case even on case-sensitive APFS volumes.
+      where.push('substr(n.path,1,length(?))=? COLLATE BINARY');
+      args.push(prefix, prefix);
+    }
   } else if (parent) {
     where.push('n.parent=?');
     args.push(parent);
@@ -1253,10 +1264,7 @@ async function scanContents(rootPath, options = {}) {
   )
     target = rootPath;
   const containing = roots().find(
-    (r) =>
-      r.id !== id &&
-      (rootPath.toLowerCase().startsWith(r.path.toLowerCase() + path.sep) ||
-        r.path.toLowerCase().startsWith(rootPath.toLowerCase() + path.sep))
+    (r) => r.id !== id && (containsPath(r.path, rootPath) || containsPath(rootPath, r.path))
   );
   if (containing) throw new Error('该目录与已导入分类重叠，请选择独立目录，避免重复索引。');
   // Validation completed under the scanner reservation.
@@ -1362,7 +1370,7 @@ async function scanContents(rootPath, options = {}) {
           if (cancelled || stopping || entries++ >= 128) break;
           if (entry.isSymbolicLink()) continue;
           const p = path.join(node.path, entry.name);
-          if (p.toLowerCase() === home.toLowerCase()) continue;
+          if (samePath(p, home)) continue;
           if (entry.isDirectory()) {
             if (chain.length < 3 && queue.length + opened < 8)
               queue.push({ node: nodeFor(p, node.id, node.depth + 1, 'folder'), ancestors: chain });
@@ -1552,7 +1560,7 @@ async function scanContents(rootPath, options = {}) {
                 !moved &&
                 source &&
                 source.path !== n.path &&
-                source.path.toLowerCase() === n.path.toLowerCase() &&
+                samePath(source.path, n.path) &&
                 source.fs_identity &&
                 source.fs_identity === item.s.fsIdentity;
               if (moved || caseOnly)
@@ -1610,7 +1618,7 @@ async function scanContents(rootPath, options = {}) {
           if (cancelled) break;
           const p = path.join(folder.path, e.name);
           if (
-            p.toLowerCase() === home.toLowerCase() ||
+            samePath(p, home) ||
             e.isSymbolicLink() ||
             (!e.isDirectory() && !MEDIA_EXT.has(path.extname(e.name).toLowerCase()))
           )
@@ -3677,7 +3685,7 @@ async function rewriteCachePaths(destination) {
   const replace = (file) => {
     if (typeof file !== 'string') return file;
     for (const kind of cacheDirectory.KINDS) {
-      if (path.dirname(file).toLowerCase() === path.join(source, kind).toLowerCase())
+      if (samePath(path.dirname(file), path.join(source, kind)))
         return path.join(destination, kind, path.basename(file));
     }
     return file;
@@ -4460,10 +4468,7 @@ async function relinkNode({ id, path: selectedPath }, folderRelocation) {
       const ownerStatus = await probeRootAvailability({ id: owner.id });
       if (ownerStatus.status !== 'online')
         throw Object.assign(new Error('所属分类离线，请先恢复分类。'), { code: 'ROOT_OFFLINE' });
-      if (
-        !withinDirectory(owner.path, destination) ||
-        destination.toLowerCase() === owner.path.toLowerCase()
-      )
+      if (!withinDirectory(owner.path, destination) || samePath(destination, owner.path))
         throw new Error('子相册目标必须位于原分类之下。');
       const old = await rootAvailability.inspect(source);
       if (old.available) throw new Error('原子相册仍可访问，请选择需要恢复的失联子相册。');

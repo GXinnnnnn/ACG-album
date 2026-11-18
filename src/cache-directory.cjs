@@ -5,16 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const KINDS = ['thumbnails', 'metadata', 'covers'];
 const DIRECTORY_NAME = 'ACG-album-cache';
-const contains = (parent, child) => {
-  const relative = path.relative(
-    path.resolve(parent).toLowerCase(),
-    path.resolve(child).toLowerCase()
-  );
-  return (
-    !relative ||
-    (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))
-  );
-};
+const { containsPath: contains, samePath } = require('./filesystem-path.cjs');
 async function noLinks(directory) {
   let current = path.resolve(directory);
   while (true) {
@@ -105,7 +96,7 @@ function initializeCache(directory) {
   }
 }
 async function migrateCache({ source, destination, roots = [], commit, progress = () => {} }) {
-  if (path.resolve(source).toLowerCase() === path.resolve(destination).toLowerCase()) return;
+  if (samePath(source, destination)) return;
   await validateCacheLocation(destination, roots);
   if (contains(source, destination) || contains(destination, source))
     throw new Error('新旧缓存目录不能互相包含。');

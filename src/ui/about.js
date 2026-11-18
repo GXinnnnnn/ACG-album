@@ -275,9 +275,10 @@
   }
 
   window.showUpdates = async function showUpdates() {
+    const manualUpdates = window.album?.platform === 'darwin';
     const context = mount(
       '检查更新',
-      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">打开面板时自动同步 GitHub 最新正式 Release 与实际安装包。默认跟随当前 Standard / Lite / Full 版本；原随包索引兼容时优先下载较小的运行时更新。下载并通过 SHA-256 校验后，由你点击安装。</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/ACG-album" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址；留空则使用官方仓库 GXinnnnnn/ACG-album。有效的自定义仓库会保留。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com/GXinnnnnn/ACG-album" data-about-external="https://github.com/GXinnnnnn/ACG-album">官方 GitHub 仓库${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><div data-update-assets></div><div data-update-transfer role="status" aria-live="polite"></div><p class="updates-footnote">安装前检查程序与资料路径，退出后更新当前目录并重新打开；保留 Token、已索引根目录、个人资料与设置。运行时更新原样保留兼容的随包索引，失败恢复旧程序；切换版本或索引不兼容时使用完整安装包。${externalLink(`https://github.com/${officialRepository}/releases`, '前往官方发布页', 'about-inline-link')}<span data-update-release></span></p></div>`,
+      `<div class="album-updates" data-album-info><div class="updates-intro"><span class="updates-symbol">${svg('refresh')}</span><div><h3>让小相册，慢慢变得更好</h3><p data-update-version>正在读取当前版本…</p></div></div><p class="updates-description">${manualUpdates ? '打开面板时自动同步 GitHub 最新正式 Release。macOS 提供 Full 完整包；请前往发布页下载 DMG，退出相册后替换应用，个人资料保留在原资料目录。' : '打开面板时自动同步 GitHub 最新正式 Release 与实际安装包。默认跟随当前 Standard / Lite / Full 版本；原随包索引兼容时优先下载较小的运行时更新。下载并通过 SHA-256 校验后，由你点击安装。'}</p><form data-update-form><label for="album-update-repository">GitHub 更新仓库</label><input id="album-update-repository" class="field-input" type="text" placeholder="GXinnnnnn/ACG-album" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="album-update-help album-update-error" disabled><p id="album-update-help" class="field-help">填写「所有者/仓库名」或 GitHub 仓库网址；留空则使用官方仓库 GXinnnnnn/ACG-album。有效的自定义仓库会保留。</p><p id="album-update-error" class="inline-error updates-error" role="alert"></p><div class="updates-form-actions"><a class="about-inline-link" href="https://github.com/GXinnnnnn/ACG-album" data-about-external="https://github.com/GXinnnnnn/ACG-album">官方 GitHub 仓库${svg('external')}</a><button class="primary" type="submit" data-update-check disabled>${svg('refresh')}保存并检查更新</button></div></form><div class="updates-result" data-update-result role="status" aria-live="polite" aria-atomic="true"><p class="about-note">正在读取更新配置…</p></div><div data-update-assets></div><div data-update-transfer role="status" aria-live="polite"></div><p class="updates-footnote">${manualUpdates ? 'macOS 使用发布页上的 Full DMG 手动更新；保留 Token、已索引根目录、个人资料与设置。' : '安装前检查程序与资料路径，退出后更新当前目录并重新打开；保留 Token、已索引根目录、个人资料与设置。运行时更新原样保留兼容的随包索引，失败恢复旧程序；切换版本或索引不兼容时使用完整安装包。'}${externalLink(`https://github.com/${officialRepository}/releases`, '前往官方发布页', 'about-inline-link')}<span data-update-release></span></p></div>`,
       640
     );
     const input = context.find('#album-update-repository');
@@ -303,6 +304,11 @@
         return;
       }
       const assets = Array.isArray(latestResult.assets) ? latestResult.assets : [];
+      if (manualUpdates || updateInfo.canDownload === false) {
+        const full = assets.find((asset) => asset.edition === 'full');
+        assetsHost.innerHTML = `<div class="updates-result-card"><strong>macOS · Full 完整包</strong><p>${full ? `Full DMG · ${sizeLabel(full.size)}。` : '请在发布页查看 macOS Full DMG。'}退出相册后替换应用，保留原资料目录。</p>${externalLink(latestResult.url || `https://github.com/${latestResult.repository || officialRepository}/releases`, '前往发布页下载 Full DMG', 'subtle-button about-release-link')}</div>`;
+        return;
+      }
       const selected = assetsHost.querySelector('select')?.value || updateInfo.currentEdition;
       const choices = ['standard', 'lite', 'full']
         .map((edition) => {
@@ -352,6 +358,12 @@
       updateMode();
     }
     function renderTransfer(state) {
+      if (manualUpdates || updateInfo.canDownload === false) {
+        transfer = { phase: 'idle' };
+        transferHost.replaceChildren();
+        renderAssets();
+        return;
+      }
       transfer = state || { phase: 'idle' };
       const phase = transfer.phase;
       if (phase === 'idle') {
@@ -386,7 +398,13 @@
     assetsHost.addEventListener(
       'click',
       async (event) => {
-        if (!event.target.closest('[data-update-download]') || busy()) return;
+        if (
+          manualUpdates ||
+          updateInfo.canDownload === false ||
+          !event.target.closest('[data-update-download]') ||
+          busy()
+        )
+          return;
         const edition = assetsHost.querySelector('select')?.value;
         if (!edition) return;
         errorHost.textContent = '';
@@ -404,6 +422,7 @@
     transferHost.addEventListener(
       'click',
       async (event) => {
+        if (manualUpdates || updateInfo.canDownload === false) return;
         if (
           event.target.closest('[data-update-retry]') &&
           ['error', 'cancelled'].includes(transfer.phase)

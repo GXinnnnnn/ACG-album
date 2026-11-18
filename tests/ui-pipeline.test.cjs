@@ -76,6 +76,7 @@ function startupHarness({ statsReject = false, densityConfigured, density = 222 
       return [120, 155, 191];
     },
     window: {
+      albumWallpaper: { snapshot: () => 0, mergeSummary: (settings) => settings },
       albumAppearanceControls: {
         snapshot() {
           return 0;
@@ -131,6 +132,7 @@ function startupHarness({ statsReject = false, densityConfigured, density = 222 
   });
   new vm.Script(
     section('function viewKey()', 'function snapshot()') +
+      section('const rootProbeRequests =', 'async function probeBrowseSource(') +
       section('let summarySettingsApplied = false', 'let filterResizeObserver'),
     { filename }
   ).runInContext(context);

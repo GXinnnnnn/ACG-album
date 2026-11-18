@@ -1,0 +1,9 @@
+@charset "UTF-8";
+/* Native traffic lights occupy the existing 28px titlebar. The floating header,
+   fonts, glass surfaces and wallpaper retain their shared layout and styles. */
+:root[data-platform='darwin'] .titlebar {
+  padding-left: 84px;
+}
+:root[data-platform='darwin'] .window-controls {
+  display: none;
+}

@@ -99,7 +99,7 @@ function registerApplicationHandlers({
   getWindow,
   systemFonts = require('./fonts.cjs').systemFonts
 }) {
-  Menu.setApplicationMenu(null);
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
   let popup = null;
   const emit = (action) => {
     const win = getWindow();
@@ -132,10 +132,11 @@ function registerApplicationHandlers({
   ipcMain.handle('library:appInfo', async () => ({
     name: app.getName(),
     version: app.getVersion(),
+    platform: process.platform,
     author: '友利奈绪的胖次 (GXinnnnnn)',
     repository: await repository(),
     officialRepository: OFFICIAL_REPOSITORY,
-    ...officialDownloads(app.getVersion()),
+    ...officialDownloads(app.getVersion(), process.platform),
     credits: require('./assets/credits.json')
   }));
   ipcMain.handle('library:checkUpdate', async () => {
@@ -247,7 +248,7 @@ function registerApplicationHandlers({
       status: comparison > 0 ? 'available' : 'current',
       latestVersion: latest.join('.'),
       url,
-      assets: releaseAssets(release, repo, latest.join('.'))
+      assets: releaseAssets(release, repo, latest.join('.'), { platform: process.platform })
     });
   });
   ipcMain.handle('application:menu', (_, args = {}) => {
@@ -260,11 +261,19 @@ function registerApplicationHandlers({
             { label: '关于 ACG-album', click: () => emit('about') },
             { label: '检查更新…', click: () => emit('updates') },
             { type: 'separator' },
-            { label: '退出', role: 'quit', accelerator: 'Alt+F4' }
+            {
+              label: '退出',
+              role: 'quit',
+              accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Alt+F4'
+            }
           ]
         : [
             { label: '撤销', role: 'undo', accelerator: 'CommandOrControl+Z' },
-            { label: '重做', role: 'redo', accelerator: 'CommandOrControl+Y' },
+            {
+              label: '重做',
+              role: 'redo',
+              accelerator: process.platform === 'darwin' ? 'Command+Shift+Z' : 'CommandOrControl+Y'
+            },
             { type: 'separator' },
             { label: '剪切', role: 'cut', accelerator: 'CommandOrControl+X' },
             {

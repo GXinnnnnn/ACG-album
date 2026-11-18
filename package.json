@@ -29,9 +29,11 @@
     "verify:search": "node scripts/check-search-editions.cjs"
   },
   "dependencies": {
-    "@img/sharp-win32-x64": "0.34.5",
     "exifr": "7.1.3",
     "sharp": "0.34.5"
+  },
+  "optionalDependencies": {
+    "@img/sharp-win32-x64": "0.34.5"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

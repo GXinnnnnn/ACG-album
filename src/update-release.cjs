@@ -24,12 +24,20 @@ function githubAssetUrl(value, repository, tag, name) {
   }
 }
 
-function releaseAssets(release, repository, version) {
-  if (!validRepository(repository) || !/^\d+\.\d+\.\d+$/.test(version)) return [];
+function releaseAssets(release, repository, version, { platform = 'win32' } = {}) {
+  if (
+    !['win32', 'darwin'].includes(platform) ||
+    !validRepository(repository) ||
+    !/^\d+\.\d+\.\d+$/.test(version)
+  )
+    return [];
   const assets = Array.isArray(release.assets) ? release.assets.slice(0, 100) : [];
-  const editions = EDITIONS.flatMap((edition) => {
+  const editions = (platform === 'darwin' ? ['full'] : EDITIONS).flatMap((edition) => {
     const label = edition[0].toUpperCase() + edition.slice(1);
-    const name = `ACG-album-Setup-${version}-${label}.exe`;
+    const name =
+      platform === 'darwin'
+        ? `ACG-album-Setup-${version}-Full-universal.dmg`
+        : `ACG-album-Setup-${version}-${label}.exe`;
     // Duplicate names and unsupported platform/architecture assets are never guessed.
     const matches = assets.filter((row) => row?.name === name);
     if (matches.length !== 1) return [];
@@ -63,6 +71,7 @@ function releaseAssets(release, repository, version) {
       }
     ];
   });
+  if (platform === 'darwin') return editions;
   const base = `ACG-album-Runtime-${version}-win32-x64`;
   const manifests = assets.filter((row) => row?.name === base + '.manifest.json');
   const payloads = assets.filter((row) => row?.name === base + '.zip');

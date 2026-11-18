@@ -1,6 +1,7 @@
 'use strict';
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { pathKey } = require('./filesystem-path.cjs');
 const { guardedAliases } = require('./verified-title-aliases.cjs');
 const IMAGE_EXT = new Set([
   '.jpg',
@@ -39,8 +40,7 @@ const normalize = (s) =>
     .normalize('NFKC')
     .toLowerCase()
     .replace(/[\p{P}\p{S}\s_]/gu, '');
-const idFor = (p) =>
-  crypto.createHash('sha256').update(path.resolve(p).toLowerCase()).digest('hex').slice(0, 24);
+const idFor = (p) => crypto.createHash('sha256').update(pathKey(p)).digest('hex').slice(0, 24);
 const genericTitle = (s) =>
   /^(?:(?:full|全)?cg|screenshots?|wallpapers?|pictures?|images?|photos?|albums?|collection|source|newfolder|acg|anime|animation|manga|comics?|games?|movies?|三次元|二次元|动画|動畫|动漫|漫画|游戏|遊戲|图片|截图|壁纸|图集|相册|设定集|素材|合集|新建文件夹|新建資料夾|新しいフォルダー|スクリーンショット|cg集)(?:\d+)?$/i.test(
     normalize(s)

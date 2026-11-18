@@ -10,7 +10,7 @@ const plain = (value) =>
   typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
-function normalizeScopePath(value) {
+function normalizeScopePath(value, platform = process.platform) {
   if (
     typeof value !== 'string' ||
     !value ||
@@ -18,6 +18,11 @@ function normalizeScopePath(value) {
     /[\u0000-\u001f\u007f]/u.test(value)
   )
     throw new Error('排序偏好的目录路径无效。');
+  if (platform !== 'win32') {
+    if (!path.posix.isAbsolute(value)) throw new Error('排序偏好的目录路径无效。');
+    const normalized = path.posix.normalize(value);
+    return normalized === '/' ? normalized : normalized.replace(/\/+$/u, '');
+  }
   const normalized = path.win32.normalize(value.replace(/\//g, '\\')).toLowerCase();
   // A rooted path such as \\photos is drive-relative, rather than an absolute scope.
   if (!/^[a-z]:\\/u.test(normalized) && !/^\\\\[^\\]+\\[^\\]+/u.test(normalized))
@@ -25,7 +30,7 @@ function normalizeScopePath(value) {
   return /^(?:\\\\\?\\)?[a-z]:\\$/u.test(normalized) ? normalized : normalized.replace(/\\+$/u, '');
 }
 
-function normalizeBrowseSortPreferences(value) {
+function normalizeBrowseSortPreferences(value, platform = process.platform) {
   if (!plain(value) || Reflect.ownKeys(value).length > 1024)
     throw new Error('排序偏好应为最多 1024 项的对象。');
   const result = {};
@@ -42,7 +47,7 @@ function normalizeBrowseSortPreferences(value) {
       throw new Error('排序偏好的范围无效。');
     const canonical = JSON.stringify([
       scope[0],
-      scope[1] === null ? null : normalizeScopePath(scope[1])
+      scope[1] === null ? null : normalizeScopePath(scope[1], platform)
     ]);
     if (key !== canonical) throw new Error('排序偏好的范围应使用规范化路径。');
     const descriptor = Object.getOwnPropertyDescriptor(value, key);

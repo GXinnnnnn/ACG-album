@@ -1,5 +1,13 @@
 # 更新记录与版本规则
 
+## 1.2.3 macOS 适配准备 · 2026-11-18（待真实验证）
+
+- 计划在现有 v1.2.3 Release（ID `448449066`）追加唯一 Mac 完整包 `ACG-album-Setup-1.2.3-Full-universal.dmg`，支持 Apple Silicon 与 Intel，最低系统目标 macOS 12；最终最低系统声明和真机兼容性待验收。
+- 增加 Mac 构建与检查入口、原生 Command / Dock 行为、默认 `Documents/ACG-album` 资料位置及系统 `safeStorage` 适配；Windows 资料库不默认迁移到 Mac。
+- Mac 使用发布页手动下载并替换 `.app`，关闭 Windows 自动更新安装链路。计划采用 ad-hoc 签名，无 Developer ID 与 Apple 公证；首次拦截时按系统安全设置允许打开，不建议关闭 Gatekeeper。
+- Full 索引、HEIC / HEIF WASM、两架构 Sharp / libvips 与对应源码和许可计划随同一个 DMG 提供，不增加 Mac 多版安装器或独立源码包。
+- 当前没有真实 Mac 构建、CI 成功记录、安装验收或已发布附件；文档和脚本准备不等于成品通过，最终状态保留待验证。现有 Windows 版本、发布与历史验证说明继续按原范围解读。
+
 ## 1.2.3 · 2026-11-17
 
 - 完善不同显示环境下的文本适配，保持既有界面布局与个人偏好。

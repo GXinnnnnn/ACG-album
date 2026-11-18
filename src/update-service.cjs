@@ -28,7 +28,7 @@ async function hashFile(file) {
   return hash.digest('hex');
 }
 
-function currentEdition(app) {
+function currentEdition(app, { platform = process.platform } = {}) {
   if (app.isPackaged !== true) {
     const metadata = require('../package.json');
     return EDITIONS.includes(metadata.searchEdition) ? metadata.searchEdition : 'standard';
@@ -37,10 +37,20 @@ function currentEdition(app) {
     const executable = app.getPath?.('exe');
     if (typeof executable !== 'string' || !path.isAbsolute(executable)) return null;
     const installation = path.dirname(executable);
-    let resources = path.parse(installation).root;
-    const components = installation.slice(resources.length).split(path.sep).filter(Boolean);
+    if (
+      platform === 'darwin' &&
+      (path.basename(installation) !== 'MacOS' ||
+        path.basename(path.dirname(installation)) !== 'Contents')
+    )
+      return null;
+    const resourceDirectory =
+      platform === 'darwin'
+        ? path.resolve(installation, '..', 'Resources')
+        : path.join(installation, 'resources');
+    let resources = path.parse(resourceDirectory).root;
+    const components = resourceDirectory.slice(resources.length).split(path.sep).filter(Boolean);
     // Only an absent index beneath confirmed real parents proves Standard.
-    for (const component of [...components, 'resources']) {
+    for (const component of components) {
       resources = path.join(resources, component);
       const item = syncFs.lstatSync(resources);
       if (!item.isDirectory() || item.isSymbolicLink()) return null;
@@ -170,7 +180,9 @@ function createUpdater({
     const library = await getLibrary();
     const executable = app.getPath?.('exe') || process.execPath;
     return {
-      currentEdition: currentEdition(app),
+      currentEdition: currentEdition(app, { platform }),
+      platform,
+      canDownload: platform === 'win32' && arch === 'x64',
       canInstall: supported(),
       installationDirectory: path.dirname(executable),
       dataDirectory: library.dataDir || '',
@@ -181,12 +193,24 @@ function createUpdater({
     offer = result;
     releasePending = (async () => {
       if (!result) return result;
-      const candidate = result.assets?.find((row) => row.kind === 'runtime-manifest');
+      const candidate =
+        platform === 'win32' && arch === 'x64'
+          ? result.assets?.find((row) => row.kind === 'runtime-manifest')
+          : null;
       const resolved = {
         ...result,
-        assets: result.assets?.filter((row) => row.kind !== 'runtime-manifest') || [],
+        assets:
+          result.assets?.filter(
+            (row) =>
+              row.kind !== 'runtime-manifest' &&
+              (platform === 'win32' ||
+                (platform === 'darwin' && row.name?.endsWith('-Full-universal.dmg')))
+          ) || [],
         runtime: null,
-        runtimeReason: '此 Release 未提供运行时更新清单，使用完整安装包。'
+        runtimeReason:
+          platform === 'darwin'
+            ? '请从发布页下载 Mac 完整包并手动替换应用，资料目录会保留。'
+            : '此 Release 未提供运行时更新清单，使用完整安装包。'
       };
       if (candidate && ['available', 'current'].includes(result.status)) {
         try {
@@ -238,6 +262,8 @@ function createUpdater({
     return releasePending;
   }
   async function download({ edition, mode = 'auto' } = {}) {
+    if (platform !== 'win32' || arch !== 'x64')
+      throw new Error('此平台请从发布页下载对应完整包并手动安装。');
     if (controller || installing) throw new Error('更新操作正在进行，请稍候。');
     await releasePending;
     if (!EDITIONS.includes(edition))
@@ -395,6 +421,8 @@ function createUpdater({
     return snapshot();
   }
   async function install({ confirm, repository, version, edition, mode } = {}) {
+    if (platform !== 'win32' || arch !== 'x64')
+      throw new Error('此平台请从发布页下载对应完整包并手动安装。');
     if (confirm !== true || controller || installing || !downloaded || state.phase !== 'ready')
       throw new Error('请先完成下载校验，再点击安装。');
     const selected = downloaded;

@@ -1,0 +1,118 @@
+name: macOS Full universal candidate
+
+on:
+  workflow_dispatch:
+
+# Publication is deliberately a separate, manual release step after both native
+# reports pass. This workflow cannot modify any existing release or asset.
+permissions:
+  contents: read
+
+concurrency:
+  group: acg-macos-release
+  cancel-in-progress: false
+
+env:
+  ACG_MAC_OUTPUT: ${{ github.workspace }}/release/mac-1.2.3
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  HOMEBREW_NO_AUTO_UPDATE: '1'
+
+jobs:
+  build-and-verify-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      ACG_MAC_EXPECT_ARCH: x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Check native Intel runner and available disk
+        run: |
+          test "$(uname -m)" = x86_64
+          node -p 'process.platform + " " + process.arch'
+          df -h .
+      - name: Install locked build tools without running old helpers
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check every macOS contract and real APFS filesystem behavior
+        env:
+          ACG_MAC_FS_EVIDENCE: ${{ runner.temp }}/mac-filesystems-x64.json
+        run: node scripts/check-mac-filesystems.cjs
+      - name: Install NSIS archive reader
+        run: |
+          if ! command -v 7zz >/dev/null; then brew install sevenzip; fi
+          7zz i
+      - name: Build one Full universal DMG
+        run: node scripts/build-mac-full.cjs
+      - name: Verify mounted DMG, both Mach-O slices and native Intel GUI
+        run: node scripts/check-mac-full.cjs
+      - name: Preserve Intel diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-verification-x64
+          path: |
+            release/mac-1.2.3/verification-x64/*.json
+            release/mac-1.2.3/verification-x64/*.png
+            ${{ runner.temp }}/mac-filesystems-x64.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve candidate for native Apple Silicon verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-full-universal-candidate
+          path: |
+            release/mac-1.2.3/ACG-album-Setup-1.2.3-Full-universal.dmg
+            release/mac-1.2.3/SHA256SUMS.mac.txt
+            release/mac-1.2.3/build-report.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-apple-silicon:
+    needs: build-and-verify-intel
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      ACG_MAC_EXPECT_ARCH: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Check native Apple Silicon runner
+        run: |
+          test "$(uname -m)" = arm64
+          node -p 'process.platform + " " + process.arch'
+      - name: Install verification tools without native rebuilds
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check every macOS contract and both real APFS filesystems
+        env:
+          ACG_MAC_FS_EVIDENCE: ${{ runner.temp }}/mac-filesystems-arm64.json
+        run: node scripts/check-mac-filesystems.cjs
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-full-universal-candidate
+          path: release/mac-1.2.3
+      - name: Verify the same DMG on native Apple Silicon
+        run: node scripts/check-mac-full.cjs
+      - name: Preserve Apple Silicon diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-verification-arm64
+          path: |
+            release/mac-1.2.3/verification-arm64/*.json
+            release/mac-1.2.3/verification-arm64/*.png
+            ${{ runner.temp }}/mac-filesystems-arm64.json
+          if-no-files-found: warn
+          retention-days: 14

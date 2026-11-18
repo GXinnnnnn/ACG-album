@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { idFor } = require('./model.cjs');
+const { samePath, pathCollation } = require('./filesystem-path.cjs');
 
 // Identity is evidence for a move, never the public ID. Do not use mtime as a
 // birth fallback: copies commonly preserve mtime, and inode numbers are reused.
@@ -100,6 +101,55 @@ const within = (parent, child) => {
   const rel = path.relative(parent, child);
   return rel && !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + path.sep);
 };
+// On default APFS, lstat(oldCase) can still succeed after a case-only rename.
+// Directory entries provide the spelling evidence; never infer it by lowercasing
+// or Unicode normalization. Large/ambiguous directories conservatively decline
+// identity reuse, rather than permitting an unbounded scan inside a transaction.
+const MAX_SPELLING_ENTRIES = 2048;
+const spellingEvidence = () => ({ listings: new Map(), remaining: 8192 });
+async function exactSpelling(p, evidence) {
+  const chain = ancestors(p);
+  for (let i = 1; i < chain.length; i++) {
+    const parent = chain[i - 1];
+    if (!evidence.listings.has(parent)) {
+      const names = new Set();
+      evidence.listings.set(parent, null);
+      for await (const entry of await fs.promises.opendir(parent)) {
+        if (--evidence.remaining < 0 || names.size >= MAX_SPELLING_ENTRIES) return null;
+        names.add(entry.name);
+      }
+      evidence.listings.set(parent, names);
+    }
+    const names = evidence.listings.get(parent);
+    if (!names) return null;
+    if (!names.has(path.basename(chain[i]))) return false;
+  }
+  return true;
+}
+function exactSpellingSync(p, evidence) {
+  const chain = ancestors(p);
+  for (let i = 1; i < chain.length; i++) {
+    const parent = chain[i - 1];
+    if (!evidence.listings.has(parent)) {
+      const directory = fs.opendirSync(parent),
+        names = new Set();
+      evidence.listings.set(parent, null);
+      try {
+        for (let entry; (entry = directory.readSync()); ) {
+          if (--evidence.remaining < 0 || names.size >= MAX_SPELLING_ENTRIES) return null;
+          names.add(entry.name);
+        }
+      } finally {
+        directory.closeSync();
+      }
+      evidence.listings.set(parent, names);
+    }
+    const names = evidence.listings.get(parent);
+    if (!names) return null;
+    if (!names.has(path.basename(chain[i]))) return false;
+  }
+  return true;
+}
 
 /**
  * createScanIdentity(db, {maxNodes=2048}={})
@@ -121,7 +171,9 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
   // No ORDER BY: a large directory must stop at maxNodes + 1 without sorting
   // all of its children before LIMIT can reject the migration.
   const children = db.prepare('SELECT * FROM nodes WHERE parent=? LIMIT ?');
-  const conflict = db.prepare('SELECT id FROM nodes WHERE path=? COLLATE NOCASE OR id=? LIMIT 1');
+  const conflict = db.prepare(
+    `SELECT id FROM nodes WHERE path=? COLLATE ${pathCollation()} OR id=? LIMIT 1`
+  );
   const rename = db.prepare(
     `UPDATE nodes SET id=?,parent=?,path=?,name=?,sortkey=?,depth=?,missing=0,indexed=? WHERE id=?`
   );
@@ -176,22 +228,22 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
     return true;
   }
   let plans = new WeakSet();
-  async function missing(p) {
+  async function missing(p, evidence) {
     try {
       for (const current of ancestors(p)) {
         if ((await fs.promises.lstat(current, { bigint: true })).isSymbolicLink()) return false;
       }
-      return false;
+      return process.platform === 'darwin' && (await exactSpelling(p, evidence)) === false;
     } catch (error) {
       return absent(error);
     }
   }
-  function missingSync(p) {
+  function missingSync(p, evidence) {
     try {
       for (const current of ancestors(p)) {
         if (fs.lstatSync(current, { bigint: true }).isSymbolicLink()) return false;
       }
-      return false;
+      return process.platform === 'darwin' && exactSpellingSync(p, evidence) === false;
     } catch (error) {
       return absent(error);
     }
@@ -211,7 +263,8 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
       plans = new WeakSet();
     },
     async prepare(n, stat, checkpoint = async () => {}) {
-      const identity = nodeIdentity(n, stat);
+      const identity = nodeIdentity(n, stat),
+        evidence = spellingEvidence();
       if (!identity || !n.parent || n.id !== idFor(n.path) || get.get(n.id)) return null;
       const root = get.get(n.root),
         parent = get.get(n.parent);
@@ -223,7 +276,7 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
         parent.root !== n.root ||
         parent.kind !== 'folder' ||
         parent.missing ||
-        path.dirname(n.path).toLowerCase() !== parent.path.toLowerCase() ||
+        !samePath(path.dirname(n.path), parent.path) ||
         n.depth !== parent.depth + 1
       )
         return null;
@@ -235,7 +288,7 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
         !old.parent ||
         old.kind !== n.kind ||
         !within(root.path, old.path) ||
-        !(await missing(old.path))
+        !(await missing(old.path, evidence))
       )
         return null;
       try {
@@ -263,6 +316,8 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
           const s =
             source.id === old.id ? actual : await fs.promises.lstat(destination, { bigint: true });
           if (
+            (process.platform === 'darwin' &&
+              (await exactSpelling(destination, evidence)) !== true) ||
             identityFor(s) !== source.fs_identity ||
             (source.kind === 'folder' ? !s.isDirectory() : !s.isFile()) ||
             candidates.all(n.root, source.fs_identity).length !== 1
@@ -274,13 +329,13 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
             if (queue.length + page.length > maxNodes) return null;
             for (const child of page) {
               // Broken parent/path relationships cannot be reconstructed safely.
-              if (path.dirname(child.path).toLowerCase() !== source.path.toLowerCase()) return null;
+              if (!samePath(path.dirname(child.path), source.path)) return null;
               queue.push(child);
             }
           }
           if (rows.length % 64 === 0) await checkpoint();
         }
-        if (!(await missing(old.path)) || !boundedReferences(rows)) return null;
+        if (!(await missing(old.path, spellingEvidence())) || !boundedReferences(rows)) return null;
         const plan = { rows, node: { ...n }, identity, rootPath: root.path };
         plans.add(plan);
         return plan;
@@ -294,7 +349,8 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
     apply(plan, started) {
       if (!plan || !plans.delete(plan)) return false;
       const { rows, node: n, identity, rootPath } = plan;
-      if (!missingSync(rows[0].source.path)) return false;
+      const evidence = spellingEvidence();
+      if (!missingSync(rows[0].source.path, evidence)) return false;
       const root = get.get(n.root),
         parent = get.get(n.parent);
       if (
@@ -305,7 +361,7 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
         parent.kind !== 'folder' ||
         parent.missing ||
         n.depth !== parent.depth + 1 ||
-        path.dirname(n.path).toLowerCase() !== parent.path.toLowerCase()
+        !samePath(path.dirname(n.path), parent.path)
       )
         return false;
       const sourceIds = new Set(rows.map((row) => row.source.id));
@@ -320,6 +376,7 @@ function createScanIdentity(db, { maxNodes = 2048 } = {}) {
           const live = get.get(row.source.id);
           if (
             !live ||
+            (process.platform === 'darwin' && exactSpellingSync(row.path, evidence) !== true) ||
             live.path !== row.source.path ||
             live.parent !== row.source.parent ||
             live.root !== row.source.root ||

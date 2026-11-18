@@ -8,7 +8,9 @@ const {
   net,
   nativeImage,
   shell,
-  safeStorage
+  safeStorage,
+  Menu,
+  clipboard
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -22,6 +24,11 @@ const { retireLegacyBundledFonts } = require('./legacy-font-retirement.cjs');
 const { registerApplicationHandlers, openExternal } = require('./application.cjs');
 const { createWallpaperService, registerWallpaperHandlers } = require('./wallpaper.cjs');
 const { APP_NAME, resolveDataDirectory, resolveUserDataDirectory } = require('./profile-path.cjs');
+const {
+  windowPlatformOptions,
+  legacyFontRuntimeDirectory,
+  macMenuTemplate
+} = require('./platform.cjs');
 const profile = resolveUserDataDirectory({
   appData: app.getPath('appData'),
   currentUserData: app.getPath('userData'),
@@ -141,19 +148,17 @@ function createWindow() {
   try {
     state = { ...state, ...JSON.parse(fs.readFileSync(path.join(dataDir, 'window.json'), 'utf8')) };
   } catch {}
-  win = new BrowserWindow({
+  const currentWindow = new BrowserWindow({
     width: state.width,
     height: state.height,
     minWidth: 980,
     minHeight: 680,
     show: false,
     frame: true,
-    titleBarStyle: 'hidden',
-    thickFrame: true,
-    fullscreenable: false,
+    ...windowPlatformOptions(),
     backgroundColor: '#e9ebf4',
     title: APP_NAME,
-    icon: path.join(__dirname, 'assets', 'app.ico'),
+    ...(process.platform === 'darwin' ? {} : { icon: path.join(__dirname, 'assets', 'app.ico') }),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -163,33 +168,36 @@ function createWindow() {
       webSecurity: true
     }
   });
-  win.loadFile(path.join(__dirname, 'ui', 'index.html'));
-  win.once('ready-to-show', () => {
-    if (state.maximized) win.maximize();
-    win.show();
+  win = currentWindow;
+  currentWindow.loadFile(path.join(__dirname, 'ui', 'index.html'));
+  currentWindow.once('ready-to-show', () => {
+    if (state.maximized) currentWindow.maximize();
+    currentWindow.show();
   });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.webContents.on('will-navigate', (event, url) => {
+  currentWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  currentWindow.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(pathToFileURL(path.join(__dirname, 'ui', 'index.html')).href))
       event.preventDefault();
   });
-  win.on('maximize', () =>
-    win.webContents.send('library:event', { type: 'window', data: { maximized: true } })
+  currentWindow.on('maximize', () =>
+    currentWindow.webContents.send('library:event', { type: 'window', data: { maximized: true } })
   );
-  win.on('unmaximize', () =>
-    win.webContents.send('library:event', { type: 'window', data: { maximized: false } })
+  currentWindow.on('unmaximize', () =>
+    currentWindow.webContents.send('library:event', { type: 'window', data: { maximized: false } })
   );
   // Native Windows hide/restore can leave DOM focus and visibility unchanged.
   // Send both transitions so rendering can resume after the window returns.
   const notifyActivity = (inactive) => {
-    if (!win.isDestroyed())
-      win.webContents.send('library:event', { type: 'window', data: { inactive } });
+    if (!currentWindow.isDestroyed())
+      currentWindow.webContents.send('library:event', { type: 'window', data: { inactive } });
   };
-  for (const event of ['blur', 'hide', 'minimize']) win.on(event, () => notifyActivity(true));
+  for (const event of ['blur', 'hide', 'minimize'])
+    currentWindow.on(event, () => notifyActivity(true));
   let lastFilesystemSync = 0;
   for (const event of ['focus', 'show', 'restore'])
-    win.on(event, () => {
-      const inactive = !win.isVisible() || win.isMinimized() || !win.isFocused();
+    currentWindow.on(event, () => {
+      const inactive =
+        !currentWindow.isVisible() || currentWindow.isMinimized() || !currentWindow.isFocused();
       notifyActivity(inactive);
       if (!inactive && Date.now() - lastFilesystemSync >= 2000) {
         lastFilesystemSync = Date.now();
@@ -200,18 +208,45 @@ function createWindow() {
         );
       }
     });
-  win.on('close', () => {
+  currentWindow.on('close', () => {
     try {
-      const b = win.getNormalBounds();
+      const b = currentWindow.getNormalBounds();
       fs.writeFileSync(
         path.join(dataDir, 'window.json'),
-        JSON.stringify({ width: b.width, height: b.height, maximized: win.isMaximized() })
+        JSON.stringify({ width: b.width, height: b.height, maximized: currentWindow.isMaximized() })
       );
     } catch {}
   });
+  currentWindow.on('closed', () => {
+    if (win === currentWindow) win = null;
+  });
+}
+function showMainWindow() {
+  if (closing || !dataDir || !worker) return null;
+  if (!win || win.isDestroyed()) createWindow();
+  else {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+  return win;
+}
+function emitApplicationAction(action) {
+  const target = showMainWindow();
+  if (!target) return;
+  const send = () => {
+    if (!target.isDestroyed())
+      target.webContents.send('library:event', { type: 'application', data: { action } });
+  };
+  if (target.webContents.isLoadingMainFrame()) target.webContents.once('did-finish-load', send);
+  else send();
 }
 function handlers() {
   registerApplicationHandlers({ call, getWindow: () => win });
+  if (process.platform === 'darwin')
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(macMenuTemplate({ name: APP_NAME, emit: emitApplicationAction }))
+    );
   registerWallpaperHandlers({ ipcMain, dialog, getWindow: () => win, service: wallpapers });
   const methods = [
     'mediaInfo',
@@ -433,9 +468,11 @@ function handlers() {
   ipcMain.handle('library:openData', () => shell.openPath(dataDir));
   ipcMain.handle('library:external', (_, args) => openExternal(args.url));
   ipcMain.handle('window:action', (_, action) => {
+    if (!win || win.isDestroyed()) return;
     if (action === 'minimize') win.minimize();
     else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
     else if (action === 'close') win.close();
+    else if (action === 'copy') win.webContents.copy();
   });
 }
 async function imageProtocol(request) {
@@ -521,12 +558,8 @@ async function imageProtocol(request) {
 if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
+  app.on('second-instance', () => showMainWindow());
+  app.on('activate', () => showMainWindow());
   app
     .whenReady()
     .then(async () => {
@@ -535,9 +568,10 @@ if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
         dataDir: process.env.ACG_DATA_DIR
       });
       fs.mkdirSync(dataDir, { recursive: true });
-      if (app.isPackaged) {
+      const fontRuntime = legacyFontRuntimeDirectory(process.platform, process.execPath);
+      if (app.isPackaged && fontRuntime) {
         try {
-          const retirement = await retireLegacyBundledFonts(path.dirname(process.execPath));
+          const retirement = await retireLegacyBundledFonts(fontRuntime);
           if (retirement.retired?.length)
             log(
               'Retired legacy bundled fonts:',
@@ -563,7 +597,9 @@ if (!app.requestSingleInstanceLock() && !process.env.ACG_TEST) {
       dialog.showErrorBox(APP_NAME + ' 启动失败', e.message);
       app.quit();
     });
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
   let quitReady = false;
   app.on('before-quit', (event) => {
     if (quitReady) return;

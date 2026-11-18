@@ -488,25 +488,28 @@ test('browse preferences accept canonical Unicode, UNC and long Windows scopes w
   ];
   for (const [i, p] of paths.entries())
     input[scope('library', p)] = { direction: 'desc', sort: i % 2 ? 'contentDate' : 'date' };
-  const actual = normalizeBrowseSortPreferences(input);
+  const actual = normalizeBrowseSortPreferences(input, 'win32');
   assert.deepEqual(Object.keys(actual), Object.keys(input));
   assert.deepEqual(actual, input);
   assert.equal(Object.keys(actual).at(-1).length > 4096, true);
   for (const view of ['library', 'favorites', 'pending', 'timeline'])
     for (const sort of ['name', 'date', 'modified', 'size', 'contentDate'])
       for (const direction of ['asc', 'desc'])
-        assert.deepEqual(normalizeBrowseSortPreferences({ [scope(view)]: { sort, direction } }), {
-          [scope(view)]: { sort, direction }
-        });
+        assert.deepEqual(
+          normalizeBrowseSortPreferences({ [scope(view)]: { sort, direction } }, 'win32'),
+          {
+            [scope(view)]: { sort, direction }
+          }
+        );
   const cap = Object.fromEntries(
     Array.from({ length: 1024 }, (_, i) => [
       scope('library', 'c:\\album' + i),
       { sort: 'name', direction: 'asc' }
     ])
   );
-  assert.equal(Object.keys(normalizeBrowseSortPreferences(cap)).length, 1024);
+  assert.equal(Object.keys(normalizeBrowseSortPreferences(cap, 'win32')).length, 1024);
   cap[scope('library', 'c:\\overflow')] = { sort: 'name', direction: 'asc' };
-  assert.throws(() => normalizeBrowseSortPreferences(cap));
+  assert.throws(() => normalizeBrowseSortPreferences(cap, 'win32'));
 });
 
 test('browse preferences reject malformed scopes, extra fields and prototype pollution without mutating input', () => {
@@ -538,10 +541,10 @@ test('browse preferences reject malformed scopes, extra fields and prototype pol
     { [scope('library', 'c:\\' + 'x'.repeat(4094))]: valid },
     { ['x'.repeat(8193)]: valid }
   ])
-    assert.throws(() => normalizeBrowseSortPreferences(bad));
+    assert.throws(() => normalizeBrowseSortPreferences(bad, 'win32'));
   assert.equal({}.polluted, undefined);
   const input = { [scope('library')]: { direction: 'desc', sort: 'contentDate' } };
   const snapshot = JSON.stringify(input);
-  normalizeBrowseSortPreferences(input);
+  normalizeBrowseSortPreferences(input, 'win32');
   assert.equal(JSON.stringify(input), snapshot);
 });

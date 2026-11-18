@@ -8,15 +8,22 @@ function effectiveRepository(value) {
     : value;
 }
 
-function officialDownloads(version) {
+function officialDownloads(version, platform = 'win32') {
   const base = `https://github.com/${OFFICIAL_REPOSITORY}/releases`;
   const tag = encodeURIComponent(`v${version}`);
   return {
     releaseUrl: `${base}/tag/${tag}`,
-    downloads: {
-      lite: `${base}/download/${tag}/ACG-album-Setup-${encodeURIComponent(version)}-Lite.exe`,
-      full: `${base}/download/${tag}/ACG-album-Setup-${encodeURIComponent(version)}-Full.exe`
-    }
+    downloads:
+      platform === 'darwin'
+        ? {
+            full: `${base}/download/${tag}/ACG-album-Setup-${encodeURIComponent(version)}-Full-universal.dmg`
+          }
+        : platform === 'win32'
+          ? {
+              lite: `${base}/download/${tag}/ACG-album-Setup-${encodeURIComponent(version)}-Lite.exe`,
+              full: `${base}/download/${tag}/ACG-album-Setup-${encodeURIComponent(version)}-Full.exe`
+            }
+          : {}
   };
 }
 

@@ -49,7 +49,8 @@ function harness(implementation, { realTree = false } = {}) {
     path: 'C:\\Fixture\\Album',
     name: 'Album',
     kind: 'folder',
-    missing: 0
+    missing: 0,
+    rootStatus: { status: 'online', checkedAt: Date.now() }
   };
   const child = {
     id: 'child-a',
@@ -211,6 +212,7 @@ function harness(implementation, { realTree = false } = {}) {
     }
   });
   const code =
+    section(source, 'const rootProbeRequests =', 'async function retrySource(') +
     section(source, 'function renamedPath(', 'function showContext(') +
     section(source, 'async function refreshGrowingView(', 'const importChoices =') +
     section(source, 'window.album.onEvent((event)', 'initializeDisplayControls();');
@@ -694,7 +696,9 @@ test('missing current directory skips missing parents and recovers the nearest l
   h = harness((command, args) => {
     assert.equal(command, 'get');
     if (args.id === h.root.id) return h.root;
-    if (args.id === 'leaf') return h.S.current;
+    // A row already marked missing stays addressable for remapping. This scenario
+    // exercises a removed current row while its cached navigation is still open.
+    if (args.id === 'leaf') return null;
     if (args.path === h.child.path) return { ...h.child, missing: 1 };
     throw new Error('Unexpected lookup ' + JSON.stringify(args));
   });

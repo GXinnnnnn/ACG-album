@@ -99,15 +99,20 @@ function applyNavigationSettings() {
     setSidebarOpen(false);
 }
 function collapseBranch(id) {
-  const base = folderTree.openNodes.get(id)?.path?.replaceAll('/', '\\').toLowerCase();
+  const branchPath = folderTree.openNodes.get(id)?.path;
+  const base = window.albumPlatform?.pathKey
+    ? window.albumPlatform.pathKey(branchPath)
+    : branchPath?.replaceAll('/', '\\').toLowerCase();
   for (const [child, n] of folderTree.openNodes)
     if (
       child === id ||
-      (base &&
-        n.path
-          ?.replaceAll('/', '\\')
-          .toLowerCase()
-          .startsWith(base + '\\'))
+      (window.albumPlatform?.descendant
+        ? window.albumPlatform.descendant(n.path, branchPath)
+        : base &&
+          n.path
+            ?.replaceAll('/', '\\')
+            .toLowerCase()
+            .startsWith(base + '\\'))
     ) {
       folderTree.open.delete(child);
       folderTree.openNodes.delete(child);
@@ -137,15 +142,20 @@ function treeOpenStateChanged(recovery) {
   );
 }
 function pruneTreeRecovery(recovery, id) {
-  const base = recovery.nodes.get(id)?.path?.replaceAll('/', '\\').toLowerCase();
+  const branchPath = recovery.nodes.get(id)?.path;
+  const base = window.albumPlatform?.pathKey
+    ? window.albumPlatform.pathKey(branchPath)
+    : branchPath?.replaceAll('/', '\\').toLowerCase();
   for (const [child, node] of recovery.nodes)
     if (
       child === id ||
-      (base &&
-        node.path
-          ?.replaceAll('/', '\\')
-          .toLowerCase()
-          .startsWith(base + '\\'))
+      (window.albumPlatform?.descendant
+        ? window.albumPlatform.descendant(node.path, branchPath)
+        : base &&
+          node.path
+            ?.replaceAll('/', '\\')
+            .toLowerCase()
+            .startsWith(base + '\\'))
     ) {
       recovery.open.delete(child);
       recovery.nodes.delete(child);
@@ -502,10 +512,12 @@ async function toggleTree(n) {
 }
 function folderTreeEntryRoot() {
   const normalize = (path) =>
-      String(path || '')
-        .replaceAll('/', '\\')
-        .replace(/\\+$/, '')
-        .toLowerCase(),
+      window.albumPlatform?.pathKey
+        ? window.albumPlatform.pathKey(String(path || ''))
+        : String(path || '')
+            .replaceAll('/', '\\')
+            .replace(/\\+$/, '')
+            .toLowerCase(),
     current = S.current,
     currentPath = normalize(current?.path);
   let contextual = S.roots.find((n) => n.id === current?.id);
@@ -514,7 +526,9 @@ function folderTreeEntryRoot() {
       const path = normalize(n.path);
       if (
         path &&
-        (currentPath === path || currentPath.startsWith(path + '\\')) &&
+        (window.albumPlatform?.descendant
+          ? window.albumPlatform.descendant(current?.path, n.path)
+          : currentPath === path || currentPath.startsWith(path + '\\')) &&
         (!contextual || path.length > normalize(contextual.path).length)
       )
         contextual = n;
