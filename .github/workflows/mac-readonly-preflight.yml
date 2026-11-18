@@ -1,0 +1,48 @@
+name: Mac read-only index preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-readonly-index:
+    name: Verify native ${{ matrix.arch }} read-only index
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install frozen dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Prepare Electron 40.10.6 without building an application
+        run: node node_modules/electron/install.js
+      - name: Verify the actual font API on this architecture
+        run: node --test --test-reporter=tap --test-concurrency=1 tests/system-fonts.test.cjs tests/mac-data-fonts.test.cjs
+      - name: Verify bundled and external index connection behavior
+        run: node --test --test-reporter=tap --test-concurrency=1 tests/mac-data-readonly-index.test.cjs
+      - name: Verify the application index on a read-only APFS volume
+        run: node scripts/check-mac-readonly-index.cjs "${{ matrix.arch }}" "reports/mac-readonly-index-${{ matrix.arch }}.json"
+      - name: Preserve read-only index evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-readonly-index-${{ matrix.arch }}
+          path: reports/mac-readonly-index-${{ matrix.arch }}*
+          if-no-files-found: warn
+          retention-days: 14

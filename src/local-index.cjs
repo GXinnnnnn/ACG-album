@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { DatabaseSync } = require('node:sqlite');
 const { guardedAliases, lookup: verifiedAliases } = require('./verified-title-aliases.cjs');
 const { normalize, searchPlan, searchStages, similarity, subjectNames } = require('./model.cjs');
@@ -78,7 +79,11 @@ function validate({ query, kind = 'subject', types = SUBJECT_TYPES, subjectId, l
 
 // The connection is owned here, opened read-only and never migrated or optimized.
 // Metadata/schema probes are bounded; startup never counts or scans real tables.
-function createLocalIndex({ localIndexPath, resourcesPath = process.resourcesPath } = {}) {
+function createLocalIndex({
+  localIndexPath,
+  resourcesPath = process.resourcesPath,
+  platform = process.platform
+} = {}) {
   let db = null;
   let state = { available: false, variant: null, dataVersion: null, entities: [] };
   let filename;
@@ -104,7 +109,17 @@ function createLocalIndex({ localIndexPath, resourcesPath = process.resourcesPat
         if (manifest.readerSchemaVersion !== undefined && manifest.readerSchemaVersion !== 1)
           throw new Error('Unsupported local index schema version');
       }
-      db = new DatabaseSync(filename, { readOnly: true });
+      let databasePath = filename;
+      if (platform === 'darwin' && !localIndexPath) {
+        // Bundled indexes never change. WAL-mode files on a read-only DMG must
+        // not create WAL/SHM sidecars. External overrides retain normal locking
+        // and change detection, even when their filename matches the bundle.
+        const uri = pathToFileURL(filename);
+        uri.searchParams.set('mode', 'ro');
+        uri.searchParams.set('immutable', '1');
+        databasePath = uri.href;
+      }
+      db = new DatabaseSync(databasePath, { readOnly: true });
       db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-8192; PRAGMA busy_timeout=1000');
       for (const sql of [
         'SELECT id,type,name,name_cn,summary,infobox,aliases_json,collection_json,raw_json FROM subjects LIMIT 0',
