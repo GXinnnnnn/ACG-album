@@ -60,6 +60,23 @@ jobs:
           } catch (error) {
             summary.parseError = {name: error.name, message: error.message};
           }
+          summary.alternativeCommands = [];
+          const alternatives = [
+            {name: 'data-types', command: '/usr/sbin/system_profiler', args: ['-listDataTypes']},
+            {name: 'coretext', command: '/usr/bin/osascript', args: ['-l', 'JavaScript', '-e', "ObjC.import('Foundation'); ObjC.import('CoreText'); JSON.stringify(ObjC.deepUnwrap($.CTFontManagerCopyAvailableFontFamilyNames()));"]},
+            {name: 'appkit', command: '/usr/bin/osascript', args: ['-l', 'JavaScript', '-e', "ObjC.import('AppKit'); JSON.stringify(ObjC.deepUnwrap($.NSFontManager.sharedFontManager.availableFontFamilies));"]},
+          ];
+          for (const item of alternatives) {
+            const output = spawnSync(item.command, item.args, {encoding: 'buffer', timeout: 10000, maxBuffer: 8 * 1024 * 1024});
+            const out = output.stdout || Buffer.alloc(0), err = output.stderr || Buffer.alloc(0);
+            write(item.name + '.stdout.txt', out);
+            write(item.name + '.stderr.txt', err);
+            const record = {name: item.name, command: item.command, args: item.args, status: output.status, signal: output.signal, error: output.error ? {name: output.error.name, code: output.error.code, message: output.error.message} : null, stdoutBytes: out.length, stdoutSha256: sha256(out), stderrBytes: err.length, stderrSha256: sha256(err)};
+            if (item.name !== 'data-types') {
+              try {const value = JSON.parse(out.toString('utf8')); record.kind = kind(value); record.count = Array.isArray(value) ? value.length : null; record.allStrings = Array.isArray(value) && value.every(name => typeof name === 'string' && name.trim().length > 0); record.sample = Array.isArray(value) ? value.slice(0, 5) : null;} catch (error) {record.parseError = {name: error.name, message: error.message};}
+            }
+            summary.alternativeCommands.push(record);
+          }
           write('summary.json', JSON.stringify(summary, null, 2) + '\n');
           console.log(JSON.stringify({...summary, records: undefined}));
           // This job collects evidence; status/signal/parse errors remain explicit
