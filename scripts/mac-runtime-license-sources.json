@@ -1,0 +1,104 @@
+[
+  {
+    "archive": "darwin/sources/gvdb-2b42fc75f09dbe1cd1057580b5782b08f2dcb400.tar.gz",
+    "member": "gvdb-2b42fc75f09dbe1cd1057580b5782b08f2dcb400/COPYING",
+    "bytes": 26445,
+    "sha256": "bdbcdaa7858872393e9d6b216bbdc8a23e99d98dd6cdb7cda19458025b9e19fc"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/portable-simd/LICENSE-APACHE",
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/portable-simd/crates/core_simd/LICENSE-APACHE",
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/backtrace/LICENSE-APACHE",
+    "bytes": 10847,
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/stdarch/crates/core_arch/LICENSE-APACHE",
+    "bytes": 10847,
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/stdarch/LICENSE-APACHE",
+    "bytes": 10847,
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/LICENSE-APACHE",
+    "bytes": 9723,
+    "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/COPYRIGHT",
+    "bytes": 1571,
+    "sha256": "172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/portable-simd/LICENSE-MIT",
+    "bytes": 1071,
+    "sha256": "eb07d497d26e6d68fbc76e793f5e5c9cfa197df2a580e47383569c287a55edf9"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/portable-simd/crates/core_simd/LICENSE-MIT",
+    "bytes": 1071,
+    "sha256": "eb07d497d26e6d68fbc76e793f5e5c9cfa197df2a580e47383569c287a55edf9"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/backtrace/LICENSE-MIT",
+    "bytes": 1057,
+    "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/stdarch/crates/core_arch/LICENSE-MIT",
+    "bytes": 1071,
+    "sha256": "29662666b44dff84977b46e05642cdef910bc3a93a17b5fd86e632bafa59cf21"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/stdarch/LICENSE-MIT",
+    "bytes": 1071,
+    "sha256": "29662666b44dff84977b46e05642cdef910bc3a93a17b5fd86e632bafa59cf21"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/LICENSE-MIT",
+    "bytes": 1068,
+    "sha256": "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/src/llvm-project/libunwind/LICENSE.TXT",
+    "bytes": 16706,
+    "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/compiler-builtins/libm/LICENSE.txt",
+    "bytes": 14088,
+    "sha256": "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7"
+  },
+  {
+    "archive": "darwin/sources/rust-src-nightly-2025-11-01.tar.xz",
+    "member": "rust-src-nightly/rust-src/lib/rustlib/src/rust/library/compiler-builtins/LICENSE.txt",
+    "bytes": 15078,
+    "sha256": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b"
+  }
+]

@@ -18,6 +18,12 @@ const {
   walkFiles
 } = require('./mac-support.cjs');
 const { prepareNativeSources, installNativeSources } = require('./mac-native-sources.cjs');
+const { writeRuntimeLicenses } = require('./mac-runtime-licenses.cjs');
+const {
+  collectorStrategy,
+  createRuntimeStage,
+  verifyRuntimeStage
+} = require('./mac-runtime-stage.cjs');
 const root = path.resolve(__dirname, '..');
 
 async function prepareIndex(input, seven) {
@@ -93,49 +99,6 @@ async function prepareRuntime(stage, cache) {
   return evidence;
 }
 
-async function writeRuntimeLicenses(stage, resources, packages) {
-  const directory = path.join(resources, 'licenses', 'mac-runtime');
-  await fsp.mkdir(directory, { recursive: true });
-  const inventory = [];
-  for (const row of packages) {
-    const source = path.join(stage, 'node_modules', ...row.name.split('/'));
-    const metadata = JSON.parse(await fsp.readFile(path.join(source, 'package.json'), 'utf8'));
-    const destination = path.join(directory, row.name.replaceAll('/', '__'));
-    await fsp.mkdir(destination);
-    const names = (await fsp.readdir(source)).filter((name) =>
-      /^(?:licen[cs]e|notice|copying|copyright)(?:[.-]|$)/i.test(name)
-    );
-    if (!names.length) throw new Error('Missing runtime package license: ' + row.name);
-    const records = [];
-    for (const name of [...names, 'package.json', 'README.md', 'versions.json']) {
-      const filename = path.join(source, name);
-      if (!fs.existsSync(filename) || !(await fsp.lstat(filename)).isFile()) continue;
-      await fsp.copyFile(filename, path.join(destination, name), fs.constants.COPYFILE_EXCL);
-      records.push({ file: name, sha256: await digest(filename) });
-    }
-    inventory.push({
-      ...row,
-      license: metadata.license,
-      repository: metadata.repository,
-      files: records
-    });
-  }
-  const result = {
-    packages: inventory,
-    nativeSource: {
-      sharp: 'https://github.com/lovell/sharp/tree/v0.34.5',
-      libvipsBundle: 'https://github.com/lovell/sharp-libvips/tree/v1.2.4',
-      libvips: 'https://github.com/libvips/libvips/tree/v8.17.3',
-      notices: 'https://github.com/lovell/sharp-libvips/blob/v1.2.4/THIRD-PARTY-NOTICES.md'
-    }
-  };
-  await fsp.writeFile(
-    path.join(directory, 'manifest.json'),
-    JSON.stringify(result, null, 2) + '\n'
-  );
-  return result;
-}
-
 async function buildRenameHelper(stage, resources) {
   const source = path.join(stage, 'src', 'native', 'macos-rename.c');
   const directory = path.join(resources, 'bin');
@@ -197,9 +160,9 @@ async function main() {
     throw new Error('release/ must be a real directory');
   await fsp.mkdir(output, { recursive: false }); // Refuse to overwrite any candidate or old release.
   const input = path.join(output, 'input');
-  const stage = path.join(output, 'app-stage');
   await fsp.mkdir(input);
-  await fsp.mkdir(stage);
+  // Retained only for this ephemeral runner; never stage under the pnpm source tree.
+  const stage = await createRuntimeStage();
   const seven = process.env.ACG_MAC_7ZIP || '7zz';
   const index = await prepareIndex(input, seven);
   await fsp.cp(path.join(root, 'src'), path.join(stage, 'src'), {
@@ -227,12 +190,15 @@ async function main() {
         license: 'MIT',
         main: metadata.main,
         searchEdition: 'full',
+        // electron-builder 26.8.1 explicitly supports this collector strategy.
+        packageManager: collectorStrategy,
         dependencies: runtimePackages
       },
       null,
       2
     ) + '\n'
   );
+  const runtimeStage = await verifyRuntimeStage(stage, packages, input);
   let indexCopies = 0;
   let runtimeLicenses;
   let nativeSources;
@@ -242,6 +208,7 @@ async function main() {
     stage,
     output,
     afterPack: async (context) => {
+      await verifyRuntimeStage(stage, packages, input, runtimeStage.files);
       if (context.arch !== Arch.universal) return;
       if (++indexCopies !== 1)
         throw new Error('Index insertion must run exactly once after universal merge');
@@ -270,17 +237,35 @@ async function main() {
       if ((await digest(path.join(destination, 'subjects.sqlite'))) !== FULL.sha256)
         throw new Error('Bundled index hash mismatch');
       const resources = path.dirname(destination);
-      runtimeLicenses = await writeRuntimeLicenses(stage, resources, packages);
+      runtimeLicenses = await writeRuntimeLicenses(
+        stage,
+        resources,
+        packages,
+        preparedSources.directory
+      );
       nativeSources = await installNativeSources(preparedSources, resources);
       renameHelper = await buildRenameHelper(stage, resources);
     }
   });
+  config.beforePack = async (context) => {
+    const packager = context.packager.info;
+    if (
+      packager.appDir !== stage ||
+      packager.projectDir !== stage ||
+      (await packager.getPackageManager()) !== 'traversal'
+    )
+      throw new Error(
+        'Builder must collect runtime packages only from the isolated traversal stage'
+      );
+    await verifyRuntimeStage(stage, packages, input, runtimeStage.files);
+  };
   const artifacts = await build({
-    projectDir: root,
+    projectDir: stage,
     targets: Platform.MAC.createTarget('dmg', Arch.universal),
     publish: 'never',
     config
   });
+  await verifyRuntimeStage(stage, packages, input, runtimeStage.files);
   if (indexCopies !== 1) throw new Error('Universal afterPack hook did not insert Full index');
   const dmg = path.join(output, `ACG-album-Setup-${metadata.version}-Full-universal.dmg`);
   const images = (await walkFiles(output)).filter((name) => name.endsWith('.dmg'));
@@ -307,6 +292,7 @@ async function main() {
     installerUrl: index.installerUrl,
     installerSha256: FULL.installerSha256,
     runtimePackages: packages,
+    runtimeStage,
     runtimeLicenses,
     nativeSources,
     renameHelper,
