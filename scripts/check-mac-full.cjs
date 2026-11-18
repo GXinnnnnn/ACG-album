@@ -22,6 +22,12 @@ const { spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { verifyNativeSources } = require('./mac-native-sources.cjs');
 const { detachMacVolume } = require('./mac-volume-detach.cjs');
+const {
+  snapshotAppInventory,
+  dmgCapacityProof,
+  requireFrameworkBinary,
+  assertAppInventoryMatches
+} = require('./mac-bundle-inventory.cjs');
 const HEIC = Object.freeze({
   url: 'https://raw.githubusercontent.com/strukturag/libheif/v1.19.8/examples/example.heic',
   bytes: 718114,
@@ -553,6 +559,37 @@ async function main() {
     run('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg]);
     mounted = true;
     const appPath = path.join(mount, 'ACG-album.app');
+    assert.equal(
+      report.signedApp?.deepStrictVerified,
+      true,
+      'Missing real source application signature proof'
+    );
+    assert.equal(
+      report.signedApp.sourceFrameworkDeepStrictVerified,
+      true,
+      'Missing real source Electron Framework signature proof'
+    );
+    assert.equal(
+      report.signedApp.dmgConfigurationVerified,
+      true,
+      'Missing bounded DMG configuration proof'
+    );
+    const dmgCapacity = dmgCapacityProof(report.signedApp.inventory);
+    assert.deepEqual(
+      report.signedApp.dmgCapacity,
+      dmgCapacity,
+      'DMG capacity proof disagrees with signed payload'
+    );
+    const mountedInventory = await snapshotAppInventory(appPath);
+    const bundleCopy = assertAppInventoryMatches(report.signedApp.inventory, mountedInventory);
+    const framework = await requireFrameworkBinary(appPath, mountedInventory);
+    assert.deepEqual(
+      framework,
+      report.signedApp.framework,
+      'Mounted Electron Framework differs from the signed source'
+    );
+    bundleCopy.framework = framework;
+    bundleCopy.dmgCapacity = dmgCapacity;
     const inspection = await inspectApp(appPath);
     const executable = path.join(appPath, 'Contents', 'MacOS', 'ACG-album');
     const helper = await helperProbe(inspection.resources, evidence, arch);
@@ -583,6 +620,7 @@ async function main() {
       sourceCommit: report.sourceCommit,
       signing: report.signing,
       notarized: report.notarized,
+      bundleCopy,
       inspection,
       helper,
       probe,

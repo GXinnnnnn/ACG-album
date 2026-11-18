@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
+const { DMG_SIZE } = require('./mac-bundle-inventory.cjs');
 
 const FULL = Object.freeze({
   version: '1.2.3',
@@ -162,7 +163,9 @@ function builderConfig({ root, stage, output, afterPack }) {
       x64ArchFiles: nativePattern,
       singleArchFiles: nativePattern
     },
-    dmg: { format: 'ULFO', writeUpdateInfo: false, sign: false },
+    // The vendored dmgbuild does not check ditto's exit code. Use a bounded
+    // workspace with >=4 GiB reserve; afterSign enforces its 8 GiB payload budget.
+    dmg: { format: 'ULFO', writeUpdateInfo: false, sign: false, size: DMG_SIZE, shrink: true },
     publish: null,
     afterPack
   };

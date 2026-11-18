@@ -20,6 +20,13 @@ const {
 const { prepareNativeSources, installNativeSources } = require('./mac-native-sources.cjs');
 const { writeRuntimeLicenses } = require('./mac-runtime-licenses.cjs');
 const {
+  DMG_SIZE,
+  FRAMEWORK_BINARY,
+  snapshotAppInventory,
+  dmgCapacityProof,
+  requireFrameworkBinary
+} = require('./mac-bundle-inventory.cjs');
+const {
   collectorStrategy,
   createRuntimeStage,
   verifyRuntimeStage
@@ -203,6 +210,7 @@ async function main() {
   let runtimeLicenses;
   let nativeSources;
   let renameHelper;
+  let signedApp;
   const config = builderConfig({
     root,
     stage,
@@ -259,6 +267,48 @@ async function main() {
       );
     await verifyRuntimeStage(stage, packages, input, runtimeStage.files);
   };
+  config.afterSign = async (context) => {
+    if (context.arch !== Arch.universal || signedApp)
+      throw new Error('Expected exactly one signed universal application');
+    const dmgOptions = context.packager.config.dmg;
+    if (dmgOptions.size !== DMG_SIZE || dmgOptions.shrink !== true)
+      throw new Error('DMG configuration must use the bounded 12 GiB shrinking workspace');
+    const appPath = path.join(context.appOutDir, 'ACG-album.app');
+    const frameworkBinary = path.join(appPath, ...FRAMEWORK_BINARY.split('/'));
+    const frameworkStat = await fsp.lstat(frameworkBinary);
+    if (!frameworkStat.isFile() || frameworkStat.size <= 4)
+      throw new Error(
+        'Signed source application must contain the real nonempty Electron Framework binary'
+      );
+    const frameworkRoot = path.join(
+      appPath,
+      'Contents',
+      'Frameworks',
+      'Electron Framework.framework'
+    );
+    run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', frameworkRoot]);
+    run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
+    const inventory = await snapshotAppInventory(appPath);
+    const framework = await requireFrameworkBinary(appPath, inventory);
+    const dmgCapacity = dmgCapacityProof(inventory);
+    signedApp = {
+      deepStrictVerified: true,
+      sourceFrameworkDeepStrictVerified: true,
+      dmgConfigurationVerified: true,
+      framework,
+      inventory,
+      dmgCapacity
+    };
+    console.log(
+      'Verified signed application before DMG copy: ' +
+        JSON.stringify({
+          inventorySha256: inventory.sha256,
+          counts: inventory.counts,
+          logicalBytes: inventory.logicalBytes,
+          dmgCapacity
+        })
+    );
+  };
   const artifacts = await build({
     projectDir: stage,
     targets: Platform.MAC.createTarget('dmg', Arch.universal),
@@ -267,6 +317,8 @@ async function main() {
   });
   await verifyRuntimeStage(stage, packages, input, runtimeStage.files);
   if (indexCopies !== 1) throw new Error('Universal afterPack hook did not insert Full index');
+  if (!signedApp)
+    throw new Error('Signed application inventory was not captured before DMG construction');
   const dmg = path.join(output, `ACG-album-Setup-${metadata.version}-Full-universal.dmg`);
   const images = (await walkFiles(output)).filter((name) => name.endsWith('.dmg'));
   if (images.length !== 1 || images[0] !== dmg)
@@ -296,6 +348,7 @@ async function main() {
     runtimeLicenses,
     nativeSources,
     renameHelper,
+    signedApp,
     minimumSystemVersion: '12.0',
     verification:
       'Build only; check-mac-full.cjs must pass on native Intel and Apple Silicon runners before delivery.'
