@@ -1,0 +1,75 @@
+name: macOS font format evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect-font-format:
+    name: Collect native ${{ matrix.arch }} font format
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Save bounded system font evidence
+        env:
+          ACG_EXPECT_ARCH: ${{ matrix.arch }}
+          ACG_FONT_EVIDENCE: ${{ runner.temp }}/acg-font-format-evidence
+        run: |
+          node <<'NODE'
+          'use strict';
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+          assert.equal(process.platform, 'darwin');
+          assert.equal(process.arch, process.env.ACG_EXPECT_ARCH);
+          const directory = process.env.ACG_FONT_EVIDENCE;
+          assert.equal(path.dirname(directory), process.env.RUNNER_TEMP);
+          fs.mkdirSync(directory);
+          const write = (name, content) => fs.writeFileSync(path.join(directory, name), content, {flag: 'wx'});
+          const result = spawnSync('/usr/sbin/system_profiler', ['SPFontsDataType', '-json', '-timeout', '8'], {encoding: 'buffer', timeout: 10000, maxBuffer: 8 * 1024 * 1024});
+          const stdout = result.stdout || Buffer.alloc(0);
+          const stderr = result.stderr || Buffer.alloc(0);
+          const sha256 = bytes => require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+          write('stdout.json', stdout);
+          write('stderr.txt', stderr);
+          const kind = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+          const summary = {kind: 'mac-font-format-evidence', arch: process.arch, command: ['/usr/sbin/system_profiler', 'SPFontsDataType', '-json', '-timeout', '8'], timeout: 10000, maxBuffer: 8 * 1024 * 1024, status: result.status, signal: result.signal, error: result.error ? {name: result.error.name, code: result.error.code, message: result.error.message} : null, stdoutBytes: stdout.length, stdoutSha256: sha256(stdout), stderrBytes: stderr.length, stderrSha256: sha256(stderr)};
+          try {
+            const report = JSON.parse(stdout.toString('utf8').replace(/^\uFEFF/, ''));
+            summary.rootKind = kind(report);
+            summary.rootKeys = report && typeof report === 'object' ? Object.keys(report) : [];
+            summary.fontListKind = kind(report && report.SPFontsDataType);
+            if (Array.isArray(report && report.SPFontsDataType)) {
+              summary.records = report.SPFontsDataType.map((font, index) => ({index, kind: kind(font), keys: font && typeof font === 'object' ? Object.keys(font) : [], typefacesKind: kind(font && font.typefaces), typeFacesKind: kind(font && font.typeFaces), itemsKind: kind(font && font._items), typefaceCount: Array.isArray(font && font.typefaces) ? font.typefaces.length : null, faceKinds: Array.isArray(font && font.typefaces) ? [...new Set(font.typefaces.map(kind))] : [], missingFamilyCount: Array.isArray(font && font.typefaces) ? font.typefaces.filter(face => !face || typeof face.family !== 'string').length : null}));
+              summary.recordCount = summary.records.length;
+            }
+          } catch (error) {
+            summary.parseError = {name: error.name, message: error.message};
+          }
+          write('summary.json', JSON.stringify(summary, null, 2) + '\n');
+          console.log(JSON.stringify({...summary, records: undefined}));
+          // This job collects evidence; status/signal/parse errors remain explicit
+          // evidence fields. It does not validate the application or build a package.
+          NODE
+      - name: Preserve native font evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-font-format-${{ matrix.arch }}
+          path: ${{ runner.temp }}/acg-font-format-evidence/
+          if-no-files-found: error
+          retention-days: 14
