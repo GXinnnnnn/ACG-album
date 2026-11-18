@@ -1,0 +1,48 @@
+name: Mac GUI import preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-native-gui:
+    name: Verify native ${{ matrix.arch }} GUI import
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install frozen dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Prepare Electron 40.10.6 without building an application
+        run: node node_modules/electron/install.js
+      - name: Verify GUI import contract against the real preload
+        run: node --test --test-reporter=tap --test-concurrency=1 tests/mac-gui-import.test.cjs
+      - name: Verify native offline import, favorite and atomic rename
+        run: node scripts/check-mac-gui-preflight.cjs "${{ matrix.arch }}" "reports/mac-gui-preflight-${{ matrix.arch }}.json"
+      - name: Preserve GUI preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-gui-preflight-${{ matrix.arch }}
+          path: |
+            reports/mac-gui-preflight-${{ matrix.arch }}.json
+            reports/mac-gui-preflight-${{ matrix.arch }}.json.png
+          if-no-files-found: warn
+          retention-days: 14

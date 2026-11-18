@@ -22,6 +22,7 @@ const { spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { verifyNativeSources } = require('./mac-native-sources.cjs');
 const { detachMacVolume } = require('./mac-volume-detach.cjs');
+const { exerciseGuiLibrary } = require('./mac-gui-library.cjs');
 const {
   snapshotAppInventory,
   dmgCapacityProof,
@@ -441,26 +442,7 @@ async function guiSmoke(executable, index, evidence, arch, importRoot, originalA
     assert.equal(status.available, true, JSON.stringify(status));
     assert.equal(status.variant, 'full');
     assert.equal(status.path, index);
-    const library = await page.evaluate(
-      async ({ importRoot, originalAlbum }) => {
-        await window.album.call('settings', { key: 'autoMatch', value: false });
-        const scan = await window.album.call('scan', {
-          path: importRoot,
-          offline: true,
-          onlineMatch: false,
-          directoryKind: 'photo'
-        });
-        if (scan.errors) throw new Error(JSON.stringify(scan));
-        const before = await window.album.call('get', { path: originalAlbum });
-        if (!before || before.kind !== 'folder') throw new Error('Imported album not found');
-        await window.album.call('patch', { id: before.id, changes: { favorite: 1 } });
-        const rename = await window.album.call('rename', { id: before.id, name: 'Renamed Album' });
-        const after = await window.album.call('get', { id: rename.id });
-        const favorites = await window.album.call('list', { favorites: true });
-        return { scan, before, rename, after, favorites };
-      },
-      { importRoot, originalAlbum }
-    );
+    const library = await exerciseGuiLibrary(app, page, { importRoot, originalAlbum });
     assert.equal(library.scan.errors, 0);
     assert.equal(library.after.name, 'Renamed Album');
     assert.equal(library.after.favorite, 1, 'Favorite survives path ID remapping');
@@ -470,7 +452,9 @@ async function guiSmoke(executable, index, evidence, arch, importRoot, originalA
       await digest(path.join(evidence, 'original-photo.png'))
     );
     await assert.rejects(fsp.lstat(originalAlbum), { code: 'ENOENT' });
-    assert.ok(JSON.stringify(library.favorites).includes(library.after.id));
+    assert.ok(
+      library.favorites.items.some((item) => item.id === library.after.id && item.favorite === 1)
+    );
     await page.screenshot({ path: path.join(evidence, 'offline-import-rename-favorite.png') });
     await page.click('#local-search-button');
     await page.waitForSelector('#local-search-dialog[open]');
@@ -504,6 +488,7 @@ async function guiSmoke(executable, index, evidence, arch, importRoot, originalA
       offlineRenderer: true,
       blockedHttpSession: true,
       checks: [
+        'controlled fixture directory selection with real import IPC and restored native chooser',
         'offline import, atomic folder rename and favorite preservation',
         'Full subject summary',
         'subject-filtered character and person GUI queries',
