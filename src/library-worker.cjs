@@ -3430,13 +3430,13 @@ const rootResourceControllers = new Map();
 function abortRootResources(root) {
   for (const controller of rootResourceControllers.get(root) || []) controller.abort();
 }
-async function withRootResource(root, action) {
+async function withRootResource(root, action, { deferDeadline = false } = {}) {
   const generation = rootGenerations.get(root) || 0;
   const controller = new AbortController(),
     controllers = rootResourceControllers.get(root) || new Set();
   controllers.add(controller);
   rootResourceControllers.set(root, controllers);
-  let timer, onAbort;
+  let timer, onAbort, startDeadline;
   const check = () => {
     if (
       stopping ||
@@ -3449,17 +3449,22 @@ async function withRootResource(root, action) {
   try {
     check();
     return await Promise.race([
-      Promise.resolve().then(() => action(check, controller.signal)),
+      Promise.resolve().then(() => action(check, controller.signal, startDeadline)),
       new Promise((_, reject) => {
         onAbort = () =>
           reject(Object.assign(new Error('分类资源任务已暂停。'), { code: 'ROOT_OFFLINE' }));
         controller.signal.addEventListener('abort', onAbort, { once: true });
-        timer = setTimeout(() => {
-          reject(
-            Object.assign(new Error('资源读取超时，稍后可重试。'), { code: 'RESOURCE_TIMEOUT' })
-          );
-          controller.abort();
-        }, 8000);
+        startDeadline = () => {
+          check();
+          if (timer) return;
+          timer = setTimeout(() => {
+            reject(
+              Object.assign(new Error('资源读取超时，稍后可重试。'), { code: 'RESOURCE_TIMEOUT' })
+            );
+            controller.abort();
+          }, 8000);
+        };
+        if (!deferDeadline) startDeadline();
       })
     ]);
   } finally {
@@ -3557,65 +3562,71 @@ async function thumb(id, size = 1024, priority = false) {
   }
   let acquired = false;
   const temp = dest + '.' + require('node:crypto').randomUUID() + '.tmp';
-  const job = withRootResource(source.node.root, async (check, signal) => {
-    await thumbSlot(key, priority, signal);
-    acquired = true;
-    check();
-    const writeThumbnail = async (input) => {
-      const decoder = sharp(input, { limitInputPixels: 160000000, page: 0 });
-      decoder.timeout?.({ seconds: 8 });
-      const abort = () => decoder.destroy?.();
-      signal.addEventListener('abort', abort, { once: true });
+  const job = withRootResource(
+    source.node.root,
+    async (check, signal, startDeadline) => {
+      await thumbSlot(key, priority, signal);
+      acquired = true;
+      check();
+      // Queue contention is not source IO; give the acquired decoder its full budget.
+      startDeadline();
+      const writeThumbnail = async (input) => {
+        const decoder = sharp(input, { limitInputPixels: 160000000, page: 0 });
+        decoder.timeout?.({ seconds: 8 });
+        const abort = () => decoder.destroy?.();
+        signal.addEventListener('abort', abort, { once: true });
+        try {
+          return await decoder
+            .rotate()
+            .resize({
+              width: size,
+              height: Math.round((size * 1400) / 1024),
+              fit: 'inside',
+              withoutEnlargement: true
+            })
+            .webp({ quality: 86, alphaQuality: 100, effort: 1 })
+            .toFile(temp);
+        } finally {
+          signal.removeEventListener('abort', abort);
+        }
+      };
       try {
-        return await decoder
-          .rotate()
-          .resize({
-            width: size,
-            height: Math.round((size * 1400) / 1024),
-            fit: 'inside',
-            withoutEnlargement: true
-          })
-          .webp({ quality: 86, alphaQuality: 100, effort: 1 })
-          .toFile(temp);
+        try {
+          await writeThumbnail(source.file);
+        } catch (error) {
+          check();
+          const preview = await imagePreview.preview({
+            id: source.node.id,
+            file: source.file,
+            size: Math.ceil((size * 1400) / 1024),
+            force: true
+          });
+          check();
+          await writeThumbnail(preview.path);
+        }
+        check();
+        const current = getNode(source.node.id);
+        if (!current || current.path !== identityPath)
+          throw Object.assign(new Error('资源路径已变化。'), { code: 'ROOT_OFFLINE' });
+        await fsp.rename(temp, dest);
+        check();
+        const stat = await fsp.stat(dest);
+        check();
+        run(
+          'INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)',
+          key,
+          dest,
+          source.file,
+          Date.now(),
+          stat.size
+        );
+        return { path: dest };
       } finally {
-        signal.removeEventListener('abort', abort);
+        fsp.rm(temp, { force: true }).catch(() => {});
       }
-    };
-    try {
-      try {
-        await writeThumbnail(source.file);
-      } catch (error) {
-        check();
-        const preview = await imagePreview.preview({
-          id: source.node.id,
-          file: source.file,
-          size: Math.ceil((size * 1400) / 1024),
-          force: true
-        });
-        check();
-        await writeThumbnail(preview.path);
-      }
-      check();
-      const current = getNode(source.node.id);
-      if (!current || current.path !== identityPath)
-        throw Object.assign(new Error('资源路径已变化。'), { code: 'ROOT_OFFLINE' });
-      await fsp.rename(temp, dest);
-      check();
-      const stat = await fsp.stat(dest);
-      check();
-      run(
-        'INSERT OR REPLACE INTO thumbs VALUES(?,?,?,?,?)',
-        key,
-        dest,
-        source.file,
-        Date.now(),
-        stat.size
-      );
-      return { path: dest };
-    } finally {
-      fsp.rm(temp, { force: true }).catch(() => {});
-    }
-  })
+    },
+    { deferDeadline: true }
+  )
     .catch(async (error) => {
       if (
         error.code !== 'ROOT_OFFLINE' &&

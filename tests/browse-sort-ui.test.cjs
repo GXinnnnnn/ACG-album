@@ -556,6 +556,97 @@ test('restored scroll zero is a hit, timeline month and place have distinct view
   h.state.timelinePlace = 'Tokyo';
   assert.notEqual(vm.runInContext('viewKey()', h.context), month);
 });
+test('cold directory enters and starts its indexed list before delayed node and ancestors', async () => {
+  const h = appFixture(),
+    node = deferred(),
+    ancestors = deferred();
+  const baseApi = h.context.api;
+  h.context.api = (method, args) =>
+    method === 'get'
+      ? node.promise
+      : method === 'ancestors'
+        ? ancestors.promise
+        : baseApi(method, args);
+  const pending = vm.runInContext("navigate({parent:'child'})", h.context);
+  assert.equal(h.queries.length, 1, 'first list is submitted synchronously');
+  assert.equal(h.$('#page-title').textContent, 'Child');
+  node.resolve(h.child);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(h.queries.length, 1, 'canonical metadata does not reset the same list');
+  ancestors.resolve([]);
+  await pending;
+});
+
+test('cached directory restores before delayed get and stale metadata cannot replace the next route', async () => {
+  const h = appFixture(),
+    node = deferred(),
+    baseApi = h.context.api;
+  let restores = 0;
+  h.context.grid.restore = () => {
+    restores++;
+    return 0;
+  };
+  h.context.grid.total = 8;
+  h.context.api = (method, args) =>
+    method === 'get' && args.id === 'child' ? node.promise : baseApi(method, args);
+  const pending = vm.runInContext("navigate({parent:'child'})", h.context);
+  assert.equal(restores, 1);
+  assert.equal(h.queries.length, 0);
+  assert.equal(h.$('#page-title').textContent, 'Child');
+  await vm.runInContext("navigate({parent:'root'})", h.context);
+  node.resolve({ ...h.child, name: 'Late child' });
+  await pending;
+  assert.equal(h.state.current.id, 'root');
+  assert.equal(h.$('#page-title').textContent, 'Album');
+  assert.equal(
+    h.state.browseNodes.get('child').name,
+    'Child',
+    'stale get cannot replace known node memory'
+  );
+});
+
+test('unknown cold directory enters a default shell before get and validates its real sort later', async () => {
+  const h = appFixture(),
+    node = deferred(),
+    baseApi = h.context.api;
+  h.state.sort = 'size';
+  h.state.direction = 'asc';
+  vm.runInContext(
+    `browseSortMemory.hydrate({
+    [window.albumBrowseSort.scope('library', 'C:/Album/New folder')]:
+      {sort: 'modified', direction: 'asc'}
+  }, browseSortMemory.beginRead())`,
+    h.context
+  );
+  h.context.api = (method, args) =>
+    method === 'get' && args.id === 'unknown' ? node.promise : baseApi(method, args);
+  const pending = vm.runInContext("navigate({parent:'unknown'})", h.context);
+  assert.equal(h.$('#page-title').textContent, '本地相册');
+  assert.equal(h.queries.length, 1);
+  assert.equal(h.queries[0].sort, 'contentDate');
+  assert.equal(h.writes.length, 0);
+  node.resolve({ id: 'unknown', name: 'New folder', path: 'C:/Album/New folder' });
+  await pending;
+  assert.equal(h.state.current.name, 'New folder');
+  assert.equal(h.state.sort, 'modified');
+  assert.equal(h.queries.at(-1).sort, 'modified');
+  assert.equal(h.queries.length, 2, 'resolved path starts the saved-order list');
+  assert.equal(h.writes.length, 0);
+});
+
+test('an early list failure is contained until delayed metadata finishes and then reports once', async () => {
+  const h = appFixture(),
+    node = deferred(),
+    baseApi = h.context.api;
+  h.context.grid.load = () => Promise.reject(new Error('Indexed list failed'));
+  h.context.api = (method, args) => (method === 'get' ? node.promise : baseApi(method, args));
+  const pending = vm.runInContext("navigate({parent:'child'})", h.context);
+  const failure = assert.rejects(pending, /Indexed list failed/);
+  await new Promise((resolve) => setImmediate(resolve));
+  node.resolve(h.child);
+  await failure;
+});
+
 test('toolbar and real browse context menu call the shared persistent action with a distinct 日期 option', () => {
   assert.match(appSource, /#sort'\)\.onchange[^\n]*changeBrowseSort/);
   assert.match(menusSource, /\['contentDate', '按日期排序'\]/);

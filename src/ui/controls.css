@@ -79,9 +79,7 @@ select.album-select-source {
   box-sizing: border-box;
   min-width: 0;
   padding: 6px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
+  overflow: clip;
   border: 1px solid var(--line);
   border-radius: 19px;
   background: var(--surface-solid);
@@ -91,6 +89,16 @@ select.album-select-source {
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
+}
+/* Only options scroll. Decorative canvases stay on the non-scrolling shell. */
+.album-select-options {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 .album-select-list::backdrop {
   background: transparent;

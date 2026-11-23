@@ -2,9 +2,11 @@
 
 (() => {
   const sorts = new Set(['name', 'date', 'modified', 'size', 'contentDate']);
-  const views = new Set(['library', 'favorites', 'pending', 'timeline']);
+  const views = new Set(['library', 'library-media', 'favorites', 'pending', 'timeline']);
   const defaultPair = (view, { insideAlbum = false, importedRoot = false } = {}) =>
-    view === 'timeline' || (view === 'library' && insideAlbum && !importedRoot)
+    view === 'timeline' ||
+    view === 'library-media' ||
+    (view === 'library' && insideAlbum && !importedRoot)
       ? { sort: 'contentDate', direction: 'desc' }
       : { sort: 'name', direction: 'asc' };
   function normalizePath(value) {
@@ -235,5 +237,5 @@
       }
     };
   }
-  window.albumBrowseSort = { create, scope, normalizePath, validPair };
+  window.albumBrowseSort = { create, scope, normalizePath, validPair, defaults: defaultPair };
 })();

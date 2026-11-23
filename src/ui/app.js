@@ -165,6 +165,9 @@ const browseSortMemory = window.albumBrowseSort.create({
   save: (value) => api('settings', { key: 'browseSortPreferences', value }),
   onError: (error) => toast(`排序偏好暂未保存：${error.message || error}`, true)
 });
+function browseSortView(view = S.view, parent = S.parent, filter = S.filter) {
+  return view === 'library' && !parent && filter === 'images' ? 'library-media' : view;
+}
 function browseSortPath() {
   if (!S.parent) return null;
   if (S.current?.id === S.parent) return S.current.path;
@@ -183,13 +186,16 @@ function rememberBrowseSortRenames(renames) {
 function restoreBrowseSort() {
   if (!browseSortMemory) return;
   const path = browseSortPath();
-  if (S.parent && !path) return;
+  const context = {
+    insideAlbum: !!S.parent,
+    importedRoot: S.roots.some((root) => root.id === S.parent)
+  };
+  const view = browseSortView();
   Object.assign(
     S,
-    browseSortMemory.get(S.view, path, {
-      insideAlbum: !!S.parent,
-      importedRoot: S.roots.some((root) => root.id === S.parent)
-    })
+    S.parent && !path
+      ? window.albumBrowseSort.defaults(view, context)
+      : browseSortMemory.get(view, path, context)
   );
 }
 let browseSortChangeVersion = 0;
@@ -215,7 +221,7 @@ async function changeBrowseSort(sort = S.sort, direction = S.direction) {
   }
   Object.assign(S, pair);
   if (browseSortMemory) {
-    browseSortMemory.set(view, path, pair);
+    browseSortMemory.set(browseSortView(view, parent, S.filter), path, pair);
     S.settings.browseSortPreferences = browseSortMemory.snapshot();
   }
   await loadPage();
@@ -641,9 +647,63 @@ async function loadPage(keepScroll = false) {
     scroll = $('#viewport').scrollTop,
     previousCurrent = S.current;
   $('#back-button').disabled = !S.history.length && !S.parent;
-  const loadedCurrent = S.parent ? await api('get', { id: S.parent }) : null;
-  if (version !== S.loadVersion) return;
+  // A database read can queue behind background work. Enter using the node
+  // already attached to the clicked card, then validate without holding paint.
+  const nodes = (S.browseNodes ||= new Map());
+  const remember = (node) => {
+    if (!node?.id) return;
+    nodes.delete(node.id);
+    nodes.set(node.id, node);
+    if (nodes.size > 256) nodes.delete(nodes.keys().next().value);
+  };
+  remember(previousCurrent);
+  const known = S.parent
+    ? S.roots.find((node) => node.id === S.parent) ||
+      [...grid.items.values()].find((node) => node.id === S.parent) ||
+      (typeof folderTree !== 'undefined' ? folderTree.openNodes.get(S.parent) : null) ||
+      nodes.get(S.parent) ||
+      null
+    : null;
+  S.current = known;
+  if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
+  const initialKey = viewKey(),
+    nodeRead = S.parent ? api('get', { id: S.parent }) : Promise.resolve(null),
+    ancestorRead = S.parent
+      ? Promise.resolve(api('ancestors', { id: S.parent })).then(
+          (value) => ({ value }),
+          (error) => ({ error })
+        )
+      : Promise.resolve({ value: [] });
+  const earlyScroll = isOverview() ? null : (grid.restore?.(initialKey, version) ?? null);
+  $('#category-overview').replaceChildren();
+  $('#empty-state').replaceChildren();
+  $('#intro-area').replaceChildren();
+  $('#page-title').textContent = S.search
+    ? `搜索“${S.search}”`
+    : known?.name || (S.parent ? '本地相册' : '我的相册');
+  $('#page-description').textContent = known
+    ? `${fmt(known.folders)} 个子相册 · ${fmt(known.files)} 个媒体项目 · ${bytes(known.total_bytes)}`
+    : S.parent
+      ? '本地相册'
+      : '';
+  $('#footer-location').textContent = known?.path || 'ACG-album · 本地相册';
+  $('#footer-location').title = known?.path || '';
+  renderBreadcrumbs([]);
+  renderSourceStatus();
+  updateSidebar();
+  // A refresh of the current route keeps its cards until missing/offline
+  // recovery has validated the node; switching routes can start a cold list now.
+  const earlyList =
+    !isOverview() && earlyScroll === null && !(previousCurrent?.id === S.parent && grid.active)
+      ? Promise.resolve(grid.load(queryArgs(), version, initialKey)).then(
+          (value) => ({ value }),
+          (error) => ({ error })
+        )
+      : null;
+  const loadedCurrent = await nodeRead;
+  if (version !== S.loadVersion || initialKey !== viewKey()) return;
   S.current = loadedCurrent;
+  remember(loadedCurrent);
   if (S.parent && (!S.current || S.current.missing) && typeof recoverMissingBrowse === 'function') {
     const key = viewKey(),
       recovery = await recoverMissingBrowse(S.current, version, key, previousCurrent);
@@ -661,7 +721,23 @@ async function loadPage(keepScroll = false) {
   if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
   // Restore the already decoded cards synchronously, before breadcrumbs or any
   // background list validation can finish. A cold load owns its single reset.
-  const restoredScroll = isOverview() ? null : (grid.restore?.(viewKey(), version) ?? null);
+  const sameInitialView = initialKey === viewKey(),
+    restoredScroll = sameInitialView
+      ? earlyScroll
+      : isOverview()
+        ? null
+        : (grid.restore?.(viewKey(), version) ?? null);
+  // A real path may resolve a saved sort. Reset the old query immediately,
+  // rather than let its default-order reply race the canonical breadcrumb IO.
+  const pageList =
+    !isOverview() && restoredScroll === null
+      ? sameInitialView && earlyList
+        ? earlyList
+        : Promise.resolve(grid.load(queryArgs(), version, viewKey())).then(
+            (value) => ({ value }),
+            (error) => ({ error })
+          )
+      : null;
   $('#category-overview').replaceChildren();
   $('#empty-state').replaceChildren();
   $('#intro-area').replaceChildren();
@@ -710,9 +786,12 @@ async function loadPage(keepScroll = false) {
     S.view !== 'timeline' &&
     (!$('#eyebrow').textContent.trim() ||
       $('#eyebrow').textContent.trim() === 'YOUR PERSONAL COLLECTION');
-  const ancestors = S.current ? await api('ancestors', { id: S.current.id }) : [];
+  const ancestry = sameInitialView
+    ? await ancestorRead
+    : { value: S.current ? await api('ancestors', { id: S.current.id }) : [] };
   if (version !== S.loadVersion) return;
-  renderBreadcrumbs(ancestors);
+  if (ancestry.error) throw ancestry.error;
+  renderBreadcrumbs(ancestry.value);
   if (S.current && !S.search) renderIntro(S.current);
   if (isOverview()) {
     grid.retain?.();
@@ -722,9 +801,10 @@ async function loadPage(keepScroll = false) {
     if (!S.roots.length) renderEmpty();
     else await renderOverview(version);
   } else {
-    const total =
-      restoredScroll === null ? await grid.load(queryArgs(), version, viewKey()) : grid.total;
+    const listed = pageList ? await pageList : null;
     if (version !== S.loadVersion) return;
+    if (listed?.error) throw listed.error;
+    const total = listed ? listed.value : grid.total;
     setResultCount(`${fmt(total)} 项`);
     if (!total) renderEmpty(false);
   }
@@ -844,13 +924,34 @@ function card(
   b.innerHTML = `<div class="cover-shell"><span class="cover-placeholder">${svg(n.kind === 'folder' ? 'folder' : 'image')}</span><img crossorigin="anonymous" alt="" draggable="false" class="${icon ? 'icon-cover' : ''}" style="object-position:${n.crop_x ?? 50}% ${n.crop_y ?? 50}%"><span class="cover-gradient"></span>${cardReviewBadge(n)}${n.favorite ? `<span class="card-favorite">${svg('heart')}</span>` : ''}<div class="card-bottom-overlay">${svg(n.kind === 'folder' ? 'folder' : 'image')}${cardCountMarkup(n)}${n.metadata?.rating?.score ? `<span class="card-rating">★ ${Number(n.metadata.rating.score).toFixed(1)}</span>` : ''}</div></div><div class="card-info"><span class="card-title">${esc(n.name)}</span><span class="card-subtitle"><span>${n.kind === 'folder' ? (n.folders ? fmt(n.folders) + ' 个子相册' : '本地相册') : bytes(n.bytes)}</span><span>${n.kind === 'folder' ? (n.manual_cover ? '自选封面' : n.cover_source === 'bangumi' ? 'Bangumi' : '本地') : new Date(n.mtime).toLocaleDateString('zh-CN')}</span></span></div>`;
   const img = b.querySelector('img');
   applyCoverCrop(img, n);
+  let thumbnailRetries = 0,
+    thumbnailRetryTimer;
   img.onload = () => {
+    clearTimeout(thumbnailRetryTimer);
+    img.style.display = '';
     img.classList.add('loaded');
     b.querySelector('.cover-placeholder')?.remove();
   };
   img.onerror = () => {
+    clearTimeout(thumbnailRetryTimer);
+    img.classList.remove('loaded');
     img.style.display = 'none';
-    if (n.kind === 'video') window.queueVideoThumbnail?.(n, img);
+    if (n.kind === 'video') {
+      window.queueVideoThumbnail?.(n, img);
+      return;
+    }
+    if (thumbnailRetries >= 2) return;
+    const failedSource = img.getAttribute('src'),
+      retry = ++thumbnailRetries;
+    thumbnailRetryTimer = setTimeout(
+      () => {
+        if (!img.isConnected || img.getAttribute('src') !== failedSource) return;
+        // A new URL bypasses a cached error; stale cards must never restart requests.
+        img.style.display = '';
+        img.src = failedSource.replace(/&retry=\d+/g, '') + '&retry=' + retry;
+      },
+      retry === 1 ? 300 : 1200
+    );
   };
   // Request the final column/DPR tier once, with viewport work ahead of overscan.
   img.decoding = 'async';

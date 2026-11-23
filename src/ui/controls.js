@@ -46,6 +46,10 @@
     list.className = 'album-select-list';
     list.setAttribute('role', 'listbox');
     list.setAttribute('popover', 'manual');
+    // The optical shell must not participate in the options' scroll geometry.
+    const optionsViewport = document.createElement('div');
+    optionsViewport.className = 'album-select-options';
+    list.append(optionsViewport);
     select.before(wrapper);
     wrapper.append(select, button, list);
     select.classList.add('album-select-source');
@@ -82,15 +86,25 @@
         return;
       }
       const gutter = 8;
-      const width = Math.min(Math.max(rect.width, list.scrollWidth, 144), innerWidth - gutter * 2);
+      // Measure intrinsic content afresh, never the previous optical canvas or gutter.
+      list.style.maxWidth = `${Math.max(0, innerWidth - gutter * 2)}px`;
+      list.style.width = 'max-content';
+      list.style.minWidth = `${Math.min(Math.max(rect.width, 144), innerWidth - gutter * 2)}px`;
+      const width = list.getBoundingClientRect().width;
+      const style = getComputedStyle(list);
+      const chrome =
+        parseFloat(style.paddingTop) +
+        parseFloat(style.paddingBottom) +
+        parseFloat(style.borderTopWidth) +
+        parseFloat(style.borderBottomWidth);
+      const naturalHeight = optionsViewport.scrollHeight + chrome;
       const below = Math.max(0, innerHeight - rect.bottom - gutter - 6);
       const above = Math.max(0, rect.top - gutter - 6);
-      const upwards = below < Math.min(list.scrollHeight, 240) && above > below;
+      const upwards = below < Math.min(naturalHeight, 320) && above > below;
       const height = Math.min(320, upwards ? above : below);
-      list.style.width = `${width}px`;
-      list.style.maxHeight = `${height}px`;
+      optionsViewport.style.maxHeight = `${Math.max(0, height - chrome)}px`;
       list.style.left = `${Math.max(gutter, Math.min(rect.left, innerWidth - width - gutter))}px`;
-      list.style.top = `${upwards ? Math.max(gutter, rect.top - Math.min(list.scrollHeight, height) - 6) : rect.bottom + 6}px`;
+      list.style.top = `${upwards ? Math.max(gutter, rect.top - Math.min(naturalHeight, height) - 6) : rect.bottom + 6}px`;
     }
     function highlight(index) {
       active = index;
@@ -182,7 +196,7 @@
           if (option.parentElement?.tagName === 'OPTGROUP') item.title = option.parentElement.label;
           return item;
         });
-        list.replaceChildren(...items);
+        optionsViewport.replaceChildren(...items);
       }
       const label =
         select.selectedOptions[0]?.label || select.getAttribute('data-placeholder') || '请选择';

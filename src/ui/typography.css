@@ -141,7 +141,8 @@
   gap: 4px;
   max-height: min(340px, calc(100dvh - 310px));
   min-height: 88px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   margin-top: 14px;

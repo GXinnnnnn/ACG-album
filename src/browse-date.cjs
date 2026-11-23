@@ -4,7 +4,7 @@ const path = require('node:path');
 const CONTENT_DATE_VERSION = 2;
 const MAX_DATE = 8640000000000000;
 const SORTS = new Set(['name', 'date', 'modified', 'size', 'contentDate']);
-const VIEWS = new Set(['library', 'favorites', 'pending', 'timeline']);
+const VIEWS = new Set(['library', 'library-media', 'favorites', 'pending', 'timeline']);
 const plain = (value) =>
   value !== null &&
   typeof value === 'object' &&

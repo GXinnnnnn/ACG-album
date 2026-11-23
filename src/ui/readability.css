@@ -161,7 +161,7 @@ body {
 }
 /* A context menu and a top-layer select popup can scroll just like a modal.
    Paint only their draggable thumb, not a translucent full-height track. */
-:root :is(.modal, .context-menu, .album-select-list),
+:root :is(.modal, .context-menu, .album-select-list, .album-select-options),
 :root .modal * {
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) var(--scroll-track);
@@ -170,39 +170,48 @@ body {
    are non-auto. Opt back into the 6px gutter / 4px painted thumb there;
    Firefox retains its native thin scrollbar and the same pink colors. */
 @supports selector(::-webkit-scrollbar) {
-  :root :is(.modal, .context-menu, .album-select-list),
+  :root :is(.modal, .context-menu, .album-select-list, .album-select-options),
   :root .modal * {
     scrollbar-width: auto;
     scrollbar-color: auto;
   }
 }
-:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar,
+:root :is(.modal, .context-menu, .album-select-list, .album-select-options)::-webkit-scrollbar,
 :root .modal *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-track,
+:root
+  :is(.modal, .context-menu, .album-select-list, .album-select-options)::-webkit-scrollbar-track,
 :root .modal *::-webkit-scrollbar-track {
   background: var(--scroll-track);
   border-radius: 99px;
 }
-:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-thumb,
+:root
+  :is(.modal, .context-menu, .album-select-list, .album-select-options)::-webkit-scrollbar-thumb,
 :root .modal *::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   border: 1px solid transparent;
   background-clip: padding-box;
   border-radius: 99px;
 }
-:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-thumb:hover,
+:root
+  :is(
+    .modal,
+    .context-menu,
+    .album-select-list,
+    .album-select-options
+  )::-webkit-scrollbar-thumb:hover,
 :root .modal *::-webkit-scrollbar-thumb:hover {
   background-color: var(--scroll-thumb-hover);
 }
-:root :is(.modal, .context-menu, .album-select-list)::-webkit-scrollbar-corner,
+:root
+  :is(.modal, .context-menu, .album-select-list, .album-select-options)::-webkit-scrollbar-corner,
 :root .modal *::-webkit-scrollbar-corner {
   background: transparent;
 }
 @media (forced-colors: active) {
-  :root :is(.modal, .context-menu, .album-select-list),
+  :root :is(.modal, .context-menu, .album-select-list, .album-select-options),
   :root .modal * {
     scrollbar-color: auto;
   }
