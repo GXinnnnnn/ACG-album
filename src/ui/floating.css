@@ -673,9 +673,13 @@ h1 {
   border-radius: 21px;
   min-height: 42px;
 }
-.toolbar-right {
+#toolbar .toolbar-right {
   margin-left: auto;
   flex-shrink: 0;
+  gap: 4px;
+  min-height: 38px;
+  padding: 3px 5px;
+  border-radius: 999px;
 }
 .filter-tabs {
   background: var(--surface);
@@ -733,9 +737,16 @@ h1 {
   line-height: var(--toolbar-content-line-height);
 }
 #toolbar .sort-label .album-select-button {
-  height: 30px;
-  min-height: 30px;
+  height: 28px;
+  min-height: 28px;
+  width: auto;
+  padding-inline: 7px 4px;
+  gap: 5px;
   justify-content: space-between;
+}
+#toolbar .sort-label .album-select-value {
+  overflow: visible;
+  text-overflow: clip;
 }
 #toolbar .sort-label .album-select-value {
   display: inline-flex;
@@ -826,8 +837,33 @@ h1 {
   height: calc(14px * var(--card-scale, 1));
   flex-shrink: 0;
 }
+/* Center a real icon box and trimmed numerals, rather than compensating for
+   font leading with unequal padding. At scale 1 the pill is 20px high, matching
+   the folder/count row's icon; the full 10.0 value remains on one line. */
 #viewport .album-card .card-rating {
-  padding: calc(3px * var(--card-scale, 1)) calc(6px * var(--card-scale, 1));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: calc(3px * var(--card-scale, 1));
+  padding: calc(3px * var(--card-scale, 1));
+  font-size: calc(12px * var(--card-scale, 1));
+  line-height: 1;
+  white-space: nowrap;
+}
+#viewport .album-card .card-rating-star {
+  display: block;
+  width: calc(12px * var(--card-scale, 1));
+  height: calc(12px * var(--card-scale, 1));
+  flex: none;
+  fill: currentColor;
+  stroke: none;
+  pointer-events: none;
+}
+#viewport .album-card .card-rating-value {
+  display: block;
+  text-box: trim-both cap alphabetic;
+  font-variant-numeric: tabular-nums;
 }
 .album-card:not(.media-card) .card-info {
   padding-top: 6px;
@@ -875,15 +911,6 @@ h1 {
 #viewport .album-card:not(.media-card) .card-count-unit {
   flex-shrink: 0;
   white-space: pre;
-}
-#viewport .album-card:not(.media-card) .card-rating {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: calc(3px * var(--card-scale, 1));
-  font-size: calc(11px * var(--card-scale, 1));
-  line-height: 1.4;
-  white-space: nowrap;
 }
 .collection-tile {
   border-radius: 24px;

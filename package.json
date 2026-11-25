@@ -101,6 +101,9 @@
       ]
     },
     "nsis": {
+      "include": "build/installer.nsh",
+      "installerHeader": "build/installer-header.bmp",
+      "installerSidebar": "build/installer-sidebar.bmp",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

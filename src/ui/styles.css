@@ -194,9 +194,25 @@ button:active:not(:disabled) {
   -webkit-app-region: no-drag;
 }
 .window-controls button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 46px;
   width: 46px;
-  font-size: 15px;
+  height: 28px;
+  padding: 0;
   color: var(--soft);
+}
+.window-controls button > svg {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 .window-controls button:hover {
   background: var(--surface);
@@ -670,6 +686,9 @@ h1 {
   width: 1px;
   background: var(--line);
   margin: 0 8px;
+}
+.statusbar[hidden] {
+  display: none;
 }
 .statusbar {
   height: 29px;

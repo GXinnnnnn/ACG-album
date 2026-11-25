@@ -44,6 +44,62 @@ async function verifySourceFiles(directory) {
     rustStdCommit: lock.rustStd.commit
   };
 }
+async function acquireNativeArchive(zip) {
+  const local = process.env.ACG_MAC_NATIVE_SOURCE_ARCHIVE;
+  if (local === undefined) {
+    await download(lock.bundle.url, zip, lock.bundle.sha256);
+    return;
+  }
+  assert.ok(local.length > 0 && path.isAbsolute(local), 'Native source input must be an absolute archive path');
+  const before = await fsp.lstat(local, { bigint: true });
+  assert.ok(before.isFile() && !before.isSymbolicLink(), 'Native source input must be a regular non-symlink file');
+  const resolved = await fsp.realpath(local);
+  const destination = path.join(await fsp.realpath(path.dirname(zip)), path.basename(zip));
+  assert.notEqual(resolved, destination, 'Native source input must not alias its destination');
+  // An existing destination (including a hardlink or symlink) is always an error.
+  const existing = await fsp.lstat(zip).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  assert.equal(existing, null, 'Native source destination must be fresh');
+  const source = await fsp.open(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const identity = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs];
+    const opened = await source.stat({ bigint: true });
+    const named = await fsp.lstat(local, { bigint: true });
+    assert.ok(opened.isFile() && named.isFile() && !named.isSymbolicLink());
+    assert.deepEqual(identity(opened), identity(named), 'Native source changed while opening');
+    assert.deepEqual(identity(opened), identity(before), 'Native source changed before opening');
+    assert.equal(opened.size, BigInt(lock.bundle.bytes));
+    assert.equal(await fsp.realpath(local), resolved, 'Native source path changed');
+    const target = await fsp.open(zip, 'wx');
+    try {
+      // Copy from the checked descriptor, not by reopening a mutable source path.
+      const buffer = Buffer.allocUnsafe(1024 * 1024);
+      let total = 0;
+      while (true) {
+        const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+        assert.ok(total <= lock.bundle.bytes, 'Native source input grew');
+        await target.writeFile(buffer.subarray(0, bytesRead));
+      }
+      assert.equal(total, lock.bundle.bytes);
+      await target.sync();
+      const written = await target.stat({ bigint: true });
+      assert.equal(written.size, BigInt(lock.bundle.bytes));
+      assert.deepEqual(identity(await source.stat({ bigint: true })), identity(opened), 'Native source changed during copy');
+      assert.deepEqual(identity(await fsp.lstat(local, { bigint: true })), identity(opened), 'Native source path changed during copy');
+      assert.equal(await fsp.realpath(local), resolved);
+      assert.equal(await digest(zip), lock.bundle.sha256, 'Actual copied native source archive SHA-256');
+      assert.deepEqual(identity(await fsp.lstat(zip, { bigint: true })), identity(written), 'Native source destination changed');
+    } finally {
+      await target.close();
+    }
+  } finally {
+    await source.close();
+  }
+}
 async function prepareNativeSources(input, stage, seven) {
   for (const arch of ['arm64', 'x64']) {
     const file = path.join(
@@ -56,7 +112,7 @@ async function prepareNativeSources(input, stage, seven) {
     assertDarwinVersions(JSON.parse(await fsp.readFile(file, 'utf8')));
   }
   const zip = path.join(input, 'trusted-native-sources.zip');
-  await download(lock.bundle.url, zip, lock.bundle.sha256);
+  await acquireNativeArchive(zip);
   assert.equal((await fsp.stat(zip)).size, lock.bundle.bytes);
   const paths = archivePaths(run(seven, ['l', '-slt', zip]));
   const selected = paths.filter((name) => name.startsWith(lock.bundle.prefix));

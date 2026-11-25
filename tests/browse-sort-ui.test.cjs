@@ -297,6 +297,12 @@ function appFixture() {
     bytes: String,
     isOverview: () => !state.parent
   });
+  context.window.albumAppearanceSpec = require('../src/appearance-settings.cjs');
+  context.window.albumAppearanceControls = { resetDensityPreview() {}, sync() {} };
+  Object.assign(context, {
+    document: { documentElement: { style: { setProperty() {} } } },
+    cardPresets: () => [120, 155, 196], applyDisplaySettings() {}
+  });
   vm.runInContext(
     section(appSource, 'if (!window.albumBrowseSort?.create)', 'function queryArgs()') +
       section(appSource, 'function queryArgs()', 'function viewKey()') +
@@ -396,7 +402,7 @@ test('timeline defaults to date descending but independently saves every explici
 test('summary changes to sort preferences never reapply appearance settings', async () => {
   const h = appFixture();
   let applied = 0;
-  h.state.settings = { density: 166, theme: 'dark', browseSortPreferences: {} };
+  h.state.settings = { density: 166, densityConfigured: true, theme: 'dark', browseSortPreferences: {} };
   Object.assign(h.context, {
     summaryDetailsDirty: false,
     summaryDetailsVersion: 0,
@@ -409,6 +415,7 @@ test('summary changes to sort preferences never reapply appearance settings', as
       roots: [h.root],
       settings: {
         density: 166,
+        densityConfigured: true,
         theme: 'dark',
         browseSortPreferences: {
           [h.api.scope('library', null)]: { sort: 'contentDate', direction: 'desc' }
@@ -418,6 +425,7 @@ test('summary changes to sort preferences never reapply appearance settings', as
     })
   });
   h.context.window.albumAppearanceControls = {
+    resetDensityPreview() {}, sync() {},
     snapshot: () => 0,
     mergeSummary: (settings) => settings
   };
