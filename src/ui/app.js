@@ -143,6 +143,8 @@ function applySettings() {
 window.albumAppearanceControls = window.albumAppearance.createController({
   settings: () => S.settings,
   save: (key, value) => api('settings', { key, value }),
+  onDensity: (value) => rememberBrowseDensity(value),
+  flushDensity: () => flushBrowseDensity(),
   previewDensity: previewDisplayDensity,
   finishDensity: finishDisplayDensity,
   notify: toast
@@ -165,6 +167,61 @@ const browseSortMemory = window.albumBrowseSort.create({
   save: (value) => api('settings', { key: 'browseSortPreferences', value }),
   onError: (error) => toast(`排序偏好暂未保存：${error.message || error}`, true)
 });
+// Reuse the sort store's canonical scopes, rename replay, hydration and serial writes.
+const browseDensityMemory = window.albumBrowseSort.create({
+  requireHydration: true,
+  validValue: (value) => value && Object.keys(value).length === 1 &&
+    window.albumAppearanceSpec.valid('density', value.density),
+  defaultValue: () => ({}),
+  save: (value) => api('settings', { key: 'browseDensityPreferences', value }),
+  onError: (error) => toast(`卡片尺寸暂未保存：${error.message || error}`, true)
+});
+let legacyBrowseDensity = null, restoredDensityRoute = null;
+const pendingBrowseDensities = new Map(), densityPathWrites = new Set();
+function densityRoute(view = browseSortView(), parent = S.parent) {
+  return JSON.stringify([view, parent]);
+}
+function rememberBrowseDensity(value) {
+  const view = browseSortView(), parent = S.parent, route = densityRoute(view, parent);
+  const path = browseSortPath();
+  pendingBrowseDensities.set(route, value);
+  const record = (path) => {
+    if (parent && !path) throw new Error('目录路径尚未就绪，请重试');
+    browseDensityMemory.set(view, path, { density: value });
+    S.settings.browseDensityPreferences = browseDensityMemory.snapshot();
+    if (pendingBrowseDensities.get(route) === value) pendingBrowseDensities.delete(route);
+  };
+  if (!parent || path) record(path ?? null);
+  else {
+    const task = Promise.resolve(api('get', { id: parent })).then((node) => {
+      if (pendingBrowseDensities.get(route) === value) record(node?.path);
+    });
+    densityPathWrites.add(task);
+    void task.catch((error) => toast(error.message || String(error), true))
+      .finally(() => densityPathWrites.delete(task));
+  }
+}
+async function flushBrowseDensity() {
+  await Promise.all([...densityPathWrites]);
+  await browseDensityMemory.flush();
+}
+function restoreBrowseDensity() {
+  // A summary/metadata read on the same route must not cancel an active drag.
+  const route = densityRoute();
+  if (route !== restoredDensityRoute) {
+    window.albumAppearanceControls.resetDensityPreview();
+    restoredDensityRoute = route;
+  }
+  const path = browseSortPath(), view = browseSortView();
+  const saved = pendingBrowseDensities.get(densityRoute()) ??
+    (S.parent && !path ? undefined : browseDensityMemory.get(view, path).density) ??
+    (!S.parent ? legacyBrowseDensity : undefined);
+  S.settings.densityConfigured = saved !== undefined && saved !== null;
+  S.settings.density = S.settings.densityConfigured ? saved : cardPresets()[1];
+  document.documentElement.style.setProperty('--card-width', S.settings.density + 'px');
+  applyDisplaySettings();
+  window.albumAppearanceControls.sync();
+}
 function browseSortView(view = S.view, parent = S.parent, filter = S.filter) {
   return view === 'library' && !parent && filter === 'images' ? 'library-media' : view;
 }
@@ -178,6 +235,8 @@ function browseSortPath() {
   return known?.path;
 }
 function rememberBrowseSortRenames(renames) {
+  browseDensityMemory.rename(renames);
+  S.settings.browseDensityPreferences = browseDensityMemory.snapshot();
   if (typeof browseSortMemory !== 'undefined' && browseSortMemory) {
     browseSortMemory.rename(renames);
     S.settings.browseSortPreferences = browseSortMemory.snapshot();
@@ -601,13 +660,19 @@ async function loadSummary() {
   const wallpaperRevision = window.albumWallpaper.snapshot();
   const taskVersion = typeof startupTaskVersion === 'number' ? startupTaskVersion : null;
   const sortRead = typeof browseSortMemory !== 'undefined' ? browseSortMemory?.beginRead() : null;
+  const densityRead = browseDensityMemory.beginRead();
   let init;
   try {
     init = await api('init', { lightweight: true });
   } catch (error) {
     if (typeof browseSortMemory !== 'undefined') browseSortMemory?.cancelRead(sortRead);
+    browseDensityMemory.cancelRead(densityRead);
     throw error;
   }
+  browseDensityMemory.hydrate(init.settings.browseDensityPreferences, densityRead);
+  init.settings.browseDensityPreferences = browseDensityMemory.snapshot();
+  if (legacyBrowseDensity === null) legacyBrowseDensity =
+    init.settings.densityConfigured ? init.settings.density : undefined;
   if (typeof browseSortMemory !== 'undefined' && browseSortMemory) {
     browseSortMemory.hydrate(init.settings.browseSortPreferences, sortRead);
     init.settings.browseSortPreferences = browseSortMemory.snapshot();
@@ -628,9 +693,11 @@ async function loadSummary() {
   S.roots = init.roots;
   const settingsChanged = Object.entries(init.settings).some(
     ([key, value]) =>
-      key !== 'browseSortPreferences' && JSON.stringify(S.settings[key]) !== JSON.stringify(value)
+      !['browseSortPreferences', 'browseDensityPreferences'].includes(key) &&
+      JSON.stringify(S.settings[key]) !== JSON.stringify(value)
   );
   S.settings = { ...S.settings, ...init.settings };
+  restoreBrowseDensity();
   if (!summarySettingsApplied || settingsChanged) {
     applySettings();
     summarySettingsApplied = true;
@@ -666,6 +733,7 @@ async function loadPage(keepScroll = false) {
     : null;
   S.current = known;
   if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
+  restoreBrowseDensity();
   const initialKey = viewKey(),
     nodeRead = S.parent ? api('get', { id: S.parent }) : Promise.resolve(null),
     ancestorRead = S.parent
@@ -719,6 +787,7 @@ async function loadPage(keepScroll = false) {
   if (S.parent && !S.current) S.parent = null;
   renderSourceStatus();
   if (typeof restoreBrowseSort === 'function') restoreBrowseSort();
+  restoreBrowseDensity();
   // Restore the already decoded cards synchronously, before breadcrumbs or any
   // background list validation can finish. A cold load owns its single reset.
   const sameInitialView = initialKey === viewKey(),
@@ -2770,13 +2839,12 @@ async function settingsModal(tab = 'appearance') {
     viewport = shell.querySelector('#settings-content'),
     status = shell.querySelector('.settings-status'),
     tabs = [...shell.querySelectorAll('[data-tab]')],
-    indicator = shell.querySelector('.settings-tab-indicator'),
+    topRail = shell.querySelector('.settings-tabs'),
     generation = modalGeneration,
     panels = new Map(),
     motion = matchMedia('(prefers-reduced-motion: reduce)');
   let serial = 0,
     current = null,
-    requested = tab,
     disposed = false;
   const alive = () =>
     !disposed && dialog.open && shell.isConnected && generation === modalGeneration;
@@ -2805,15 +2873,25 @@ async function settingsModal(tab = 'appearance') {
       panel.setAttribute('aria-hidden', String(panel !== current));
     }
   };
-  const placeIndicator = () => {
-    const button = tabs.find((button) => button.dataset.tab === requested);
+  const placeIndicator = (rail = topRail, moving = true) => {
+    if (!alive()) return;
+    const button = rail.querySelector('button[aria-selected="true"]');
+    const indicator = rail.querySelector('.settings-tab-indicator');
+    // Hidden retained panels have no geometry; align them when shown again.
+    if (!button?.offsetWidth || !indicator) return;
     const before = getComputedStyle(indicator).transform;
     indicator.getAnimations().forEach((animation) => animation.cancel());
     indicator.style.width = button.offsetWidth + 'px';
     indicator.style.height = button.offsetHeight + 'px';
     const transform = `translate(${button.offsetLeft}px, ${button.offsetTop}px)`;
     indicator.style.transform = transform;
-    if (indicator.dataset.ready) animate(indicator, [{ transform: before }, { transform }], 210);
+    if (moving && indicator.dataset.ready && !motion.matches && S.settings.motionLevel !== 'low') {
+      // Read the painted position before cancelling, so rapid changes retarget smoothly.
+      indicator.animate([{ transform: before }, { transform }], {
+        duration: 200,
+        easing: 'cubic-bezier(.45,0,.25,1)'
+      });
+    }
     indicator.dataset.ready = 'true';
   };
   const dispose = () => {
@@ -2855,8 +2933,17 @@ async function settingsModal(tab = 'appearance') {
     if (!alive()) dispose();
   });
   observer.observe($('#modal-content'), { childList: true });
-  const resize = new ResizeObserver(placeIndicator);
-  resize.observe(shell.querySelector('.settings-tabs'));
+  const resize = new ResizeObserver((entries) => {
+    const rails = new Set(entries.map(({ target }) => target.closest('[role="tablist"]')));
+    rails.forEach((rail) => {
+      if (rail) placeIndicator(rail, false);
+    });
+  });
+  const observeRail = (rail) => {
+    resize.observe(rail);
+    rail.querySelectorAll('button').forEach((button) => resize.observe(button));
+  };
+  observeRail(topRail);
   motion.addEventListener('change', reduceMotion);
   window.addEventListener('album-effects-change', reduceMotion);
   dialog.addEventListener('close', closed);
@@ -2926,7 +3013,7 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="appearance-subtabs" role="tablist" aria-label="外观分类">${['theme', 'glass', 'wallpaper'].map((name, i) => `<button type="button" id="appearance-tab-${name}" role="tab" data-appearance-page="${name}" aria-controls="appearance-page-${name}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${['主题', '玻璃', '壁纸'][i]}</button>`).join('')}</div>
+        content.innerHTML = `<div class="appearance-subtabs" role="tablist" aria-label="外观分类"><span class="settings-tab-indicator" aria-hidden="true"></span>${['theme', 'glass', 'wallpaper'].map((name, i) => `<button type="button" id="appearance-tab-${name}" role="tab" data-appearance-page="${name}" aria-controls="appearance-page-${name}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${['主题', '玻璃', '壁纸'][i]}</button>`).join('')}</div>
 <section id="appearance-page-theme" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-theme" tabindex="0">
 <div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">月之亮面</option><option value="dark">月之暗面</option></select></div>
 <div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div>
@@ -2938,6 +3025,8 @@ ${window.albumAppearance.markup('theme')}
 <section id="appearance-page-glass" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-glass" tabindex="0" hidden inert>
 <div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">开启使用液态玻璃，关闭使用磨砂玻璃；悬浮组件与各种弹窗统一切换，两种材质分别记住透明度。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div>${window.albumAppearance.markup('glass')}</section>
 <section id="appearance-page-wallpaper" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-wallpaper" tabindex="0" hidden inert>${window.albumWallpaper?.markup?.() || ''}</section>`;
+        const appearanceRail = content.querySelector('.appearance-subtabs');
+        observeRail(appearanceRail);
         const appearanceTabs = [...content.querySelectorAll('[data-appearance-page]')];
         const chooseAppearancePage = (name, focus = false) => {
           for (const button of appearanceTabs) {
@@ -2951,6 +3040,7 @@ ${window.albumAppearance.markup('theme')}
             panel.inert = !active;
             if (active && focus) button.focus();
           }
+          placeIndicator(appearanceRail);
           content.scrollTop = 0;
           window.albumLiquidGlass?.refresh?.();
         };
@@ -3064,7 +3154,6 @@ ${window.albumAppearance.markup('theme')}
     void window.albumAppearanceControls.flush();
     void window.albumWallpaper.flush();
     const ticket = ++serial;
-    requested = name;
     settle();
     tabs.forEach((button) => {
       const selected = button.dataset.tab === name;
@@ -3085,6 +3174,8 @@ ${window.albumAppearance.markup('theme')}
     incoming.hidden = false;
     incoming.inert = false;
     incoming.setAttribute('aria-hidden', 'false');
+    const childRail = incoming.querySelector('.appearance-subtabs');
+    if (childRail) placeIndicator(childRail, false);
     viewport.setAttribute('aria-busy', 'false');
     status.textContent = '';
     if (outgoing && outgoing !== incoming) {

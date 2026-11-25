@@ -178,6 +178,7 @@ const defaults = {
   fontFamily: '',
   homeCopy: HOME_COPY_DEFAULTS,
   browseSortPreferences: {},
+  browseDensityPreferences: {},
   githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
@@ -4809,6 +4810,7 @@ const methods = {
     }
     if (key === 'homeCopy') value = normalizeHomeCopy(value);
     if (key === 'browseSortPreferences') value = normalizeBrowseSortPreferences(value);
+    if (key === 'browseDensityPreferences') value = normalizeBrowseSortPreferences(value, process.platform, true);
     if (key === 'githubRepository') {
       value = effectiveRepository(value);
       if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');

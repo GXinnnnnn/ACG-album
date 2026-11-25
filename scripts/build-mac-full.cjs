@@ -343,6 +343,7 @@ async function main() {
     index: index.manifest,
     installerUrl: index.installerUrl,
     installerSha256: FULL.installerSha256,
+    installerBytes: (await fsp.stat(path.join(input, FULL.installer))).size,
     runtimePackages: packages,
     runtimeStage,
     runtimeLicenses,

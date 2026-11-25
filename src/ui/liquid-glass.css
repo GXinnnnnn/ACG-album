@@ -376,11 +376,12 @@
 :root[data-theme] :is(.modal:not(.viewer), .settings-nav, .settings-panel) .settings-tab-indicator {
   background: var(--settings-glass-state-fill);
   box-shadow: var(--settings-glass-rim);
+  outline: 1px solid var(--settings-glass-state-outline);
+  outline-offset: -1px;
 }
 :root[data-theme]
   :is(.modal:not(.viewer), .settings-nav, .settings-panel)
   :is(
-    .appearance-subtabs button[aria-selected='true'],
     .wallpaper-gallery-tabs button[aria-selected='true'],
     .settings-nav button[aria-selected='true'],
     .settings-nav button.active,
@@ -404,11 +405,8 @@
 :root[data-theme]
   :is(.modal:not(.viewer), .settings-nav, .settings-panel)
   :is(
-    .settings-tabs button.active,
-    .settings-tabs button[aria-selected='true'],
     .settings-nav button.active,
     .settings-nav button[aria-selected='true'],
-    .appearance-subtabs button[aria-selected='true'],
     .wallpaper-gallery-tabs button[aria-selected='true'],
     .wallpaper-card.is-selected,
     .album-select-button[aria-expanded='true'],
@@ -632,10 +630,17 @@
   border-color: var(--settings-rail-state-edge);
   box-shadow: none;
 }
-/* The moving indicator paints the top-level active state exactly once. */
+/* Each settings rail paints its active state once, on the moving indicator. */
 :root[data-theme][data-liquid-glass]
   .modal:not(.viewer)
-  .settings-tabs
+  :is(.settings-tabs, .appearance-subtabs)
+  .settings-tab-indicator {
+  outline: 1px solid var(--settings-rail-state-outline);
+  outline-offset: -1px;
+}
+:root[data-theme][data-liquid-glass]
+  .modal:not(.viewer)
+  :is(.settings-tabs, .appearance-subtabs)
   button:is(.active, [aria-selected='true']) {
   background: transparent;
   border-color: transparent;
@@ -650,7 +655,10 @@
     .filter-tabs,
     [role='tablist']
   )
-  button:is(.active, [aria-selected='true']):not(:focus-visible) {
+  button:is(.active, [aria-selected='true']):not(:focus-visible):not(
+    .settings-tabs button,
+    .appearance-subtabs button
+  ) {
   outline: 1px solid var(--settings-rail-state-outline);
   outline-offset: -1px;
 }

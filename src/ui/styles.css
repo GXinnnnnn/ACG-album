@@ -671,6 +671,9 @@ h1 {
   background: var(--line);
   margin: 0 8px;
 }
+.statusbar[hidden] {
+  display: none;
+}
 .statusbar {
   height: 29px;
   display: flex;

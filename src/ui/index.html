@@ -212,7 +212,6 @@
           <div class="toolbar" id="toolbar">
             <div class="toolbar-right glass">
               <label class="sort-label"
-                ><span data-icon="sort"></span
                 ><select id="sort" aria-label="排序方式">
                   <option value="name">名称</option>
                   <option value="contentDate">日期</option>
@@ -321,9 +320,8 @@
           <div id="category-overview"></div>
           <div id="virtual-grid" class="virtual-grid"></div>
         </div>
-        <footer class="statusbar">
-          <span id="footer-location">ACG-album · 本地相册</span
-          ><span id="footer-status" role="status">正在加载本地资料库…</span>
+        <footer class="statusbar" hidden inert>
+          <span id="footer-location"></span><span id="footer-status" role="status"></span>
         </footer>
       </main>
     </div>
