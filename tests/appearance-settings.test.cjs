@@ -45,13 +45,13 @@ test('responsive preset interpolation clamps CSS widths and leaves saved density
     [2559, [124, 150, 188]],
     [2560, [124, 150, 188]],
     [2561, [124, 150, 188]],
-    [2880, [127, 154, 189]],
-    [3200, [130, 158, 190]],
-    [3839, [135, 165, 192]],
-    [3840, [135, 165, 192]],
-    [5120, [135, 165, 192]],
-    [0, [135, 165, 192]],
-    [NaN, [135, 165, 192]]
+    [2880, [123, 151, 190]],
+    [3200, [122, 153, 192]],
+    [3839, [120, 155, 196]],
+    [3840, [120, 155, 196]],
+    [5120, [120, 155, 196]],
+    [0, [120, 155, 196]],
+    [NaN, [120, 155, 196]]
   ]) {
     const presets = appearance.cardPresets(width);
     assert.deepEqual(presets, expected);
@@ -85,12 +85,19 @@ test('density remains unconfigured until explicitly saved, and every numeric cho
       'reading defaults must not create an explicit density row'
     );
   }
+  const directoryWidths = {
+    [JSON.stringify(['library', process.platform === 'win32' ? 'c:\\albums\\a' : '/Albums/A'])]: { density: 120 },
+    [JSON.stringify(['library', process.platform === 'win32' ? 'c:\\albums\\b' : '/Albums/B'])]: { density: 196 }
+  };
+  await client.call('settings', { key: 'browseDensityPreferences', value: directoryWidths });
+  await assert.rejects(client.call('settings', {
+    key: 'browseDensityPreferences', value: { [Object.keys(directoryWidths)[0]]: { density: 119 } }
+  }), /卡片尺寸/);
   await client.close();
   client = await open(data);
-  assert.equal(
-    (await client.call('init', { lightweight: true })).settings.densityConfigured,
-    false
-  );
+  const restartedSettings = (await client.call('init', { lightweight: true })).settings;
+  assert.equal(restartedSettings.densityConfigured, false);
+  assert.deepEqual(restartedSettings.browseDensityPreferences, directoryWidths);
   // Cover the previous fixed default, every responsive medium, a preset and a
   // custom continuous width. An explicitly saved 166 must never be guessed away.
   for (const density of [166, 155, 150, 165, 191, 222, 267.5]) {

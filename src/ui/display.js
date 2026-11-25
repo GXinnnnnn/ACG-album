@@ -1,9 +1,9 @@
 'use strict';
 // One set of display controls for the toolbar, preferences and category previews.
 const cardDisplayPresets = [
-  { width: 135, name: '小', kind: 'compact', count: 4 },
-  { width: 165, name: '中', kind: 'standard', count: 3 },
-  { width: 192, name: '大', kind: 'large', count: 2 }
+  { width: 120, name: '小', kind: 'compact', count: 4 },
+  { width: 155, name: '中', kind: 'standard', count: 3 },
+  { width: 196, name: '大', kind: 'large', count: 2 }
 ];
 function displayViewportWidth() {
   return document.documentElement.clientWidth || window.innerWidth || 3840;
@@ -35,17 +35,21 @@ function refreshDisplayPresets() {
     style.setProperty('--card-width', widths[1] + 'px');
     if (changed) window.albumAppearanceControls?.sync();
   }
-  const width = Number(S.settings.density) || 166;
-  style.setProperty('--card-base-size', widths[1] + 'px');
-  style.setProperty('--card-scale', String(width / widths[1]));
+  const width = Number(S.settings.density) || 166,
+    base = window.albumAppearanceSpec.cardScaleBase(displayViewportWidth());
+  style.setProperty('--card-base-size', base + 'px');
+  style.setProperty('--card-scale', String(width / base));
   return cardDisplayPresets;
 }
 let displayChangeTask = null,
   pendingDisplay = {};
 function applyDisplaySettings() {
   refreshDisplayPresets();
-  const preset = cardDisplayPresets.find((p) => p.width === Number(S.settings.density));
-  document.documentElement.dataset.cardSize = preset?.kind || 'standard';
+  const legacyIndex = window.albumAppearanceSpec
+    .legacyCardPresets(displayViewportWidth())
+    .indexOf(Number(S.settings.density));
+  document.documentElement.dataset.cardSize =
+    ['compact', 'standard', 'large'][legacyIndex] || 'standard';
   document.documentElement.dataset.mediaDetails = S.settings.details === false ? 'off' : 'on';
   const details = $('#details-toggle');
   if (details) {

@@ -44,6 +44,7 @@
     const list = document.createElement('div');
     list.id = `${id}-list`;
     list.className = 'album-select-list';
+    if (select.closest('.toolbar-right')) list.classList.add('album-select-list--toolbar');
     list.setAttribute('role', 'listbox');
     list.setAttribute('popover', 'manual');
     // The optical shell must not participate in the options' scroll geometry.
@@ -98,13 +99,16 @@
         parseFloat(style.borderTopWidth) +
         parseFloat(style.borderBottomWidth);
       const naturalHeight = optionsViewport.scrollHeight + chrome;
-      const below = Math.max(0, innerHeight - rect.bottom - gutter - 6);
-      const above = Math.max(0, rect.top - gutter - 6);
+      // Keep the popover outside the entire capsule, including its padding/border.
+      const anchor = button.closest('.toolbar-right')?.getBoundingClientRect() || rect;
+      const separation = 8;
+      const below = Math.max(0, innerHeight - anchor.bottom - gutter - separation);
+      const above = Math.max(0, anchor.top - gutter - separation);
       const upwards = below < Math.min(naturalHeight, 320) && above > below;
       const height = Math.min(320, upwards ? above : below);
       optionsViewport.style.maxHeight = `${Math.max(0, height - chrome)}px`;
       list.style.left = `${Math.max(gutter, Math.min(rect.left, innerWidth - width - gutter))}px`;
-      list.style.top = `${upwards ? Math.max(gutter, rect.top - Math.min(naturalHeight, height) - 6) : rect.bottom + 6}px`;
+      list.style.top = `${upwards ? Math.max(gutter, anchor.top - Math.min(naturalHeight, height) - separation) : anchor.bottom + separation}px`;
     }
     function highlight(index) {
       active = index;

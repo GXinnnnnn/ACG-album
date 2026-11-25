@@ -3,18 +3,26 @@
 // Page numbers stay absolute (offset = page * 180), including mixed boundary pages.
 // Anchor offsets are card-top pixels relative to the viewport; positions are grid-relative.
 // The host owns scroll/resize scheduling. Timeline badges/headers belong to card().
-// Overview previews use the same fixed density targets, aligned to the top-left.
-// Keep the API bound explicit; a normal 4K window needs only 28–42 preview albums.
-function overviewPreviewGeometry(available, preset, gap = 19) {
-  const width = Math.max(1, Number(available) || 1),
-    target = Math.min(width, Math.max(1, Number(preset) || 166)),
-    spacing = Math.max(0, Number(gap) || 0),
-    columns = Math.max(1, Math.floor((width + spacing) / (target + spacing)));
-  return {
-    columns,
-    width: target,
-    limit: Math.min(500, columns * 2)
-  };
+// Both canvases distribute the remainder instead of leaving an empty right strip.
+// The numeric density remains a target; only the rendered width is fitted.
+function fittedCardGeometry(available, preset, gap = 19, previousColumns = 0) {
+  const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback,
+    width = Math.max(1, finite(available, 1)),
+    target = Math.max(1, finite(preset, 166)),
+    spacing = Math.max(0, finite(gap, 19)),
+    pitch = target + spacing,
+    maxColumns = Math.max(1, Math.floor((width + spacing) / (spacing + 1))),
+    previous = Math.trunc(finite(previousColumns, 0));
+  let columns = Math.max(1, Math.min(maxColumns, Math.round((width + spacing) / pitch)));
+  // Retain a column count across two CSS pixels around a resize threshold.
+  // Callers discard this history whenever the route, density or gap changes.
+  if (previous >= 1 && previous <= maxColumns &&
+      Math.abs(width + spacing - previous * pitch) <= pitch / 2 + 2) columns = previous;
+  return { columns, width: (width - (columns - 1) * spacing) / columns };
+}
+function overviewPreviewGeometry(available, preset, gap = 19, previousColumns = 0) {
+  const geometry = fittedCardGeometry(available, preset, gap, previousColumns);
+  return { ...geometry, limit: Math.min(500, geometry.columns * 2) };
 }
 let overviewPreviewController;
 function renderOverviewPreview(preview, parent, version) {
@@ -51,13 +59,17 @@ function createOverviewPreviewController() {
           (parseFloat(styles.borderLeftWidth) || 0) -
           (parseFloat(styles.borderRightWidth) || 0)
       ),
+      target = parseFloat(root.getPropertyValue('--card-width')) || S.settings.density,
+      gap = parseFloat(styles.columnGap) || 19,
+      key = [entry.version, target, gap].join('/'),
       geometry = overviewPreviewGeometry(
-        available,
-        parseFloat(root.getPropertyValue('--card-width')) || S.settings.density,
-        parseFloat(styles.columnGap) || 19
+        available, target, gap, entry.geometryKey === key ? entry.geometry?.columns : 0
       );
     preview.dataset.previewColumns = String(geometry.columns);
     preview.dataset.previewLimit = String(geometry.limit);
+    if (preview.style.getPropertyValue('--preview-columns') !== String(geometry.columns))
+      preview.style.setProperty('--preview-columns', String(geometry.columns));
+    entry.geometryKey = key;
     entry.geometry = geometry;
     return geometry;
   }
@@ -224,6 +236,7 @@ function createVirtualGrid() {
     restoredGeometry = false,
     keys = [],
     stamp = '',
+    fitKey = '',
     dirty = true,
     pageVersion = 0,
     refreshVersion = 0,
@@ -282,6 +295,7 @@ function createVirtualGrid() {
         total: this.total,
         folders: this.folders,
         stamp,
+        fitKey,
         dirty,
         firstMedia,
         lastPage,
@@ -334,6 +348,7 @@ function createVirtualGrid() {
       for (const page of saved.loaded) loaded.add(page);
       ({
         stamp,
+        fitKey,
         dirty,
         firstMedia,
         lastPage,
@@ -404,6 +419,7 @@ function createVirtualGrid() {
       this.args = null;
       this.active = false;
       stamp = '';
+      fitKey = '';
       dirty = true;
       keys = [];
       extent = retainedExtent = 0;
@@ -620,7 +636,9 @@ function createVirtualGrid() {
                   Math.min(total - 1, anchor.index + (anchor.index >= oldFolders ? delta : 0))
                 );
         dirty = true;
-        draw(total ? anchor : null, latest);
+        // Metadata can change the media/folder gutter; keep the old pixel anchor,
+        // but measure the new canvas after committing that metadata.
+        draw(total ? anchor : null, measure());
         if (epoch === navigationEpoch) validatedNavigationEpoch = epoch;
         return total;
       })();
@@ -744,12 +762,17 @@ function createVirtualGrid() {
     }
     for (const { b } of previousCards.values()) b.remove();
     dirty = true;
-    draw(anchor, m);
+    // The first page establishes the mode, so its gutter must be measured now.
+    draw(anchor, measure());
   }
   function measure() {
     const el = $('#virtual-grid'),
       vp = $('#viewport'),
-      scroll = vp.scrollTop;
+      scroll = vp.scrollTop,
+      edge = (grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP) + 4 + 'px';
+    // Set the mode's gutter before reading the available canvas width.
+    if (vp.style.getPropertyValue('--browse-edge-space') !== edge)
+      vp.style.setProperty('--browse-edge-space', edge);
     const viewportTop = vp.getBoundingClientRect().top,
       origin = el.getBoundingClientRect().top - viewportTop + scroll;
     return {
@@ -862,11 +885,11 @@ function createVirtualGrid() {
     dirty = true;
     const preset = Math.max(1, Number(S.settings.density) || 166);
     grid.gap = grid.total > grid.folders ? MEDIA_GAP : FOLDER_GAP;
-    // The scrollport already reserves the visible sidebar and its window-edge
-    // spacing. Keep every column at that left edge; an incomplete column leaves
-    // its remainder on the right without changing the requested card width.
-    grid.cols = Math.max(1, Math.floor((m.width + grid.gap) / (preset + grid.gap)));
-    grid.width = Math.min(m.width, preset);
+    const key = [committedKey, preset, grid.gap].join('/'),
+      geometry = fittedCardGeometry(m.width, preset, grid.gap, fitKey === key ? grid.cols : 0);
+    fitKey = key;
+    grid.cols = geometry.columns;
+    grid.width = geometry.width;
     grid.offsetX = 0;
     mediaCols = grid.cols;
     const ratio =

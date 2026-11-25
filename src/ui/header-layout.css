@@ -29,9 +29,9 @@ main {
   margin-left: calc(var(--content-edge-space) + 240px);
 }
 #viewport {
-  padding-left: var(--content-edge-space);
-  /* Stable gutter already reserves the global 8px scrollbar. */
-  padding-right: calc(var(--content-edge-space) - var(--content-scrollbar-space));
+  padding-left: var(--browse-edge-space, 23px);
+  /* The gutter plus right padding equals the left edge; sidebar placement stays fixed. */
+  padding-right: calc(var(--browse-edge-space, 23px) - var(--content-scrollbar-space));
   padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 4px);
   padding-bottom: var(--window-status-space);
   scroll-padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 12px);

@@ -11,8 +11,8 @@ const { DMG_SIZE } = require('./mac-bundle-inventory.cjs');
 const FULL = Object.freeze({
   version: '1.2.3',
   installer: 'ACG-album-Setup-1.2.3-Full.exe',
-  installerBytes: 642311349,
-  installerSha256: 'dc5260079af9e21faf4da22b5641ff603fb3035eedd255274c2aeef8352159fb',
+  installerBytes: 642162873,
+  installerSha256: 'e37012d003a424687ec8917d54afa908ed1cf220e1e1198fd763849ba0659340',
   bytes: 4734013440,
   sha256: 'd4aea4e16c0b2aacf00c2947c66fb8d78428a4a9103f257f4f458e67c77787ff'
 });
