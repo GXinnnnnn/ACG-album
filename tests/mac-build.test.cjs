@@ -273,3 +273,13 @@ test('binary detector distinguishes Mach-O and Windows PE headers and ASAR tooli
   assert.equal(binaryKind(Buffer.from('OTTO')), null);
   assert.equal(typeof asarTool().listPackage, 'function');
 });
+
+// Exact new density Full installer accepted and anonymously read back before Mac preparation.
+test('density Full source pin remains exact', () => {
+  assert.equal(FULL.version, '1.2.3');
+  assert.equal(FULL.installer, 'ACG-album-Setup-1.2.3-Full.exe');
+  assert.equal(FULL.installerBytes, 642148782);
+  assert.equal(FULL.installerSha256, '364769352efc63444b701b42ae694aa47c6922764411a052ec726388c3067438');
+  assert.equal(FULL.bytes, 4734013440);
+  assert.equal(FULL.sha256, 'd4aea4e16c0b2aacf00c2947c66fb8d78428a4a9103f257f4f458e67c77787ff');
+});

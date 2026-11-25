@@ -75,8 +75,10 @@
   function createController({
     settings,
     save,
+    onDensity = null,
     previewDensity = () => {},
     finishDensity = () => {},
+    flushDensity = () => Promise.resolve(),
     notify = () => {},
     delay = 160
   }) {
@@ -132,7 +134,9 @@
       // Record that intent before an asynchronous save or window resize can run.
       if (key === 'density') settings().densityConfigured = true;
       revisions[key] = (revisions[key] || 0) + 1;
-      dirty.set(key, value);
+      // Scoped density is recorded at the input event, before navigation or debounce.
+      if (key === 'density' && onDensity) onDensity(value);
+      else dirty.set(key, value);
       if (key === 'density') {
         densityPreview = true;
         densityFinished = false;
@@ -178,7 +182,9 @@
         .finally(() => {
           task = null;
         });
-      return task;
+      return Promise.all([task, flushDensity().catch((error) => {
+        notify(`卡片尺寸保存失败：${error.message || error}`, true);
+      })]);
     }
     function mount(root) {
       sync(root);
@@ -213,13 +219,18 @@
         if (dirty.has(key) || (revisions[key] || 0) !== (started[key] || 0)) delete merged[key];
       // A read started during a save can finish after dirty has been cleared.
       // Keep the explicit width authoritative for the remainder of this session.
-      if (revisions.density) {
+      if (onDensity || revisions.density) {
         delete merged.density;
         delete merged.densityConfigured;
       }
       return merged;
     }
-    return { set, flush, mount, sync, snapshot, mergeSummary };
+    function resetDensityPreview() {
+      densityPreview = false;
+      densityFinished = true;
+      finishDensity();
+    }
+    return { set, flush, mount, sync, snapshot, mergeSummary, resetDensityPreview };
   }
   window.albumAppearance = { apply, markup, rangeMarkup, createController };
 })();

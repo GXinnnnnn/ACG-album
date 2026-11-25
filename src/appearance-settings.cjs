@@ -43,7 +43,7 @@
       stops = [
         { width: 1920, sizes: [120, 155, 191] },
         { width: 2560, sizes: [124, 150, 188] },
-        { width: 3840, sizes: [135, 165, 192] }
+        { width: 3840, sizes: [120, 155, 196] }
       ],
       upper = stops.findIndex((stop) => width <= stop.width);
     if (upper === 0) return [...stops[0].sizes];

@@ -1,9 +1,9 @@
 'use strict';
 // One set of display controls for the toolbar, preferences and category previews.
 const cardDisplayPresets = [
-  { width: 135, name: '小', kind: 'compact', count: 4 },
-  { width: 165, name: '中', kind: 'standard', count: 3 },
-  { width: 192, name: '大', kind: 'large', count: 2 }
+  { width: 120, name: '小', kind: 'compact', count: 4 },
+  { width: 155, name: '中', kind: 'standard', count: 3 },
+  { width: 196, name: '大', kind: 'large', count: 2 }
 ];
 function displayViewportWidth() {
   return document.documentElement.clientWidth || window.innerWidth || 3840;

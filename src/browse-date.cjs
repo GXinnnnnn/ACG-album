@@ -30,7 +30,7 @@ function normalizeScopePath(value, platform = process.platform) {
   return /^(?:\\\\\?\\)?[a-z]:\\$/u.test(normalized) ? normalized : normalized.replace(/\\+$/u, '');
 }
 
-function normalizeBrowseSortPreferences(value, platform = process.platform) {
+function normalizeBrowseSortPreferences(value, platform = process.platform, density = false) {
   if (!plain(value) || Reflect.ownKeys(value).length > 1024)
     throw new Error('排序偏好应为最多 1024 项的对象。');
   const result = {};
@@ -52,6 +52,14 @@ function normalizeBrowseSortPreferences(value, platform = process.platform) {
     if (key !== canonical) throw new Error('排序偏好的范围应使用规范化路径。');
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     const preference = descriptor.value;
+    if (density) {
+      if (!plain(preference) || Reflect.ownKeys(preference).length !== 1 ||
+          !Object.hasOwn(preference, 'density') ||
+          !require('./appearance-settings.cjs').valid('density', preference.density))
+        throw new Error('目录卡片尺寸无效。');
+      result[key] = { density: preference.density };
+      continue;
+    }
     if (
       !plain(preference) ||
       Reflect.ownKeys(preference).length !== 2 ||
