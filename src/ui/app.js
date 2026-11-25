@@ -2770,13 +2770,12 @@ async function settingsModal(tab = 'appearance') {
     viewport = shell.querySelector('#settings-content'),
     status = shell.querySelector('.settings-status'),
     tabs = [...shell.querySelectorAll('[data-tab]')],
-    indicator = shell.querySelector('.settings-tab-indicator'),
+    topRail = shell.querySelector('.settings-tabs'),
     generation = modalGeneration,
     panels = new Map(),
     motion = matchMedia('(prefers-reduced-motion: reduce)');
   let serial = 0,
     current = null,
-    requested = tab,
     disposed = false;
   const alive = () =>
     !disposed && dialog.open && shell.isConnected && generation === modalGeneration;
@@ -2805,15 +2804,25 @@ async function settingsModal(tab = 'appearance') {
       panel.setAttribute('aria-hidden', String(panel !== current));
     }
   };
-  const placeIndicator = () => {
-    const button = tabs.find((button) => button.dataset.tab === requested);
+  const placeIndicator = (rail = topRail, moving = true) => {
+    if (!alive()) return;
+    const button = rail.querySelector('button[aria-selected="true"]');
+    const indicator = rail.querySelector('.settings-tab-indicator');
+    // Hidden retained panels have no geometry; align them when shown again.
+    if (!button?.offsetWidth || !indicator) return;
     const before = getComputedStyle(indicator).transform;
     indicator.getAnimations().forEach((animation) => animation.cancel());
     indicator.style.width = button.offsetWidth + 'px';
     indicator.style.height = button.offsetHeight + 'px';
     const transform = `translate(${button.offsetLeft}px, ${button.offsetTop}px)`;
     indicator.style.transform = transform;
-    if (indicator.dataset.ready) animate(indicator, [{ transform: before }, { transform }], 210);
+    if (moving && indicator.dataset.ready && !motion.matches && S.settings.motionLevel !== 'low') {
+      // Read the painted position before cancelling, so rapid changes retarget smoothly.
+      indicator.animate([{ transform: before }, { transform }], {
+        duration: 200,
+        easing: 'cubic-bezier(.45,0,.25,1)'
+      });
+    }
     indicator.dataset.ready = 'true';
   };
   const dispose = () => {
@@ -2855,8 +2864,17 @@ async function settingsModal(tab = 'appearance') {
     if (!alive()) dispose();
   });
   observer.observe($('#modal-content'), { childList: true });
-  const resize = new ResizeObserver(placeIndicator);
-  resize.observe(shell.querySelector('.settings-tabs'));
+  const resize = new ResizeObserver((entries) => {
+    const rails = new Set(entries.map(({ target }) => target.closest('[role="tablist"]')));
+    rails.forEach((rail) => {
+      if (rail) placeIndicator(rail, false);
+    });
+  });
+  const observeRail = (rail) => {
+    resize.observe(rail);
+    rail.querySelectorAll('button').forEach((button) => resize.observe(button));
+  };
+  observeRail(topRail);
   motion.addEventListener('change', reduceMotion);
   window.addEventListener('album-effects-change', reduceMotion);
   dialog.addEventListener('close', closed);
@@ -2926,7 +2944,7 @@ async function settingsModal(tab = 'appearance') {
       }
       if (tab === 'profile') renderIdentitySettings(content);
       if (tab === 'appearance') {
-        content.innerHTML = `<div class="appearance-subtabs" role="tablist" aria-label="外观分类">${['theme', 'glass', 'wallpaper'].map((name, i) => `<button type="button" id="appearance-tab-${name}" role="tab" data-appearance-page="${name}" aria-controls="appearance-page-${name}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${['主题', '玻璃', '壁纸'][i]}</button>`).join('')}</div>
+        content.innerHTML = `<div class="appearance-subtabs" role="tablist" aria-label="外观分类"><span class="settings-tab-indicator" aria-hidden="true"></span>${['theme', 'glass', 'wallpaper'].map((name, i) => `<button type="button" id="appearance-tab-${name}" role="tab" data-appearance-page="${name}" aria-controls="appearance-page-${name}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${['主题', '玻璃', '壁纸'][i]}</button>`).join('')}</div>
 <section id="appearance-page-theme" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-theme" tabindex="0">
 <div class="setting-row"><div><strong>主题</strong><p>樱粉强调色与柔和的玻璃面板</p></div><select id="theme-select"><option value="light">月之亮面</option><option value="dark">月之暗面</option></select></div>
 <div class="setting-row"><div><strong>侧栏</strong><p>自动模式在悬停时展开，固定后为主内容留出空间。</p></div><select id="sidebar-mode"><option value="auto">悬停自动展开</option><option value="expanded">始终展开</option><option value="compact">点击展开</option></select></div>
@@ -2938,6 +2956,8 @@ ${window.albumAppearance.markup('theme')}
 <section id="appearance-page-glass" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-glass" tabindex="0" hidden inert>
 <div class="setting-row"><div><label for="liquid-glass"><strong>液态玻璃</strong></label><p id="liquid-glass-help">开启使用液态玻璃，关闭使用磨砂玻璃；悬浮组件与各种弹窗统一切换，两种材质分别记住透明度。</p></div><input id="liquid-glass" type="checkbox" class="switch" aria-describedby="liquid-glass-help"></div>${window.albumAppearance.markup('glass')}</section>
 <section id="appearance-page-wallpaper" class="appearance-page" role="tabpanel" aria-labelledby="appearance-tab-wallpaper" tabindex="0" hidden inert>${window.albumWallpaper?.markup?.() || ''}</section>`;
+        const appearanceRail = content.querySelector('.appearance-subtabs');
+        observeRail(appearanceRail);
         const appearanceTabs = [...content.querySelectorAll('[data-appearance-page]')];
         const chooseAppearancePage = (name, focus = false) => {
           for (const button of appearanceTabs) {
@@ -2951,6 +2971,7 @@ ${window.albumAppearance.markup('theme')}
             panel.inert = !active;
             if (active && focus) button.focus();
           }
+          placeIndicator(appearanceRail);
           content.scrollTop = 0;
           window.albumLiquidGlass?.refresh?.();
         };
@@ -3064,7 +3085,6 @@ ${window.albumAppearance.markup('theme')}
     void window.albumAppearanceControls.flush();
     void window.albumWallpaper.flush();
     const ticket = ++serial;
-    requested = name;
     settle();
     tabs.forEach((button) => {
       const selected = button.dataset.tab === name;
@@ -3085,6 +3105,8 @@ ${window.albumAppearance.markup('theme')}
     incoming.hidden = false;
     incoming.inert = false;
     incoming.setAttribute('aria-hidden', 'false');
+    const childRail = incoming.querySelector('.appearance-subtabs');
+    if (childRail) placeIndicator(childRail, false);
     viewport.setAttribute('aria-busy', 'false');
     status.textContent = '';
     if (outgoing && outgoing !== incoming) {

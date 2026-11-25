@@ -90,6 +90,15 @@ select.album-select-source {
   line-height: 1.5;
   text-align: left;
 }
+.album-select-list--toolbar {
+  padding: 5px;
+  border-radius: 17px;
+}
+.album-select-list--toolbar .album-select-option {
+  min-height: 32px;
+  padding-block: 6px;
+  border-radius: 12px;
+}
 /* Only options scroll. Decorative canvases stay on the non-scrolling shell. */
 .album-select-options {
   min-width: 0;
@@ -187,10 +196,10 @@ select.album-select-source {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: stretch;
-  gap: 4px;
-  padding: 4px;
+  gap: 2px;
+  padding: 2px;
   border: 1px solid var(--line);
-  border-radius: 24px;
+  border-radius: 999px;
   isolation: isolate;
 }
 .settings-tabs button,
@@ -200,8 +209,9 @@ select.album-select-source {
   align-items: center;
   justify-content: center;
   min-width: 0;
+  z-index: 1;
   min-height: 40px;
-  padding: 8px 14px;
+  padding: 8px 10px;
   border: 0;
   border-radius: 999px;
   line-height: 20px;
@@ -224,7 +234,7 @@ select.album-select-source {
   position: absolute;
   top: 0;
   left: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
   border-radius: 999px;
   background: var(--accent-soft);

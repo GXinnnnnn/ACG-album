@@ -273,3 +273,13 @@ test('binary detector distinguishes Mach-O and Windows PE headers and ASAR tooli
   assert.equal(binaryKind(Buffer.from('OTTO')), null);
   assert.equal(typeof asarTool().listPackage, 'function');
 });
+
+// Binds the exact FullR2 installer accepted and independently read back by root.
+test('FullR2 installer trust pin remains exact and database identity remains unchanged', () => {
+  assert.equal(FULL.version, '1.2.3');
+  assert.equal(FULL.installer, 'ACG-album-Setup-1.2.3-Full.exe');
+  assert.equal(FULL.installerBytes, 642195661);
+  assert.equal(FULL.installerSha256, 'c69c027591c0dd5a85baa2defc6d5ac09e969f7b046c32a99e2bfa1933b0d8ff');
+  assert.equal(FULL.bytes, 4734013440);
+  assert.equal(FULL.sha256, 'd4aea4e16c0b2aacf00c2947c66fb8d78428a4a9103f257f4f458e67c77787ff');
+});
