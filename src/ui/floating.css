@@ -673,9 +673,13 @@ h1 {
   border-radius: 21px;
   min-height: 42px;
 }
-.toolbar-right {
+#toolbar .toolbar-right {
   margin-left: auto;
   flex-shrink: 0;
+  gap: 4px;
+  min-height: 38px;
+  padding: 3px 5px;
+  border-radius: 999px;
 }
 .filter-tabs {
   background: var(--surface);
@@ -733,9 +737,16 @@ h1 {
   line-height: var(--toolbar-content-line-height);
 }
 #toolbar .sort-label .album-select-button {
-  height: 30px;
-  min-height: 30px;
+  height: 28px;
+  min-height: 28px;
+  width: auto;
+  padding-inline: 7px 4px;
+  gap: 5px;
   justify-content: space-between;
+}
+#toolbar .sort-label .album-select-value {
+  overflow: visible;
+  text-overflow: clip;
 }
 #toolbar .sort-label .album-select-value {
   display: inline-flex;
@@ -826,8 +837,57 @@ h1 {
   height: calc(14px * var(--card-scale, 1));
   flex-shrink: 0;
 }
+/* The background owns its height: 12s + (6s - 1px) + 2px border.
+   Center one natural-width content group inside equal inline insets. */
 #viewport .album-card .card-rating {
-  padding: calc(3px * var(--card-scale, 1)) calc(6px * var(--card-scale, 1));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  height: calc(18px * var(--card-scale, 1) + 1px);
+  padding: 0 calc(3px * var(--card-scale, 1) + 2px);
+  position: relative;
+  isolation: isolate;
+  background: none;
+  border-color: transparent;
+  font-size: calc(12px * var(--card-scale, 1));
+  line-height: 1;
+  white-space: nowrap;
+}
+/* Paint only: retain the left extension and extend the right edge 0.5px more
+   without taking flex space or moving the star, value, or neighboring count. */
+#viewport .album-card .card-rating::before {
+  content: '';
+  position: absolute;
+  inset: -1px -2px -1px -1.5px;
+  border: 1px solid #fff3;
+  border-radius: inherit;
+  background: #17182b99;
+  pointer-events: none;
+  z-index: -1;
+}
+#viewport .album-card .card-rating-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: calc(3px * var(--card-scale, 1));
+}
+#viewport .album-card .card-rating-star {
+  display: block;
+  width: calc(12px * var(--card-scale, 1));
+  /* Match the ink-tight 14 × 13.32 viewBox without stretching the star. */
+  height: calc(12px * var(--card-scale, 1) * 13.32 / 14);
+  flex: none;
+  fill: currentColor;
+  stroke: none;
+  pointer-events: none;
+}
+#viewport .album-card .card-rating-value {
+  display: block;
+  flex: none;
+  text-box: trim-both cap alphabetic;
+  font-variant-numeric: tabular-nums;
 }
 .album-card:not(.media-card) .card-info {
   padding-top: 6px;
@@ -851,11 +911,24 @@ h1 {
   font-size: calc(14px * var(--card-scale, 1));
   line-height: 1.2;
 }
+/* Keep the previous row height, including at the smallest scales where the
+   old pill (18s + 1.5px) was taller than the 20s icon. Shrinking its top by
+   0.5px moves its center down 0.25px when the lower edge stays fixed. */
+#viewport .album-card:not(.media-card) .card-bottom-overlay:has(> .card-rating) {
+  --card-footer-center-shift: 0.25px;
+  min-height: max(calc(20px * var(--card-scale, 1)), calc(18px * var(--card-scale, 1) + 1.5px));
+}
+#viewport .album-card:not(.media-card) .card-bottom-overlay > .card-rating {
+  translate: 0 var(--card-footer-center-shift, 0px);
+}
 #viewport .album-card:not(.media-card) .card-bottom-overlay > svg {
   display: block;
   width: calc(20px * var(--card-scale, 1));
   height: calc(20px * var(--card-scale, 1));
   flex-shrink: 0;
+  /* The folder path spans y=5..21 in a 24-unit viewBox: its ink center is
+     13, one unit below the box center. Align the ink, not the empty box. */
+  translate: 0 calc(var(--card-footer-center-shift, 0px) - 20px * var(--card-scale, 1) / 24);
 }
 #viewport .album-card:not(.media-card) .card-count {
   display: inline-flex;
@@ -865,6 +938,15 @@ h1 {
   text-overflow: clip;
   white-space: nowrap;
   transform: none;
+  line-height: 1;
+  translate: 0 var(--card-footer-center-shift, 0px);
+}
+/* Trim each actual text child; text-box does not inherit through the flex
+   wrapper. Center the number and its unit on the same axis as the pill. */
+#viewport .album-card:not(.media-card) .card-count-value,
+#viewport .album-card:not(.media-card) .card-count-unit {
+  display: block;
+  text-box: trim-both cap alphabetic;
 }
 #viewport .album-card:not(.media-card) .card-count-value {
   flex-shrink: 0;
@@ -875,15 +957,6 @@ h1 {
 #viewport .album-card:not(.media-card) .card-count-unit {
   flex-shrink: 0;
   white-space: pre;
-}
-#viewport .album-card:not(.media-card) .card-rating {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: calc(3px * var(--card-scale, 1));
-  font-size: calc(11px * var(--card-scale, 1));
-  line-height: 1.4;
-  white-space: nowrap;
 }
 .collection-tile {
   border-radius: 24px;

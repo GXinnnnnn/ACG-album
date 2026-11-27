@@ -33,6 +33,7 @@ const { OFFICIAL_REPOSITORY, effectiveRepository, validRepository } = require('.
 const { HOME_COPY_DEFAULTS, normalizeHomeCopy } = require('./home-copy.cjs');
 const appearanceSettings = require('./appearance-settings.cjs');
 const wallpaperSettings = require('./wallpaper-settings.cjs');
+const { validUserRating, ensureUserRatingSchema } = require('./user-rating.cjs');
 const { createBrowseDate, normalizeBrowseSortPreferences } = require('./browse-date.cjs');
 const { firstImage } = require('./character-matching.cjs');
 const { createCharacterLibrary } = require('./character-library.cjs');
@@ -159,6 +160,7 @@ if (!q('PRAGMA table_info(nodes)').some((c) => c.name === 'local_newest'))
   db.exec('ALTER TABLE nodes ADD COLUMN local_newest TEXT');
 if (!q('PRAGMA table_info(nodes)').some((c) => c.name === 'album_kind'))
   db.exec("ALTER TABLE nodes ADD COLUMN album_kind TEXT DEFAULT 'auto'");
+ensureUserRatingSchema(db);
 const defaults = {
   theme: 'light',
   ...appearanceSettings.defaults,
@@ -178,6 +180,7 @@ const defaults = {
   fontFamily: '',
   homeCopy: HOME_COPY_DEFAULTS,
   browseSortPreferences: {},
+  browseDensityPreferences: {},
   githubRepository: OFFICIAL_REPOSITORY
 };
 const setting = (key) => {
@@ -4719,6 +4722,11 @@ const methods = {
       search_type: [-1, 6]
     };
     for (const [k, v] of Object.entries(changes)) {
+      if (k === 'user_rating') {
+        if (!validUserRating(v))
+          throw new Error('自定义评分应为 0.0–10.0，最多一位小数；恢复自动评分请传入 null。');
+        continue;
+      }
       if (
         (k === 'search_type' && ![-1, 0, 1, 2, 3, 4, 6].includes(v)) ||
         !allowed[k] ||
@@ -4809,6 +4817,7 @@ const methods = {
     }
     if (key === 'homeCopy') value = normalizeHomeCopy(value);
     if (key === 'browseSortPreferences') value = normalizeBrowseSortPreferences(value);
+    if (key === 'browseDensityPreferences') value = normalizeBrowseSortPreferences(value, process.platform, true);
     if (key === 'githubRepository') {
       value = effectiveRepository(value);
       if (!validRepository(value)) throw new Error('GitHub 仓库应填写「所有者/仓库名」。');

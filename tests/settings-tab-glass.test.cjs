@@ -190,7 +190,9 @@ function fixture(options = {}) {
     const rail = element(parent, name, { role: 'tablist' });
     const selected = element(rail, 'active', { 'aria-selected': 'true' }, 'button');
     const unselected = element(rail, '', { 'aria-selected': 'false' }, 'button');
-    const indicator = name === 'settings-tabs' && element(rail, 'settings-tab-indicator');
+    const indicator =
+      ['settings-tabs', 'appearance-subtabs'].includes(name) &&
+      element(rail, 'settings-tab-indicator');
     return { name, rail, selected, unselected, indicator };
   });
   const card = element(page, 'settings-card');
@@ -276,14 +278,14 @@ test('rail material responds to floating controls and survives the independent d
             assert.equal(f.style(button).get('backdrop-filter'), 'none');
             assert.equal(f.style(button).get('box-shadow'), 'none');
           }
-          assert.match(f.style(selected).get('outline'), /^1px solid /);
+          assert.match(f.style(indicator || selected).get('outline'), /^1px solid /);
         }
         assert.equal(f.style(f.card).get('background') === 'transparent', dialogTransparent);
       }
     }
 });
 
-test('only the rail blurs, and top-level selection is painted by the moving indicator once', () => {
+test('only the rail blurs, and both settings levels paint selection on the moving indicator once', () => {
   const f = fixture();
   for (const { selected, unselected, indicator } of f.rails) {
     for (const child of [selected, unselected, indicator].filter(Boolean)) {
@@ -295,7 +297,9 @@ test('only the rail blurs, and top-level selection is painted by the moving indi
     assert.equal(f.style(unselected).get('background'), 'transparent');
     if (indicator) {
       assert.equal(f.style(selected).get('background'), 'transparent');
-      assert.equal(f.style(indicator).get('z-index'), '-1');
+      assert.equal(f.style(indicator).get('z-index'), '0');
+      assert.equal(f.style(selected).get('z-index'), '1');
+      assert.equal(f.style(selected).get('outline'), undefined);
       assert.equal(f.style(indicator).get('pointer-events'), 'none');
     }
   }
@@ -329,7 +333,8 @@ for (const preference of ['backdrop', 'reducedTransparency', 'forcedColors'])
             f.style(indicator || selected).get('background'),
             f.style(rail).get('background')
           );
-          if (forced) assert.equal(f.style(selected).get('outline'), '1px solid Highlight');
+          if (forced)
+            assert.equal(f.style(indicator || selected).get('outline'), '1px solid Highlight');
         }
       }
   });
@@ -346,7 +351,7 @@ test('keyboard focus and reduced motion retain component behavior and sticky cle
     assert.equal(f.style(sticky).get('position'), 'sticky');
     assert.equal(f.style(sticky).get('top'), '0');
     assert.equal(f.style(f.panel).get('overflow'), 'auto');
-    assert.equal(f.style(f.panel).get('scroll-padding-top'), '66px');
+    assert.equal(f.style(f.panel).get('scroll-padding-top'), '58px');
     for (const ancestor of [f.viewport, f.panel, f.page]) {
       assert.equal(f.style(ancestor).get('filter'), undefined);
       assert.equal(f.style(ancestor).get('backdrop-filter'), undefined);
@@ -363,4 +368,102 @@ test('global filter tabs reuse their floating parent without adding a nested dia
   const filter = element(navigation, 'filter-tabs', { role: 'tablist' });
   assert.equal(f.style(filter).variable('--settings-rail-opacity'), undefined);
   assert.match(f.style(navigation).get('backdrop-filter'), /blur\(/);
+});
+
+test('both settings rails use tight pill geometry without changing the material', () => {
+  const f = fixture();
+  for (const { rail, selected, indicator } of f.rails.filter((rail) => rail.indicator)) {
+    assert.equal(f.style(rail).get('padding'), '2px');
+    assert.equal(f.style(rail).get('gap'), '2px');
+    for (const el of [rail, selected, indicator])
+      assert.equal(f.style(el).get('border-radius'), '999px');
+  }
+});
+
+test('settings indicator retargets from its painted position and snaps for reduced motion, resize and disposal', () => {
+  const source = fs.readFileSync(path.join(ui, 'app.js'), 'utf8');
+  const helper = source.slice(
+    source.indexOf('  const placeIndicator = ('),
+    source.indexOf('  const dispose = () => {', source.indexOf('async function settingsModal'))
+  );
+  const motion = { matches: false };
+  const S = { settings: { motionLevel: 'high' } };
+  let connected = true;
+  const events = [];
+  const indicator = {
+    style: {},
+    dataset: {},
+    painted: 'none',
+    animations: [],
+    getAnimations() {
+      return this.animations;
+    },
+    animate(frames, options) {
+      events.push({ frames, options });
+      this.animations = [
+        {
+          cancel: () => {
+            events.push('cancel');
+            this.animations = [];
+          }
+        }
+      ];
+    }
+  };
+  const button = { offsetLeft: 2, offsetTop: 2, offsetWidth: 100, offsetHeight: 40 };
+  const rail = {
+    querySelector: (selector) => (selector.startsWith('button') ? button : indicator)
+  };
+  const place = new Function(
+    'alive',
+    'topRail',
+    'getComputedStyle',
+    'motion',
+    'S',
+    helper + '\nreturn placeIndicator;'
+  )(
+    () => connected,
+    rail,
+    () => ({ transform: indicator.painted }),
+    motion,
+    S
+  );
+  place();
+  assert.equal(events.length, 0, 'initial geometry is static');
+  button.offsetLeft = 104;
+  indicator.painted = 'matrix(1, 0, 0, 1, 2, 2)';
+  place();
+  assert.equal(events[0].options.easing, 'cubic-bezier(.45,0,.25,1)');
+  indicator.painted = 'matrix(1, 0, 0, 1, 48, 2)';
+  button.offsetLeft = 206;
+  place();
+  assert.equal(events[1], 'cancel');
+  assert.equal(
+    events[2].frames[0].transform,
+    indicator.painted,
+    'rapid switching begins at current painted position'
+  );
+  assert.equal(
+    indicator.style.transform,
+    'translate(206px, 2px)',
+    'underlying style always holds final position'
+  );
+  for (const preference of ['system', 'low', 'resize']) {
+    motion.matches = preference === 'system';
+    S.settings.motionLevel = preference === 'low' ? 'low' : 'high';
+    button.offsetLeft += 1;
+    place(rail, preference !== 'resize');
+    assert.equal(events.filter((event) => typeof event === 'object').length, 2, preference);
+    assert.equal(indicator.animations.length, 0, preference);
+    assert.equal(indicator.style.transform, `translate(${button.offsetLeft}px, 2px)`);
+  }
+  const settled = indicator.style.transform;
+  connected = false;
+  button.offsetLeft = 999;
+  place();
+  assert.equal(indicator.style.transform, settled, 'disposed shells are untouched');
+  connected = true;
+  button.offsetWidth = 0;
+  place();
+  assert.equal(indicator.style.transform, settled, 'hidden retained rails wait for layout');
 });

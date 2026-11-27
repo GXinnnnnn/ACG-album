@@ -16,9 +16,15 @@ function prioritizeMediaDetails(n) {
   if (detailReads.size > 1024) detailReads.delete(detailReads.keys().next().value);
   api('mediaInfo', { id: n.id }).catch(() => {});
 }
+function mediaCardFooterMarkup(n) {
+  return svg(n.kind === 'video' ? 'video' : 'image') +
+    `<span>${n.frames > 1 ? fmt(n.frames) + ' 帧 · ' : ''}${esc(pathExt(n.name))}</span>` +
+    cardRatingMarkup(n);
+}
 function decorateMediaCard(button, n) {
   button.removeAttribute('title');
-  button.setAttribute('aria-label', (n.kind === 'video' ? '播放视频：' : '查看图片：') + n.name);
+  button.setAttribute('aria-label', (n.kind === 'video' ? '播放视频：' : '查看图片：') + n.name +
+    (cardRatingData(n) ? '，' + cardRatingData(n).label : ''));
   const taken = n.taken || n.mtime,
     source = n.date_source?.startsWith('exif') ? '拍摄' : '文件';
   const hover = document.createElement('div');
@@ -28,9 +34,7 @@ function decorateMediaCard(button, n) {
   const info = button.querySelector('.card-subtitle');
   info.lastElementChild.textContent = new Date(taken).toLocaleDateString('zh-CN');
   const tag = button.querySelector('.card-bottom-overlay');
-  tag.innerHTML =
-    svg(n.kind === 'video' ? 'video' : 'image') +
-    `<span>${n.frames > 1 ? fmt(n.frames) + ' 帧 · ' : ''}${esc(pathExt(n.name))}</span>`;
+  tag.innerHTML = mediaCardFooterMarkup(n);
   if (n.kind === 'video') button.querySelector('.cover-placeholder').innerHTML = svg('video');
   if (S.view === 'timeline') {
     const badge = document.createElement('span');

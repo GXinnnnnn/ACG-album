@@ -827,7 +827,7 @@ function renderFolderTree() {
       break;
     }
 }
-function updateCoverNode(n) {
+function updateCoverNode(n, { ratingOnly = false } = {}) {
   if (!n) return;
   grid.invalidateNavigationCache?.();
   for (const page of folderTree.pages.values())
@@ -867,15 +867,19 @@ function updateCoverNode(n) {
     }
     el.querySelector('.card-review')?.remove();
     el.querySelector('.cover-shell').insertAdjacentHTML('beforeend', cardReviewBadge(n));
+    el.querySelector('.card-bottom-overlay').innerHTML = mediaCardFooterMarkup(n);
     el.setAttribute(
       'aria-label',
-      '打开相册：' + n.name + (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '')
+      (n.kind === 'video' ? '播放视频：' : '查看图片：') + n.name +
+        (cardReviewMessage(n) ? '，' + cardReviewMessage(n) : '') +
+        (cardRatingData(n) ? '，' + cardRatingData(n).label : '')
     );
-    el.querySelector('.card-subtitle span:last-child').textContent = n.manual_cover
-      ? '自选封面'
-      : n.cover_source === 'bangumi'
-        ? 'Bangumi'
-        : '本地';
+    if (!ratingOnly)
+      el.querySelector('.card-subtitle span:last-child').textContent = n.manual_cover
+        ? '自选封面'
+        : n.cover_source === 'bangumi'
+          ? 'Bangumi'
+          : '本地';
     el.oncontextmenu = (e) => showContext(e, n);
   }
   for (const tile of $$('.collection-tile'))

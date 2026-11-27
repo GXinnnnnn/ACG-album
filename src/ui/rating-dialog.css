@@ -1,0 +1,45 @@
+.rating-dialog .rating-form {
+  display: grid;
+  gap: 12px;
+}
+.rating-dialog .rating-item {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: var(--surface-soft, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.rating-dialog .rating-form > label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.rating-dialog .field-help {
+  margin: 0;
+  line-height: 1.6;
+}
+.rating-dialog #rating-value {
+  width: 100%;
+  min-width: 0;
+}
+.rating-dialog #rating-value[aria-invalid='true'] {
+  border-color: var(--danger, #c44454);
+}
+.rating-dialog #rating-error {
+  min-height: 20px;
+  margin: 0;
+  color: var(--danger, #c44454);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.rating-dialog .modal-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.rating-dialog #rating-reset {
+  margin-right: auto;
+}

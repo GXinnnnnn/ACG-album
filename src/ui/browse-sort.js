@@ -107,7 +107,8 @@
       }
     }
   }
-  function create({ save, onError = () => {}, requireHydration = false } = {}) {
+  function create({ save, onError = () => {}, requireHydration = false,
+    validValue = validPair, defaultValue = defaultPair } = {}) {
     let entries = new Map(),
       revision = 0,
       dirty = false,
@@ -174,7 +175,7 @@
         const incoming = new Map();
         if (value && Object.prototype.toString.call(value) === '[object Object]')
           for (const [key, pair] of Object.entries(value))
-            if (validKey(key) && validPair(pair)) incoming.set(key, { ...pair });
+            if (validKey(key) && validValue(pair)) incoming.set(key, { ...pair });
         for (const operation of token.operations) applyOperation(incoming, operation);
         entries = incoming;
         clip();
@@ -190,15 +191,15 @@
           entries.delete(key);
           entries.set(key, value);
         }
-        return { ...(value || defaultPair(view, context)) };
+        return { ...(value || defaultValue(view, context)) };
       },
       set(view, path, pair) {
         const key = scope(view, path);
-        if (!key || !validPair(pair)) return false;
+        if (!key || !validValue(pair)) return false;
         // An explicit first choice is meaningful even when it equals today's
         // default: importing a parent later must not replace that saved choice.
         const previous = entries.get(key);
-        if (previous?.sort === pair.sort && previous.direction === pair.direction) {
+        if (previous && JSON.stringify(previous) === JSON.stringify(pair)) {
           persist();
           return false;
         }

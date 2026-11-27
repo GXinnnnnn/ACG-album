@@ -35,16 +35,10 @@
       ])
     );
   }
-  function cardPresets(viewportWidth = 3840) {
-    // CSS pixels already account for OS scaling and browser zoom. Physical
-    // screen pixels would make a scaled 4K desktop select oversized targets.
+  function interpolateCardSizes(viewportWidth, stops) {
+    // CSS pixels already account for OS scaling and browser zoom.
     const value = Number(viewportWidth),
       width = Number.isFinite(value) && value > 0 ? value : 3840,
-      stops = [
-        { width: 1920, sizes: [120, 155, 191] },
-        { width: 2560, sizes: [124, 150, 188] },
-        { width: 3840, sizes: [135, 165, 192] }
-      ],
       upper = stops.findIndex((stop) => width <= stop.width);
     if (upper === 0) return [...stops[0].sizes];
     if (upper === -1) return [...stops[stops.length - 1].sizes];
@@ -53,7 +47,28 @@
       progress = (width - from.width) / (to.width - from.width);
     return from.sizes.map((size, index) => Math.round(size + (to.sizes[index] - size) * progress));
   }
-  const spec = Object.freeze({ ranges, defaults, valid, normalize, cardPresets });
+  function cardPresets(viewportWidth = 3840) {
+    return interpolateCardSizes(viewportWidth, [
+      { width: 1920, sizes: [120, 155, 191] },
+      { width: 2560, sizes: [124, 150, 188] },
+      { width: 3840, sizes: [120, 155, 196] }
+    ]);
+  }
+  // Preserve the old slider's typography and style at a numeric width. Updating
+  // toolbar targets must not also rescale the contents of that same-width card.
+  function legacyCardPresets(viewportWidth = 3840) {
+    return interpolateCardSizes(viewportWidth, [
+      { width: 1920, sizes: [120, 155, 191] },
+      { width: 2560, sizes: [124, 150, 188] },
+      { width: 3840, sizes: [135, 165, 192] }
+    ]);
+  }
+  function cardScaleBase(viewportWidth = 3840) {
+    return legacyCardPresets(viewportWidth)[1];
+  }
+  const spec = Object.freeze({
+    ranges, defaults, valid, normalize, cardPresets, legacyCardPresets, cardScaleBase
+  });
   if (typeof module === 'object' && module.exports) module.exports = spec;
   else root.albumAppearanceSpec = spec;
 })(typeof window === 'object' ? window : globalThis);

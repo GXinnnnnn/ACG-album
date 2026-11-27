@@ -5,7 +5,6 @@
   --window-titlebar-space: 28px;
   --window-status-space: 28px;
   --content-edge-space: 16px;
-  --content-scrollbar-space: 8px;
   --collapsed-rail-width: 72px;
 }
 /* Window chrome overlays the scroll surface instead of clipping its two edges. */
@@ -29,9 +28,10 @@ main {
   margin-left: calc(var(--content-edge-space) + 240px);
 }
 #viewport {
-  padding-left: var(--content-edge-space);
-  /* Stable gutter already reserves the global 8px scrollbar. */
-  padding-right: calc(var(--content-edge-space) - var(--content-scrollbar-space));
+  /* The browser owns scrollbar space on both edges, including overlay scrollbars.
+     Equal inner padding leaves one content box for the shared card geometry. */
+  scrollbar-gutter: stable both-edges;
+  padding-inline: var(--browse-edge-space, 23px);
   padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 4px);
   padding-bottom: var(--window-status-space);
   scroll-padding-top: calc(var(--window-titlebar-space) + var(--content-header-space) + 12px);
